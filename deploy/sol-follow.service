@@ -1,0 +1,24 @@
+[Unit]
+Description=Solana hotlist group-follow bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/sol-follow
+ExecStart=/home/ubuntu/sol-follow/.venv/bin/python -m features.app run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillSignal=SIGINT
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/sol-follow/data
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

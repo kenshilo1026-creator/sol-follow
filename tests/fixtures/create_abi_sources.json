@@ -1,0 +1,17 @@
+{
+  "verified_on": "2026-10-05",
+  "sources": [
+    {
+      "url": "https://github.com/pump-fun/pump-public-docs/blob/main/idl/pump.json",
+      "sha256": "ffe966c42f1af41652ee753fe2f1e3f7cd4077d7e6f49faf3138959c8b56064b"
+    },
+    {
+      "url": "https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/instrument.ts",
+      "sha256": "177d418defd36a173d43fafb29a06019a8754c7abe599365885d0b46c1fd8274"
+    },
+    {
+      "url": "https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/pda.ts",
+      "sha256": "bfa801c13f842c374e27d3e34007a75520094cbb71a82ca24c69882415932522"
+    }
+  ]
+}

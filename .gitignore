@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/*
+!wallets/
+wallets/*
+!wallets/README.md
+.coverage
+cex_addresses.json
+take_profit_rules.json
