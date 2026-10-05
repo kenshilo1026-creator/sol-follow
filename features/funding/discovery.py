@@ -51,25 +51,17 @@ async def history_page(rpc, store, address, max_age, notices):
 
 
 class Discovery:
-    def __init__(self, config, store, rpc, notices):
+    def __init__(self, config, store, rpc, notices, sources_only=False):
         self.config, self.store, self.rpc, self.notices = config, store, rpc, notices
+        self.sources_only = sources_only
         self.connected = False
         self.subscribed = set()
         self.received = self.added = 0
         self.addresses = []
-        self.urgent = asyncio.Queue(maxsize=10000)
-        self.queued = set()
         self.locks = {}
 
     def request_history(self,address):
-        if address in self.queued:
-            return
-        try:
-            self.urgent.put_nowait(address)
-            self.queued.add(address)
-        except asyncio.QueueFull:
-            self.notices.emit('new-hotlist catch-up queue full; round-robin fallback retained',
-                              {'address':address},alert=True,key='new-hotlist-queue')
+        self.store.request_history(address)
 
     async def page(self,address):
         lock=self.locks.setdefault(address,asyncio.Lock())
@@ -78,22 +70,26 @@ class Discovery:
 
     async def urgent_history(self):
         while True:
-            address=await self.urgent.get()
+            rows=self.store.rows('funding','SELECT * FROM history_requests WHERE due<=? ORDER BY due LIMIT 1',
+                                 (time.time(),))
+            if not rows:
+                await asyncio.sleep(0.5)
+                continue
+            row=rows[0]
             try:
-                await self.page(address)
+                await self.page(row['address'])
+                self.store.finish_history(row,retry=bool(self.store.cursor(row['address']).get('gaps')))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.notices.emit('new-hotlist catch-up deferred; regular cursor retained',
-                                  {'type':type(exc).__name__,'address':address},alert=True,key='new-hotlist-defer')
-            finally:
-                self.queued.discard(address)
-                self.urgent.task_done()
+                self.store.finish_history(row,retry=True)
+                self.notices.emit('event catch-up deferred; durable request retained',
+                                  {'type':type(exc).__name__,'address':row['address']},alert=True,key='history-defer')
 
     def refresh(self):
         # CEX/source coverage is never silently replaced by hotlist subscriptions.
         self.addresses = list(dict.fromkeys([*self.config.cex, *self.config.privacy_pools,
-                                             *self.store.hotlist(time.time())]))
+                                             *([] if self.sources_only else self.store.hotlist(time.time()))]))
 
     async def websocket(self):
         backoff = 1
@@ -107,6 +103,9 @@ class Discovery:
                         counter = 0
                         connected_at = time.monotonic()
                         self.connected = True
+                        # Legacy WSS has no replay: catch up once per connection.
+                        history_requested=set(self.addresses)
+                        self.store.request_histories(history_requested)
                         refreshed = 0
                         while True:
                             if time.monotonic()-refreshed>2:
@@ -124,6 +123,9 @@ class Discovery:
                                 sent[address] = counter
                                 await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsSubscribe',
                                     'params':[{'mentions':[address]},{'commitment':'confirmed'}]})
+                                if address not in history_requested:
+                                    self.request_history(address)
+                                    history_requested.add(address)
                             try:
                                 msg = await asyncio.wait_for(ws.receive(), timeout=1)
                             except asyncio.TimeoutError:
@@ -163,17 +165,5 @@ class Discovery:
             backoff = min(60,backoff*2)
 
     async def history(self):
-        # Round robin over all addresses. Newest pages are never blocked behind
-        # a long historical page chain for the same address.
-        while True:
-            self.refresh()
-            for address in tuple(self.addresses):
-                try:
-                    await self.page(address)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self.notices.emit('history deferred; checkpoint retained', {'type':type(exc).__name__},
-                                      alert=True,key='history-error')
-                await asyncio.sleep(0)
-            await asyncio.sleep(2)
+        # Compatibility entrypoint. No idle per-address network polling.
+        await self.urgent_history()

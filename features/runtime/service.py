@@ -4,6 +4,7 @@ import time
 from solders.pubkey import Pubkey
 import aiohttp
 from chain_common.rpc import Priority, Rpc
+from chain_common.background_rpc import BackgroundRpc
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
@@ -50,7 +51,16 @@ class Service:
         return added
 
     async def process(self,row,rpc):
-        raw=await rpc.transaction(row['signature'])
+        raw=self.store.stream_payload(row['signature'])
+        if raw is None:
+            raw=await rpc.transaction(row['signature'])
+        elif raw.get('blockTime') is None:
+            stamp=self.store.block_time(raw['slot'])
+            if stamp is None:
+                stamp=await rpc.call('getBlockTime',[raw['slot']])
+                if isinstance(stamp,int) and stamp>0:
+                    self.store.block_time(raw['slot'],stamp)
+            raw['blockTime']=stamp
         if raw is None:
             raise RuntimeError('transaction-not-indexed')
         if raw.get('meta') and raw['meta'].get('err') is not None:
@@ -92,18 +102,18 @@ class Service:
         self.store.job_result(row['signature'],'done','processed',tx.slot)
         self.completed+=1
 
-    async def worker(self,rpc):
+    async def worker(self,rpc,streamed=None):
         turn=0
         while True:
             turn+=1
             try:
-                rows=self.store.due(1,time.time(),oldest=turn%5==0)
+                rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed)
             except Exception as exc:
                 self.notices.emit('funding queue unavailable',{'type':type(exc).__name__},alert=True,key='queue-error')
                 await asyncio.sleep(0.5)
                 continue
             if not rows:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.05 if streamed else 0.2)
                 continue
             row=rows[0]
             try:
@@ -159,6 +169,13 @@ class Service:
                     'subscribed':len(discovery.subscribed),'rpc_calls':rpc.calls,'rpc_429':rpc.limited,
                     'timing':self.metrics.snapshot(),
                     'oldest_s':round(time.time()-rows['oldest']) if rows['oldest'] else 0}
+            if hasattr(self,'hotlist_feed'):
+                feed=self.hotlist_feed
+                detail['hotlist_stream']={'connected':feed.connected,'addresses':len(feed.subscribed),
+                    'received':feed.received,'new_jobs':feed.added,'protobuf_bytes':feed.bytes_received,
+                    'last_slot':feed.last_slot,'reconnects':feed.reconnects}
+            if hasattr(self,'background_rpc'):
+                detail['background_public_rpc']=self.background_rpc.snapshot()
             self.notices.emit('health',detail)
             if self.growing>=3 or detail['oldest_s']>300:
                 self.notices.emit('funding/transaction backlog; new signals may be late',detail,alert=True,key='backlog')
@@ -169,13 +186,22 @@ class Service:
 
     async def run(self):
         timeout=aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        # Separate connection pools keep background pagination from occupying
+        # execution sockets. Both clients still share the PUBLIC endpoint and
+        # cooldown; there is deliberately no Alchemy HTTP fallback.
+        async with aiohttp.ClientSession(timeout=timeout) as session, aiohttp.ClientSession() as background_session:
             rpc=Rpc(session,self.config.rpc,self.priority)
+            self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
+                timeout=self.config.public_timeout),self.priority,self.config.history_rps)
             genesis=await rpc.call('getGenesisHash',[])
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d1':
                 raise ValueError('only-solana-mainnet-beta-is-supported')
-            discovery=Discovery(self.config,self.store,rpc,self.notices)
+            grpc_mode=self.config.feed_mode=='alchemy_grpc'
+            discovery=Discovery(self.config,self.store,self.background_rpc,self.notices,sources_only=grpc_mode)
             self.discovery=discovery
+            if grpc_mode:
+                from features.funding.grpc_feed import HotlistFeed
+                self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.recover_unsigned()
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
@@ -186,9 +212,13 @@ class Service:
             self.notices.emit('service started',{'mode':self.config.mode,'cex_sources':len(self.config.cex),
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
                 'create_decoders':CREATE_DECODERS,
+                'hotlist_feed':self.config.feed_mode,'http_policy':'configured-public-only',
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             async with asyncio.TaskGroup() as group:
-                for coroutine in [self.notices.run(),discovery.websocket(),discovery.history(),discovery.urgent_history(),self.finalized(rpc),
+                coroutines=[self.notices.run(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
                                   Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                  self.worker(rpc),self.executor.reconcile()]:
+                                  self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
+                if grpc_mode:
+                    coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True)])
+                for coroutine in coroutines:
                     group.create_task(coroutine)

@@ -1,5 +1,5 @@
 """Explicit local dotenv; environment overrides file, no parent config imports."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import json
 import os
@@ -67,8 +67,8 @@ class Config:
     root: Path
     data: Path
     dry_run: bool
-    rpc: str
-    ws: str
+    rpc: str = field(repr=False)
+    ws: str = field(repr=False)
     cex: dict
     source_programs: tuple
     privacy_pools: tuple
@@ -92,6 +92,11 @@ class Config:
     telegram_token: str
     telegram_chat: str
     strategy: str = 'sol-follow-v1'
+    alchemy_key: str = field(default='', repr=False)
+    feed_mode: str = 'websocket'
+    grpc_endpoint: str = 'https://solana-mainnet.streaming.alchemy.com'
+    public_timeout: float = 2.0
+    history_rps: int = 2
 
     @property
     def mode(self):
@@ -113,8 +118,21 @@ def load(root=ROOT, env=None):
         for row in rows:
             pubkey(row)
         return tuple(dict.fromkeys(rows))
+    key = get('ALCHEMY_API_KEY', '') or get('SOL_ALCHEMY_API_KEY', '')
+    if any(c.isspace() for c in key) or any(c in key for c in '/?#'):
+        raise ValueError('invalid-alchemy-api-key')
     rpc = get('SOL_RPC_HTTP_URL', 'https://api.mainnet-beta.solana.com')
     ws = get('SOL_RPC_WS_URL', 'wss://api.mainnet-beta.solana.com')
+    feed_mode = get('SOL_FEED_MODE', 'auto')
+    if feed_mode == 'auto':
+        feed_mode = 'alchemy_grpc' if key else 'websocket'
+    if feed_mode not in ('alchemy_grpc', 'websocket') or (feed_mode == 'alchemy_grpc' and not key):
+        raise ValueError('alchemy-grpc-requires-api-key-or-invalid-feed-mode')
+    endpoint = get('SOL_ALCHEMY_GRPC_ENDPOINT', 'https://solana-mainnet.streaming.alchemy.com')
+    parsed = urlparse(endpoint)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ('', '/')):
+        raise ValueError('invalid-grpc-endpoint')
     for url, schemes in ((rpc, {'https', 'http'}), (ws, {'wss', 'ws'})):
         if urlparse(url).scheme not in schemes or not urlparse(url).hostname:
             raise ValueError('invalid-rpc-url')
@@ -154,4 +172,8 @@ def load(root=ROOT, env=None):
         audit_retention=hours_to_seconds(get('SOL_AUDIT_RETENTION_HOUR', '72'), minimum=3600),
         wallet_file=wallet, wallet_address=address,
         telegram_token=get('TELEGRAM_BOT_TOKEN', ''), telegram_chat=get('TELEGRAM_CHAT_ID', ''),
+        alchemy_key=key, feed_mode=feed_mode,
+        grpc_endpoint=endpoint,
+        public_timeout=integer('SOL_PUBLIC_RPC_TIMEOUT_MS', 2000, 100, 8000)/1000,
+        history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
     )

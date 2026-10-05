@@ -49,7 +49,11 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 ```
 
 目前本地 `.env` 是 `DRY_RUN=true`、N=3、窗口 120 秒、買額 0.01 SOL；這些是可調初值。
-正式運行請填 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；所有 HTTP 查詢共用同一個 RPC。
+正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；報價、模擬、買入送單及 HTTP 查詢使用此公共 RPC。
+在本專案 `.env` 加入 `ALCHEMY_API_KEY` 並設定 `SOL_FEED_MODE=alchemy_grpc`，
+只有 hotlist 交易改用 Alchemy 完整交易串流；不會切換 HTTP 到 Alchemy。
+正常運作不循環查詢所有地址歷史，只在入列、首次訂閱或斷線補漏時觸發有界補查。
+設定、重播範圍及一萬地址連線測試見 [Alchemy hotlist 訂閱](docs/alchemy-hotlist-stream.md)。
 公共 RPC 僅適合短暫探測，不能承諾訂閱上限／延遲／零漏單。環境變數優先於 `.env`。
 Telegram 填本專案 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，不自動讀上層憑證。
 

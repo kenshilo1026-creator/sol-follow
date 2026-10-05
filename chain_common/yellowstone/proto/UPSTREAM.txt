@@ -1,0 +1,1 @@
+https://github.com/rpcpool/yellowstone-grpc/tree/79abd849f6a7ea2284d861388adf249bd4093d92/yellowstone-grpc-proto/proto

@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS launch_creates(event TEXT PRIMARY KEY, signature TEXT
  status TEXT NOT NULL DEFAULT 'confirmed', detail TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS launch_creates_signature ON launch_creates(signature);
 CREATE INDEX IF NOT EXISTS launch_creates_time ON launch_creates(time);
+CREATE TABLE IF NOT EXISTS stream_payloads(signature TEXT PRIMARY KEY REFERENCES jobs(signature) ON DELETE CASCADE,
+ raw TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS stream_state(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS block_times(slot INTEGER PRIMARY KEY, time INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL NOT NULL,
+ revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS events(event TEXT PRIMARY KEY, time INTEGER, signature TEXT);
@@ -140,19 +146,78 @@ class Store:
         self.new_jobs += changed
         return changed
 
-    def due(self, limit, now, oldest=False):
+    def due(self, limit, now, oldest=False, streamed=None):
         order = 'ASC' if oldest else 'DESC'
+        lane = '' if streamed is None else (' AND '+('' if streamed else 'NOT ')+
+            'EXISTS (SELECT 1 FROM stream_payloads p WHERE p.signature=jobs.signature)')
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
             rows = [dict(r) for r in c.execute('SELECT * FROM jobs WHERE state=\'pending\' AND due<=? '
-                        f'ORDER BY first_seen {order} LIMIT ?', (now, limit))]
+                        f'{lane} ORDER BY first_seen {order} LIMIT ?', (now, limit))]
             c.executemany('UPDATE jobs SET due=? WHERE signature=?', [(now+60, r['signature']) for r in rows])
             c.commit()
         return rows
 
     def job_result(self, sig, state, reason='', slot=0):
         with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
             c.execute('UPDATE jobs SET state=?,reason=?,slot=? WHERE signature=?', (state, reason[:200], slot, sig))
+            if state in ('done', 'expired'):
+                c.execute('DELETE FROM stream_payloads WHERE signature=?', (sig,))
+            c.commit()
+
+    def stream_state(self, name, default=None):
+        rows = self.rows('funding', 'SELECT value FROM stream_state WHERE name=?', (name,))
+        return json.loads(rows[0]['value']) if rows else default
+
+    def set_stream_state(self, name, value):
+        with self.db('funding') as c:
+            c.execute('INSERT OR REPLACE INTO stream_state VALUES (?,?)', (name,json.dumps(value)))
+
+    def stream_transaction(self, raw):
+        """Commit the payload and job before acknowledging progress to the feed."""
+        sig = raw['transaction']['signatures'][0]
+        with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
+            now = time.time()
+            added = c.execute("INSERT OR IGNORE INTO jobs(signature,state,first_seen,due,slot) VALUES (?,'pending',?,?,?)",
+                              (sig,now,now,raw['slot'])).rowcount
+            state = c.execute('SELECT state FROM jobs WHERE signature=?',(sig,)).fetchone()['state']
+            if state == 'pending':
+                c.execute('INSERT OR REPLACE INTO stream_payloads VALUES (?,?)',(sig,json.dumps(raw)))
+            c.commit()
+        self.new_jobs += added
+        return added
+
+    def stream_payload(self, signature):
+        rows = self.rows('funding','SELECT raw FROM stream_payloads WHERE signature=?',(signature,))
+        return json.loads(rows[0]['raw']) if rows else None
+
+    def block_time(self, slot, value=None):
+        with self.db('funding') as c:
+            if value is not None:
+                c.execute('INSERT OR REPLACE INTO block_times VALUES (?,?)',(slot,value))
+                return value
+            row = c.execute('SELECT time FROM block_times WHERE slot=?',(slot,)).fetchone()
+            return row['time'] if row else None
+
+    def request_history(self, address):
+        self.request_histories([address])
+
+    def request_histories(self, addresses):
+        with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
+            c.executemany('INSERT INTO history_requests(address,due) VALUES (?,?) ON CONFLICT(address) DO UPDATE SET '
+                      'revision=revision+1,due=excluded.due', [(address,time.time()) for address in addresses])
+            c.commit()
+
+    def finish_history(self, row, *, retry=False):
+        with self.db('funding') as c:
+            if retry:
+                c.execute('UPDATE history_requests SET due=?,attempts=attempts+1 WHERE address=? AND revision=?',
+                          (time.time()+min(60,2**min(row['attempts'],6)),row['address'],row['revision']))
+            else:
+                c.execute('DELETE FROM history_requests WHERE address=? AND revision=?',(row['address'],row['revision']))
 
     def retry(self, row, reason, now, max_age):
         expired = now-row['first_seen'] > max_age

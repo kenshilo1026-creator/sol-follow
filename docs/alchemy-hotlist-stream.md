@@ -1,0 +1,113 @@
+# Alchemy hotlist stream / public execution
+
+Alchemy is used only for the hotlist transaction stream, plus small block metadata
+messages needed for chain timestamps. CEX/Privacy Cash source logs, HTTP reads,
+historical catch-up, SDK quotes, simulations, transaction submission and order
+reconciliation use the configured public RPC. There is **no Alchemy HTTP fallback**.
+Adding an API key never rewrites `SOL_RPC_HTTP_URL` or `SOL_RPC_WS_URL`.
+
+## Configuration
+
+Add to this project's `.env` (do not paste credentials into chat or commit them):
+
+```dotenv
+ALCHEMY_API_KEY=your-key
+SOL_FEED_MODE=alchemy_grpc
+SOL_ALCHEMY_GRPC_ENDPOINT=https://solana-mainnet.streaming.alchemy.com
+SOL_RPC_HTTP_URL=https://api.mainnet-beta.solana.com
+SOL_RPC_WS_URL=wss://api.mainnet-beta.solana.com
+SOL_BACKGROUND_RPC_RPS=2
+SOL_PUBLIC_RPC_TIMEOUT_MS=2000
+```
+
+`SOL_FEED_MODE=auto` (default) selects gRPC if a key is present, otherwise legacy
+WebSocket. Explicit `alchemy_grpc` fails configuration validation if no key exists.
+`SOL_ALCHEMY_API_KEY` is accepted as an alias; `ALCHEMY_API_KEY` takes precedence.
+Keys in other projects are never read. Existing dry/live and wallet settings are
+unchanged. gRPC availability and filter capacity depend on the Alchemy account.
+
+Install `requirements.txt` before starting. Offline `features.app check` reports
+the selected feed and whether a key is configured, without printing endpoints or
+credentials. It does not prove live gRPC access.
+
+## Data flow
+
+- Public WebSocket subscribes to configured CEX/source addresses only in gRPC mode.
+- The Alchemy gRPC filter contains active hotlist addresses, chunked at 10,000 keys
+  per named filter. No unfiltered transaction/block subscription is used. An empty
+  hotlist closes the stream. Account limits must be verified on the actual account.
+- Confirmed, successful non-vote transactions carry the full message, balances,
+  inner instructions and ALT keys. The adapter preserves legacy/v0/v1 and feeds the
+  existing decoders. It does not expand the supported buy/sell route set.
+- Block metadata supplies chain time. If absent, one public `getBlockTime` result
+  is cached per slot. The delivery timestamp is never treated as chain time.
+- The full normalized transaction is durably inserted alongside its job before
+  advancing the checkpoint. Completed payloads are removed. Replays deduplicate by
+  signature. A metadata/schema rejection queues a public `getTransaction` fallback,
+  with an explicit diagnostic; no paid HTTP call is made.
+- Stream jobs have a separate worker from history/source jobs. Background public
+  reads are rate-budgeted and yield while a buy is active. They still share the
+  provider's IP limits; this cannot guarantee a buy is never rate limited.
+- Existing funding qualification, strategy votes, holding checks and order
+  reservation rules remain in place. This change does not implement first-buy
+  retirement or add unsupported buy routes.
+
+## Recovery without continuous polling
+
+There is no round-robin `getSignaturesForAddress` scan when idle. Persistent
+catch-up requests are created for a new hotlist address, first subscription,
+legacy WebSocket reconnection or an outage beyond the gRPC replay window. Failed
+catch-up and unfinished pages retry with backoff. An empty response completes the
+request; it is not polled again until another triggering event.
+
+On gRPC reconnect the client resumes from the durable high-water slot minus 128
+slots, including partially delivered slots. The overlap is conservative and is
+not a formal arbitrary-out-of-order delivery guarantee. Alchemy documents 6,000
+slots of replay; this client uses a 5,800-slot margin before falling back to bounded
+public address catch-up. Catch-up still obeys `SOL_BACKFILL_MAX_AGE_SECONDS`; old
+signals cannot trigger a fresh buy. Subscription failures (including permissions
+and filter limits) remain visible and retry with exponential backoff; they do not
+silently switch the hotlist to public subscriptions or claim full coverage.
+
+Watch-set changes update the stream and queue one public catch-up for each added
+address. Providers do not return a per-address subscription acknowledgement, so
+live testing must include additions and events around the update boundary.
+
+Health reports stream messages, received protobuf bytes, reconnects, slot and
+address count separately from public HTTP calls. Protobuf byte counts are a local
+usage indicator, **not an exact Alchemy invoice meter**.
+
+## Bounded live probe
+
+```powershell
+.\.venv\Scripts\python -m features.app check
+.\.venv\Scripts\python -m features.stream_probe --count 10000 --seconds 15
+```
+
+The probe submits deterministic inactive public keys to test filter capacity and
+receives at most 200 messages for at most 60 seconds. Add `--wallet ADDRESS` to
+include a real watched wallet. It never opens the service database, loads signing
+keys, sends transactions or contacts Telegram. Metadata reception demonstrates
+transport/filter acceptance only; it does not prove successful wallet buy decoding,
+coverage of every event, latency under load or trading readiness. Keys, endpoint
+URLs and provider exception details are never printed.
+
+## Protocol source and tests
+
+The Apache-2.0 `yellowstone-grpc-proto` package is pinned at
+`79abd849f6a7ea2284d861388adf249bd4093d92`; upstream proto files, package metadata
+and license are in `chain_common/yellowstone/proto`. Python code was generated with
+`grpcio-tools==1.71.0`, then the two `solana_storage_pb2` imports were made relative.
+`grpcio-tools` is only required to regenerate; runtime dependencies are pinned in
+`requirements.txt`.
+
+Regression tests include 10,000-key serialization, four real Create fixtures and
+the supported buy-route fixture round-tripped through protobuf, restart durability,
+deduplication, no idle history calls, public-only routing, replay expiry, and an
+in-process gRPC server exercising receipt, filter updates and cancellation.
+
+Official references:
+- https://www.alchemy.com/docs/reference/yellowstone-grpc-quickstart
+- https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-transactions
+- https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-request
+- https://github.com/rpcpool/yellowstone-grpc/tree/79abd849f6a7ea2284d861388adf249bd4093d92/yellowstone-grpc-proto

@@ -17,7 +17,7 @@ async def build(config, route, wallet):
         'node', str(Path(__file__).parent/'sdk'/'build.cjs'),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         cwd=config.root, env={k:v for k,v in os.environ.items()
-                             if not k.startswith(('SOL_','TELEGRAM_')) and k!='NODE_OPTIONS'})
+                             if not k.startswith(('SOL_','TELEGRAM_','ALCHEMY_')) and k!='NODE_OPTIONS'})
     try:
         stdout,_=await asyncio.wait_for(process.communicate(json.dumps(payload).encode()),timeout=30)
     except BaseException:

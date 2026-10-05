@@ -15,8 +15,9 @@ class Priority:
 
 
 class Rpc:
-    def __init__(self, session, url, priority):
+    def __init__(self, session, url, priority, timeout=8):
         self.session, self.url, self.priority = session, url, priority
+        self.timeout = timeout
         self.calls = self.errors = self.limited = 0
 
     async def call(self, method, params):
@@ -25,7 +26,7 @@ class Rpc:
         self.calls += 1
         try:
             async with self.session.post(self.url, json={'jsonrpc':'2.0','id':1,'method':method,'params':params},
-                                         timeout=aiohttp.ClientTimeout(total=8)) as response:
+                                         timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                 if response.status == 429:
                     self.limited += 1
                     try:
@@ -49,6 +50,9 @@ class Rpc:
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             self.errors += 1
             raise RpcError(f'{method}:{type(exc).__name__}') from None
+
+    def snapshot(self):
+        return {'calls': self.calls, 'errors': self.errors, 'rate_limited': self.limited}
 
     async def transaction(self, signature, commitment='confirmed'):
         return await self.call('getTransaction', [signature, {'encoding':'jsonParsed',

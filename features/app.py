@@ -24,6 +24,8 @@ def main():
                           'create_decoders':CREATE_DECODERS,'create_quote_assets':['SOL','SPL Token','Token-2022'],
                           'pending_routes':['pump_native_quote_buy','pump_swap_buy_sell','stonk_launchlab_buy_sell','all_sell_routes','other_quote_swap_venues'],
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
+                          'hotlist_feed':config.feed_mode,'alchemy_key_configured':bool(config.alchemy_key),
+                          'http_policy':'configured-public-only','background_rpc_rps':config.history_rps,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return
     if args.command=='stats':
