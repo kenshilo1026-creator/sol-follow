@@ -112,11 +112,7 @@ class Discovery:
                             if time.monotonic()-refreshed>2:
                                 self.refresh()
                                 refreshed=time.monotonic()
-                            desired = set(self.addresses[:self.config.max_subscriptions])
-                            if len(self.addresses)>len(desired):
-                                self.notices.emit('subscription capacity; overflow covered by history polling',
-                                    {'addresses':len(self.addresses),'subscribed_limit':len(desired)},
-                                    alert=True,key='subscription-cap',interval=1800)
+                            desired = set(self.addresses)
                             for address in set(sent)-desired:
                                 if address in subs:
                                     counter += 1
@@ -167,8 +163,8 @@ class Discovery:
             backoff = min(60,backoff*2)
 
     async def history(self):
-        # Round robin, including overflow addresses. Newest page is never blocked
-        # behind a long historical page chain for the same address.
+        # Round robin over all addresses. Newest pages are never blocked behind
+        # a long historical page chain for the same address.
         while True:
             self.refresh()
             for address in tuple(self.addresses):

@@ -27,6 +27,27 @@ def lamports(v):
         raise ValueError('invalid-sol-amount') from exc
 
 
+def hours_to_seconds(value, minimum=60):
+    try:
+        seconds = Decimal(str(value)) * 3600
+        if (not seconds.is_finite() or seconds != seconds.to_integral_value()
+                or not minimum <= seconds <= 30*86400):
+            raise ValueError('invalid-hour-duration')
+        return int(seconds)
+    except InvalidOperation as exc:
+        raise ValueError('invalid-hour-duration') from exc
+
+
+def percent(value):
+    try:
+        result = Decimal(str(value))
+        if not result.is_finite() or not Decimal('0.01') <= result <= 20:
+            raise ValueError('invalid-slippage-percent')
+        return result
+    except InvalidOperation as exc:
+        raise ValueError('invalid-slippage-percent') from exc
+
+
 def cex_load(path):
     groups = json.loads(Path(path).read_text(encoding='utf-8'))['exchanges']
     result = {}
@@ -48,7 +69,6 @@ class Config:
     dry_run: bool
     rpc: str
     ws: str
-    background_rpc: str
     cex: dict
     source_programs: tuple
     privacy_pools: tuple
@@ -60,18 +80,9 @@ class Config:
     remaining: bool
     signal_age: int
     buy_amount: int
-    slippage: int
-    priority_fee: int
-    cu_limit: int
-    cu_price: int
+    slippage_percent: Decimal
     min_liquidity: int
-    max_impact: int
-    max_venue_fee: int
-    max_total_fee: int
     backfill_age: int
-    rpc_rps: int
-    workers: int
-    max_subscriptions: int
     db_max: int
     db_target: int
     min_disk_free: int
@@ -80,7 +91,6 @@ class Config:
     wallet_address: str
     telegram_token: str
     telegram_chat: str
-    blacklist: tuple = ()
     strategy: str = 'sol-follow-v1'
 
     @property
@@ -105,8 +115,7 @@ def load(root=ROOT, env=None):
         return tuple(dict.fromkeys(rows))
     rpc = get('SOL_RPC_HTTP_URL', 'https://api.mainnet-beta.solana.com')
     ws = get('SOL_RPC_WS_URL', 'wss://api.mainnet-beta.solana.com')
-    bg = get('SOL_BACKGROUND_RPC_HTTP_URL', '') or rpc
-    for url, schemes in ((rpc, {'https', 'http'}), (bg, {'https', 'http'}), (ws, {'wss', 'ws'})):
+    for url, schemes in ((rpc, {'https', 'http'}), (ws, {'wss', 'ws'})):
         if urlparse(url).scheme not in schemes or not urlparse(url).hostname:
             raise ValueError('invalid-rpc-url')
     programs, pools = addresses('SOL_HOTLIST_SOURCE_CONTRACT'), addresses('SOL_PRIVACY_POOL_ADDRESSES')
@@ -118,11 +127,6 @@ def load(root=ROOT, env=None):
     low, high = lamports(get('SOL_HOTLIST_MIN_FUNDING_SOL', '0.01')), lamports(get('SOL_HOTLIST_MAX_FUNDING_SOL', '100'))
     if amount <= 0 or high < low:
         raise ValueError('invalid-amount-range')
-    cu = integer('SOL_COMPUTE_UNIT_LIMIT', 300000, 50000, 1400000)
-    price = integer('SOL_COMPUTE_UNIT_PRICE_MICROLAMPORTS', 10000, 0, 10**9)
-    priority = integer('SOL_MAX_PRIORITY_FEE_LAMPORTS', 100000, 0, 10**9)
-    if (cu*price+999999)//1000000 > priority:
-        raise ValueError('priority-fee-over-limit')
     maximum = integer('SOL_DB_MAX_BYTES', 2*1024**3, 1024**2, 1024**4)
     target = integer('SOL_DB_TARGET_BYTES', 1536*1024**2, 512*1024, maximum-1)
     dry = boolean(get('DRY_RUN', 'true'))
@@ -133,16 +137,21 @@ def load(root=ROOT, env=None):
         pubkey(address)
     if not dry and (not wallet or not address):
         raise ValueError('live-requires-keypair-path-and-explicit-wallet-address')
-    return Config(root, root/'data', dry, rpc, ws, bg, cex_load(root/'cex_addresses.json'), programs, pools,
-        low, high, integer('SOL_HOTLIST_TTL_SECONDS', 86400, 60, 30*86400),
-        integer('SOL_FOLLOW_MIN_WALLETS', 3, 1, 10000), integer('SOL_FOLLOW_WINDOW_SECONDS', 120, 1, 86400),
-        boolean(get('SOL_FOLLOW_REQUIRE_REMAINING_POSITION', 'true')),
-        integer('SOL_SIGNAL_MAX_AGE_SECONDS', 15, 1, 300), amount,
-        integer('SOL_SLIPPAGE_BPS', 200, 1, 2000), priority, cu, price,
-        lamports(get('SOL_MIN_POOL_LIQUIDITY_SOL', '10')), integer('SOL_MAX_PRICE_IMPACT_BPS', 300, 1, 2000),
-        integer('SOL_MAX_VENUE_FEE_BPS', 100, 0, 2000), integer('SOL_MAX_TOTAL_FEE_LAMPORTS', 200000, 5000, 10**9),
-        integer('SOL_BACKFILL_MAX_AGE_SECONDS', 3600, 60, 86400), integer('SOL_BACKGROUND_RPS', 5, 1, 100),
-        integer('SOL_FUNDING_WORKERS', 2, 1, 16), integer('SOL_MAX_WS_SUBSCRIPTIONS', 256, 1, 10000),
-        maximum, target, integer('SOL_MIN_DISK_FREE_BYTES', 256*1024**2, 1024**2, 1024**4),
-        integer('SOL_AUDIT_RETENTION_SECONDS', 3*86400, 3600, 30*86400), wallet, address,
-        get('TELEGRAM_BOT_TOKEN', ''), get('TELEGRAM_CHAT_ID', ''), addresses('SOL_BLOCKED_WALLETS'))
+    return Config(
+        root=root, data=root/'data', dry_run=dry, rpc=rpc, ws=ws,
+        cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
+        min_funding=low, max_funding=high,
+        hotlist_ttl=hours_to_seconds(get('SOL_HOTLIST_TTL_HOUR', '24')),
+        n=integer('SOL_FOLLOW_MIN_WALLETS', 3, 1, 10000),
+        window=integer('SOL_FOLLOW_WINDOW_SECONDS', 120, 1, 86400),
+        remaining=boolean(get('SOL_FOLLOW_REQUIRE_REMAINING_POSITION', 'true')),
+        signal_age=integer('SOL_SIGNAL_MAX_AGE_SECONDS', 15, 1, 300), buy_amount=amount,
+        slippage_percent=percent(get('SOL_SLIPPAGE_PERCENT', '2')),
+        min_liquidity=lamports(get('SOL_MIN_POOL_LIQUIDITY_SOL', '10')),
+        backfill_age=integer('SOL_BACKFILL_MAX_AGE_SECONDS', 3600, 60, 86400),
+        db_max=maximum, db_target=target,
+        min_disk_free=integer('SOL_MIN_DISK_FREE_BYTES', 256*1024**2, 1024**2, 1024**4),
+        audit_retention=hours_to_seconds(get('SOL_AUDIT_RETENTION_HOUR', '72'), minimum=3600),
+        wallet_file=wallet, wallet_address=address,
+        telegram_token=get('TELEGRAM_BOT_TOKEN', ''), telegram_chat=get('TELEGRAM_CHAT_ID', ''),
+    )

@@ -4,6 +4,7 @@ from solders.pubkey import Pubkey
 
 SYSTEM = '11111111111111111111111111111111'
 TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+TOKEN_2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 ATA = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 WSOL = 'So11111111111111111111111111111111111111112'
 PRIVACY = '9fhQBbumKEFuXtMBDw8AaQyAjCorLGJQiS3skWZdQyQD'
@@ -42,5 +43,5 @@ def pda(seeds, program):
     return str(Pubkey.find_program_address(seeds, pubkey(program))[0])
 
 
-def ata(owner, mint):
-    return pda([bytes(pubkey(owner)), bytes(pubkey(TOKEN)), bytes(pubkey(mint))], ATA)
+def ata(owner, mint, token_program=TOKEN):
+    return pda([bytes(pubkey(owner)), bytes(pubkey(token_program)), bytes(pubkey(mint))], ATA)

@@ -1,6 +1,7 @@
 from dataclasses import replace
 import asyncio
 import json
+from decimal import Decimal
 import pytest
 from chain_common.rpc import Rpc,Priority,RpcError
 from share_common.config import load,lamports,cex_load
@@ -17,7 +18,26 @@ def test_config_safety():
     assert lamports('0.1')==100000000
     with pytest.raises(ValueError):load(env={'DRY_RUN':'false'})
     with pytest.raises(ValueError):load(env={'DRY_RUN':'maybe'})
-    with pytest.raises(ValueError):load(env={'SOL_COMPUTE_UNIT_PRICE_MICROLAMPORTS':'1000000000'})
+
+
+def test_hours_and_percent_units():
+    cfg=load(env={'SOL_HOTLIST_TTL_HOUR':'24','SOL_AUDIT_RETENTION_HOUR':'72','SOL_SLIPPAGE_PERCENT':'2'})
+    assert cfg.hotlist_ttl==86400 and cfg.audit_retention==259200
+    assert cfg.slippage_percent==Decimal('2')
+    cfg=load(env={'SOL_HOTLIST_TTL_HOUR':'0.5','SOL_AUDIT_RETENTION_HOUR':'1.5','SOL_SLIPPAGE_PERCENT':'0.25'})
+    assert cfg.hotlist_ttl==1800 and cfg.audit_retention==5400
+    assert cfg.slippage_percent==Decimal('0.25')
+
+
+@pytest.mark.parametrize('key,value',[
+    ('SOL_HOTLIST_TTL_HOUR','0'),('SOL_HOTLIST_TTL_HOUR','0.0001'),
+    ('SOL_HOTLIST_TTL_HOUR','NaN'),('SOL_HOTLIST_TTL_HOUR','721'),
+    ('SOL_AUDIT_RETENTION_HOUR','0.5'),('SOL_AUDIT_RETENTION_HOUR','Infinity'),
+    ('SOL_SLIPPAGE_PERCENT','0'),('SOL_SLIPPAGE_PERCENT','21'),
+    ('SOL_SLIPPAGE_PERCENT','NaN'),('SOL_SLIPPAGE_PERCENT','abc'),
+])
+def test_invalid_units_rejected(key,value):
+    with pytest.raises(ValueError):load(env={key:value})
 
 
 def test_instance_lock(tmp_path):

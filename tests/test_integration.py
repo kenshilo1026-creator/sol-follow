@@ -1,4 +1,4 @@
-"""Offline funding-only service integration; trading is disabled."""
+"""Offline service integration; unsupported trades never create orders."""
 import asyncio
 from dataclasses import replace
 import json
@@ -7,8 +7,9 @@ import pytest
 from concurrent.futures import ThreadPoolExecutor
 from chain_common.primitives import SYSTEM
 from features.runtime.service import Service
+from features.funding.discovery import Discovery
 from launchpads import pump_fun
-from tests.helpers import address,transaction
+from tests.helpers import address,transaction,Notices
 
 
 def test_concurrent_reservation(config,store):
@@ -39,7 +40,7 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store):
     runner=web.AppRunner(app);await runner.setup()
     site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
     port=site._server.sockets[0].getsockname()[1]
-    cfg=replace(config,rpc=f'http://127.0.0.1:{port}/',background_rpc=f'http://127.0.0.1:{port}/',
+    cfg=replace(config,rpc=f'http://127.0.0.1:{port}/',
                 ws=f'http://127.0.0.1:{port}/ws',cex={address():'test'},source_programs=(),privacy_pools=(),
                 dry_run=False,wallet_file=config.data/'missing-wallet.json',wallet_address=address())
     oid=store.reserve(cfg,address(),address(),10)
@@ -53,6 +54,42 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store):
         assert store.order(oid)==before
         assert not any(method in calls for method in ('sendTransaction','simulateTransaction','getLatestBlockhash','getBalance'))
     finally:
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscribes_all_addresses(config,store):
+    from aiohttp import web,WSMsgType
+    expected={address() for _ in range(300)}
+    received=set()
+    complete=asyncio.Event()
+    async def websocket(request):
+        ws=web.WebSocketResponse();await ws.prepare(request)
+        async for message in ws:
+            if message.type==WSMsgType.TEXT:
+                body=json.loads(message.data)
+                assert body['method']=='logsSubscribe'
+                received.update(body['params'][0]['mentions'])
+                await ws.send_json({'jsonrpc':'2.0','id':body['id'],'result':body['id']})
+                if received==expected:complete.set()
+        return ws
+    app=web.Application();app.router.add_get('/ws',websocket)
+    runner=web.AppRunner(app);await runner.setup()
+    site=web.TCPSite(runner,'127.0.0.1',0);await site.start()
+    port=site._server.sockets[0].getsockname()[1]
+    cfg=replace(config,ws=f'http://127.0.0.1:{port}/ws',
+                cex=dict.fromkeys(expected,'test'),source_programs=(),privacy_pools=())
+    discovery=Discovery(cfg,store,None,Notices())
+    task=asyncio.create_task(discovery.websocket())
+    try:
+        await asyncio.wait_for(complete.wait(),timeout=5)
+        async with asyncio.timeout(5):
+            while discovery.subscribed!=expected:
+                await asyncio.sleep(0.01)
+        assert received==expected
+    finally:
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
         await runner.cleanup()
 
 

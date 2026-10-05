@@ -1,6 +1,6 @@
 """Distinct-wallet rolling votes, persistent dedupe and atomic order reservation."""
 import time
-from chain_common.primitives import ata
+from chain_common.primitives import ata, TOKEN, TOKEN_2022
 
 
 class Signals:
@@ -14,7 +14,7 @@ class Signals:
     def observe(self, trade, now=None):
         now = time.time() if now is None else now
         cfg = self.config
-        if trade.wallet in cfg.blacklist or not self.store.eligible(trade.wallet, trade.slot, trade.time, now):
+        if not self.store.eligible(trade.wallet, trade.slot, trade.time, now):
             return None
         fresh = self.store.vote(trade)
         current=self.store.rows('trading','SELECT * FROM votes WHERE mint=? AND wallet=?',(trade.mint,trade.wallet))
@@ -27,7 +27,7 @@ class Signals:
         rows = [r for r in self.votes.get(trade.mint,{}).values() if r['time']>=now-cfg.window]
         count=0
         for r in rows:
-            if r['wallet'] in cfg.blacklist or (cfg.remaining and int(r['amount'])<=0):
+            if cfg.remaining and int(r['amount'])<=0:
                 continue
             if self.store.eligible(r['wallet'],r['slot'],r['time'],now):
                 count+=1
@@ -58,11 +58,11 @@ class Signals:
             row=self.votes.get(mint,{}).get(wallet)
             if row is None:
                 continue
-            account=ata(wallet,mint)
-            if account not in keys or tx.slot<=row['slot']:
+            accounts=[ata(wallet,mint,program) for program in (TOKEN,TOKEN_2022)]
+            if not any(account in keys for account in accounts) or tx.slot<=row['slot']:
                 continue
-            balance=post.get(account)
-            if balance is None or balance[:2]!=(wallet,mint) or balance[2]==0:
+            balances=[post.get(account) for account in accounts if account in keys]
+            if not any(balance and balance[:2]==(wallet,mint) and balance[2]>0 for balance in balances):
                 with self.store.db('trading') as c:
                     c.execute("UPDATE votes SET amount='0',slot=?,signature=? WHERE mint=? AND wallet=? AND slot<?",
                               (tx.slot,tx.signature,mint,wallet,tx.slot))

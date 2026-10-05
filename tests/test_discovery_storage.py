@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import replace
 import sqlite3
 import time
@@ -69,20 +68,12 @@ async def test_maintenance_yields_to_buying(config,store):
 
 
 @pytest.mark.asyncio
-async def test_wallet_qualification_owner_and_blacklist(config,store):
+async def test_wallet_qualification_checks_owner(config,store):
     now=int(time.time());w=address();f=Funding('event','sig',w,address(),'cex:test',1,1,now)
     class RPC:
         async def call(self,*args):return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
     service=Service(config,store)
     assert await service.qualify(f,RPC())
-    assert not await Service(replace(config,blacklist=(w,)),store).qualify(f,RPC())
-
-
-@pytest.mark.asyncio
-async def test_priority_defers_background():
-    p=Priority();p.active=1
-    task=asyncio.create_task(p.background('url',10))
-    await asyncio.sleep(0.03)
-    assert not task.done()
-    p.active=0
-    await asyncio.wait_for(task,0.2)
+    class WrongOwner:
+        async def call(self,*args):return {'value':{'owner':address(),'executable':False,'data':['','base64']}}
+    assert not await service.qualify(f,WrongOwner())

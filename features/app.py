@@ -9,6 +9,7 @@ from share_common.instance import Instance
 from features.strategy.positions import load_rules
 from launchpads import ENABLED
 from launchpads.create import SUPPORTED as CREATE_DECODERS
+from trade_execution import VENUES
 
 
 def main():
@@ -19,9 +20,9 @@ def main():
     rules=load_rules(config.root/'take_profit_rules.json')
     if args.command=='check':
         print(json.dumps({'mode':config.mode,'cex_sources':len(config.cex),'privacy_cash':bool(config.privacy_pools),
-                          'launchpads':ENABLED,'execution_venues':[],'trading_enabled':False,
+                          'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not config.dry_run,
                           'create_decoders':CREATE_DECODERS,'create_quote_assets':['SOL','SPL Token','Token-2022'],
-                          'pending_routes':['pump_bonding_curve_buy_sell','pump_swap_buy_sell','stonk_launchlab_buy_sell','non_sol_quote_buy_sell','token_2022_buy_sell','creator_fee'],
+                          'pending_routes':['pump_native_quote_buy','pump_swap_buy_sell','stonk_launchlab_buy_sell','all_sell_routes','other_quote_swap_venues'],
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return

@@ -66,7 +66,7 @@ JSON 保留根目錄原檔；運行資料夾由程式建立，不以 `.gitkeep` 
 | 參考位置 | 可借用的設計 | 不可照搬的部分 |
 | --- | --- | --- |
 | `bsc_bot/cex_tracker.py`、`bsc_bot/storage.py` | 出金證據、hotlist、事件去重、訂單狀態保存 | EVM 地址轉小寫、wei、ABI、區塊掃描與 nonce |
-| `features/funding/funding_scheduler.py`、`qualification_health.py` | 限流、有限 worker、佇列進度、最新工作優先 | EVM getLogs 區塊範圍與舊資料庫結構 |
+| `features/funding/funding_scheduler.py`、`qualification_health.py` | 佇列進度、最新工作優先 | EVM getLogs 區塊範圍與舊資料庫結構 |
 | `features/database/maintenance.py` | 小批清理、短鎖、超時退讓、記錄實際刪除量 | 不經容量測量便套用舊上限或共享舊資料庫 |
 | `rh_follow_buyer.py`、`trade_execution/`、`bsc_bot/buyer.py` | DRY_RUN、執行／確認分離、持倉恢復、成交通知 | buyGuard、curve ABI、Permit2、Universal Router、EVM gas／nonce |
 | `take_profit_rules.json` | 止盈止損類型、相對入場收益率、分批賣出語義 | 直接把 EVM 市值／價格來源套到 Solana |
@@ -80,13 +80,13 @@ JSON 保留根目錄原檔；運行資料夾由程式建立，不以 `.gitkeep` 
    **保留大小寫**；略過 EVM 地址及 `robinhood_direct_withdrawals` 專用區段。相同地址重複分類要提示，不默默選一個。
    複製的清單包含多鏈資料，不代表所有項目適用 Solana，也不保證 CEX 地址永遠有效。
 2. 即時入口用 `logsSubscribe` 的 address mentions；通知只是候選 signature，不把「提及 CEX」當成出金。
-   標準 mentions 每個訂閱只支援一個地址，大名單需分配訂閱預算；供應商批次 stream 可作後續選項。[1]
+   標準 mentions 每個訂閱只支援一個地址，程式訂閱全部監聽地址；供應商批次 stream 可作後續選項。[1]
 3. 每個 signature 共用一次交易取得／解析工作，要求交易成功。解析頂層及 inner instructions，
    證明來源是清單內 CEX、實際接收方及金額；不能只靠 fee payer 或帳戶餘額上升推定付款方。
 4. MVP 只支援已驗證的 System Program SOL transfer 形態；同一筆批次出金可建立多位收款人證據。
    去重鍵使用 `signature + instruction path + recipient + asset`，不能只用 signature 吃掉其他收款人。
    排除自轉、已知 CEX 互轉、建立 token account 的 rent、關帳退款及未識別的程式資金移動。
-5. 收款人需通過金額上下限、地址黑名單及已支援帳戶類型檢查。未知 owner／PDA／託管帳戶先標未知，
+5. 收款人需通過金額上下限及已支援帳戶類型檢查。未知 owner／PDA／託管帳戶先標未知，
    不當成普通交易錢包。後續 SPL 出金必須解析 token account 的錢包 owner，不把 token account 本身放進 hotlist。
 6. 短交易中保存精簡出金證據與 hotlist entry，提交後更新記憶體索引及監聽清單。TTL 依鏈上入金時間計，
    不是每次 replay 延長；新入金可依設定續期。缺 blockTime 時保留 slot／時間未知狀態，不冒充即時入金。
@@ -102,9 +102,9 @@ JSON 保留根目錄原檔；運行資料夾由程式建立，不以 `.gitkeep` 
 `signature、slot、block_time、instruction_path、wallet_owner、mint、side、quote_mint、quote_raw、token_raw、venue、confirmation`。
 
 2026-10-05 範圍修正：只納入 pump.fun／stonk 旗下代幣，使用者提供的兩個 mint 是辨認平台的樣本，
-不是只交易兩個 mint。發射台來源與交易 DEX 分開：來源由 `launchpads/` 核驗；目前沒有啟用的交易 adapter，買賣計票、退出及在途成交對帳均停用。
-目前已完成來源 gate，Pump／PumpSwap／LaunchLab 的交易 adapter、非 SOL quote 路由、
-Token-2022 與 creator fee 支援仍待實作；不能將來源辨識成功視為可交易驗收。
+不是只交易兩個 mint。發射台來源與交易 DEX 分開：來源由 `launchpads/` 核驗；目前接入 `trade_execution/` 的畢業前非 SOL quote Pump 原子買入及新買單成交核對，退出仍未接入。
+來源 gate 已完成；PumpSwap、LaunchLab、SOL quote 買入及所有賣出仍待接入。
+已接入路由的 Token-2022 公開轉帳及 creator fee 報價由 pinned SDK 與當前鏈上設定處理；不能將來源辨識成功視為可交易驗收。
 
 - 以已知 program 的 instruction 語義、必要 account 關係、CPI／inner instructions、付款與收款證據共同判定 buy/sell。
   代幣轉帳、空投、mint、NFT、流動性增減、WSOL 包裝／解包，都不能直接計作買入。
@@ -219,19 +219,17 @@ decoder 同時核對 program、對應資金池、提款方向／收款人、成�
 | 設定 | 用途／初版建議 |
 | --- | --- |
 | `DRY_RUN` | 預設 true |
-| `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL` | 交易／即時讀取 endpoint |
-| `SOL_BACKGROUND_RPC_HTTP_URL` | 背景補查限額可獨立；同供應商帳戶仍可能共用配額 |
+| `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL` | 所有 HTTP 查詢共用同一 RPC；WebSocket 用於即時監聽 |
 | `SOL_HOTLIST_MIN_FUNDING_SOL`、`SOL_HOTLIST_MAX_FUNDING_SOL` | 直接 CEX SOL 入金篩選，使用十進位安全轉換 |
-| `SOL_HOTLIST_TTL_SECONDS` | 地址有效期；上線前指定 |
+| `SOL_HOTLIST_TTL_HOUR` | 地址有效期，小時；預設 24，可填小數 |
 | `SOL_FOLLOW_MIN_WALLETS` | N；上線前指定 |
 | `SOL_FOLLOW_WINDOW_SECONDS` | W；上線前指定 |
 | `SOL_FOLLOW_REQUIRE_REMAINING_POSITION` | 建議 true；全賣後不再算有效票 |
 | `SOL_SIGNAL_MAX_AGE_SECONDS` | 不追歷史／補查晚到訊號 |
-| `SOL_BUY_AMOUNT_SOL`、`SOL_SLIPPAGE_BPS` | 買額、滑點；上線前指定 |
-| `SOL_MAX_PRIORITY_FEE_LAMPORTS` | 優先費總額上限，區分每 CU 單价 |
+| `SOL_BUY_AMOUNT_SOL`、`SOL_SLIPPAGE_PERCENT` | 原子買入 SOL 額及整條路徑百分比滑點；2 表示 2% |
 | `SOL_BACKFILL_MAX_AGE_SECONDS` | 補漏窗口，例 3600 秒；跳過缺口必須可觀測 |
 | `SOL_DB_MAX_BYTES`、`SOL_DB_TARGET_BYTES` | SQLite 家族總預算及清理目標；依磁碟實測設定 |
-| `SOL_AUDIT_RETENTION_SECONDS` | 審計時間保留；容量優先淘汰時要標註報表不完整 |
+| `SOL_AUDIT_RETENTION_HOUR` | 審計保留小時數，預設 72；容量優先淘汰時要標註報表不完整 |
 
 Telegram 共用新專案 `share_common/` 的設定來源，訊息加 `[SOL]`；私鑰和 token 不進日誌／Git。
 健康報表至少列：feed 連線、已覆蓋游標／鏈上延遲、交易 null／429、未知 program、

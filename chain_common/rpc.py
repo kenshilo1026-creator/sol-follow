@@ -1,4 +1,4 @@
-"""Bounded HTTP clients; background work yields before starting requests."""
+"""Shared HTTP RPC client with provider-directed cooldown."""
 import asyncio
 import time
 import aiohttp
@@ -12,24 +12,15 @@ class Priority:
     def __init__(self):
         self.active = 0
         self.cooldown = {}
-        self.next_background = 0.0
-
-    async def background(self, url, rps):
-        while self.active or time.monotonic() < max(self.next_background, self.cooldown.get(url, 0)):
-            await asyncio.sleep(0.025)
-        self.next_background = time.monotonic() + 1/rps
 
 
 class Rpc:
-    def __init__(self, session, url, priority, *, background=False, rps=5):
+    def __init__(self, session, url, priority):
         self.session, self.url, self.priority = session, url, priority
-        self.background_mode, self.rps = background, rps
         self.calls = self.errors = self.limited = 0
 
     async def call(self, method, params):
-        if self.background_mode:
-            await self.priority.background(self.url, self.rps)
-        elif time.monotonic() < self.priority.cooldown.get(self.url, 0):
+        if time.monotonic() < self.priority.cooldown.get(self.url, 0):
             raise RpcError('endpoint-cooling')
         self.calls += 1
         try:

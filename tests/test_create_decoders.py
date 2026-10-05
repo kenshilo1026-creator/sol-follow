@@ -290,7 +290,7 @@ async def test_probe_outputs_real_creates(row,config,monkeypatch,capsys):
     monkeypatch.setattr(module,'load',lambda:config)
     monkeypatch.setattr(module.aiohttp,'ClientSession',Session)
     monkeypatch.setattr(module,'Rpc',lambda *a,**k:RPC())
-    await module.probe(SimpleNamespace(mint=None,tx=row['signature'],raw=False))
+    await module.probe(SimpleNamespace(mint=None,tx=row['signature'],raw=False,buy_route=False))
     output=json.loads(capsys.readouterr().out)
     assert output['creates'][0]['mint']==row['mint'] and output['create_rejections']==[]
     assert output['trades']==[]

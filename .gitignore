@@ -8,5 +8,6 @@ data/*
 wallets/*
 !wallets/README.md
 .coverage
+node_modules/
 cex_addresses.json
 take_profit_rules.json

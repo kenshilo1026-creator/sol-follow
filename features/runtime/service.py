@@ -15,6 +15,9 @@ from launchpads import ENABLED, pump_fun, stonk
 from launchpads.create import inspect as inspect_creates, SUPPORTED as CREATE_DECODERS
 from share_common.notify import Notices
 from share_common.metrics import Metrics
+from trade_execution import VENUES
+from trade_execution.route import decode as decode_buy_route
+from trade_execution.executor import Executor, MARKER
 
 
 class Service:
@@ -27,11 +30,10 @@ class Service:
         self.completed=self.expired=self.received=0
         self.last_pending=0
         self.growing=0
-        self.active=set()
         self.metrics=Metrics()
 
     async def qualify(self,item,rpc):
-        if item.wallet in self.config.blacklist or not Pubkey.from_string(item.wallet).is_on_curve():
+        if not Pubkey.from_string(item.wallet).is_on_curve():
             return False
         result=await rpc.call('getAccountInfo',[item.wallet,{'encoding':'base64','commitment':'confirmed','minContextSlot':item.slot}])
         row=result['value']
@@ -77,9 +79,15 @@ class Service:
                               key='create-rejected',interval=60)
         if self.config.remaining:
             self.signals.observe_holdings(tx)
+        route=decode_buy_route(tx)
+        if route:
+            oid=self.signals.observe(route.trade)
+            if oid:
+                executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
+                await executor.buy(oid,route)
         relevant_programs={pump_fun.PROGRAM,pump_fun.SWAP_PROGRAM,stonk.PROGRAM}
-        if not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
-            self.notices.emit('trade decoding disabled; no vote',{'signature':tx.signature},
+        if not route and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
+            self.notices.emit('unsupported buy route; no vote',{'signature':tx.signature},
                               key='unsupported-route',interval=60)
         self.store.job_result(row['signature'],'done','processed',tx.slot)
         self.completed+=1
@@ -87,7 +95,6 @@ class Service:
     async def worker(self,rpc):
         turn=0
         while True:
-            await self.priority.background(rpc.url,self.config.rpc_rps)
             turn+=1
             try:
                 rows=self.store.due(1,time.time(),oldest=turn%5==0)
@@ -99,9 +106,6 @@ class Service:
                 await asyncio.sleep(0.2)
                 continue
             row=rows[0]
-            if row['signature'] in self.active:
-                continue
-            self.active.add(row['signature'])
             try:
                 if time.time()-row['first_seen']>self.config.backfill_age:
                     self.store.job_result(row['signature'],'expired','qualification-window-expired')
@@ -118,8 +122,6 @@ class Service:
                 if expired:
                     self.expired+=1
                     self.notices.emit('qualification stopped',{'signature':row['signature'],'reason':reason},alert=True,key='qualification-expired')
-            finally:
-                self.active.discard(row['signature'])
 
     async def finalized(self,rpc):
         while True:
@@ -167,29 +169,26 @@ class Service:
 
     async def run(self):
         timeout=aiohttp.ClientTimeout(total=8)
-        async with aiohttp.ClientSession(timeout=timeout,connector=aiohttp.TCPConnector(limit=8)) as foreground, \
-                   aiohttp.ClientSession(timeout=timeout,connector=aiohttp.TCPConnector(limit=self.config.workers+3)) as background:
-            fast=Rpc(foreground,self.config.rpc,self.priority)
-            slow=Rpc(background,self.config.background_rpc,self.priority,background=True,rps=self.config.rpc_rps)
-            genesis=await fast.call('getGenesisHash',[])
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            rpc=Rpc(session,self.config.rpc,self.priority)
+            genesis=await rpc.call('getGenesisHash',[])
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d1':
                 raise ValueError('only-solana-mainnet-beta-is-supported')
-            if self.config.background_rpc!=self.config.rpc and await slow.call('getGenesisHash',[])!=genesis:
-                raise ValueError('background-rpc-wrong-chain')
-            discovery=Discovery(self.config,self.store,slow,self.notices)
+            discovery=Discovery(self.config,self.store,rpc,self.notices)
             self.discovery=discovery
-            outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE state IN ('reserved','signed','submitted','unknown','confirmed')")
+            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority)
+            self.executor.recover_unsigned()
+            outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
             if outstanding or positions:
-                self.notices.emit('trading disabled; existing orders/positions require manual reconciliation',
+                self.notices.emit('legacy orders/positions require manual management; sell routes unavailable',
                     {'orders':outstanding,'position_mints':[p['mint'] for p in positions]},alert=True)
             self.notices.emit('service started',{'mode':self.config.mode,'cex_sources':len(self.config.cex),
-                'launchpads':ENABLED,'execution_venues':[],'trading_enabled':False,
+                'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
                 'create_decoders':CREATE_DECODERS,
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             async with asyncio.TaskGroup() as group:
-                for coroutine in [self.notices.run(),discovery.websocket(),discovery.history(),discovery.urgent_history(),self.finalized(slow),
-                                  Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,slow)]:
+                for coroutine in [self.notices.run(),discovery.websocket(),discovery.history(),discovery.urgent_history(),self.finalized(rpc),
+                                  Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
+                                  self.worker(rpc),self.executor.reconcile()]:
                     group.create_task(coroutine)
-                for _ in range(self.config.workers):
-                    group.create_task(self.worker(slow))
