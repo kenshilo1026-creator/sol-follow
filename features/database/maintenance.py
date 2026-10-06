@@ -69,7 +69,7 @@ class Maintenance:
                 await asyncio.sleep(0)
         if pressured:
             self.notices.emit('SQLite capacity pressure',{'bytes':size,'limit':cfg.db_max,'free':free,'deleted':deleted,
-                'policy':'retaining hotlist, evidence, unfinished jobs, orders and positions; disk exhaustion needs more space'},
+                'policy':'retaining hotlist, evidence, seen-mint routes, unfinished jobs, orders and positions; disk exhaustion needs more space'},
                 alert=True,key='capacity',interval=600)
         elif self.pressured and size<cfg.db_target and free>=cfg.min_disk_free:
             self.notices.emit('SQLite capacity recovered',{'bytes':size,'free':free},alert=True)

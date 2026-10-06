@@ -78,7 +78,7 @@ test('full atomic builder uses official SDK metas, lookup tables and one final s
     tokenY:{owner:spl.TOKEN_PROGRAM_ID,amount:100000000000n},
     binArrayBitmapExtension:null,
     async getBinArrayForSwap(){return [];},
-    swapQuote(amount){return {consumedInAmount:amount,outAmount:new BN(100000000),
+    swapQuote(amount){return {consumedInAmount:amount,outAmount:new BN(100000000),fee:new BN(0),feeOnInput:true,priceImpact:new (require('decimal.js'))(0),
       binArraysPubkey:b.slice(16).map(k=>new web3.PublicKey(k))};},
   };
   t.mock.method(dm,'create',async()=>pair);
@@ -113,4 +113,45 @@ test('full atomic builder uses official SDK metas, lookup tables and one final s
   await assert.rejects(build(input,connection),/curve-graduated/);
   curve[48]=0;simError={InstructionError:[6,{Custom:6000}]};
   await assert.rejects(build(input,connection),/simulation-rejected/);
+});
+
+test('native SOL builder spends the configured budget with common min-out and no DLMM hop',async()=>{
+  const snapshot=require('../../tests/fixtures/pump_native_accounts.json');
+  const reference=require('../../tests/fixtures/pump_native_multi_buy.json');
+  const a=reference.transaction.message.instructions[3].accounts;
+  const values=Object.fromEntries(Object.entries(snapshot.accounts).map(([k,v])=>[k,
+    {...v,owner:new web3.PublicKey(v.owner),data:Buffer.from(v.data[0],'base64')} ]));
+  const curve=values[a[3]].data;
+  curve.writeBigUInt64LE(1000000000000000n,8);curve.writeBigUInt64LE(30000000000n,16);
+  curve.writeBigUInt64LE(800000000000000n,24);curve.writeBigUInt64LE(5000000000n,32);curve[48]=0;
+  const user=web3.Keypair.generate().publicKey;
+  let simulationError=null;
+  const connection={
+    async getMultipleAccountsInfo(keys){return keys.map(k=>values[k.toBase58()] || null);},
+    async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:100};},
+    async simulateTransaction(){return {value:{err:simulationError,unitsConsumed:80000}};},
+  };
+  const input={route:'pump_native_curve',wallet:user.toBase58(),mint:a[2],quoteMint:spl.NATIVE_MINT.toBase58(),
+    tokenProgram:spl.TOKEN_PROGRAM_ID.toBase58(),lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2'};
+  const result=await build(input,connection);
+  const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
+  const ixs=web3.TransactionMessage.decompile(tx.message).instructions;
+  assert.equal(ixs.length,3); // Compute budget, base ATA, Pump buy.
+  const buy=ixs[2];
+  assert(buy.programId.equals(pump.PUMP_PROGRAM_ID));
+  assert.equal(buy.data.subarray(0,8).toString('hex'),'38fc74089edfcd5f');
+  assert.equal(buy.data.readBigUInt64LE(8),10000000n);
+  assert.equal(buy.data.readBigUInt64LE(16).toString(),result.minOut);
+  assert.equal(buy.data[24],1);
+  assert.equal(new BN(result.quotedOut).muln(98).addn(99).divn(100).toString(),result.minOut);
+  assert.equal(tx.message.header.numRequiredSignatures,1);
+  assert(tx.signatures[0].every(x=>x===0));
+  assert(buy.keys[6].pubkey.equals(user));
+  const smaller=await build({...input,slippagePercent:'0.25'},connection);
+  assert(new BN(smaller.minOut).gt(new BN(result.minOut)));
+  simulationError={InstructionError:[2,{Custom:6000}]};
+  await assert.rejects(build(input,connection),/simulation-rejected/);
+  curve[48]=1;
+  await assert.rejects(build(input,connection),/curve-graduated/);
+  await assert.rejects(build({...input,quoteMint:a[2]},connection),/native-only/);
 });

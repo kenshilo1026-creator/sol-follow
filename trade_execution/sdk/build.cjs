@@ -1,6 +1,7 @@
 'use strict';
 // Pinned SDKs build fresh unsigned instructions. No key loading or broadcast.
 const BN = require('bn.js');
+const risk=require('./risk.cjs');
 const assert = require('node:assert/strict');
 const web3 = require('@solana/web3.js');
 const spl = require('@solana/spl-token');
@@ -11,11 +12,16 @@ const DLMM_ID = new web3.PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'
 const MEMO = new web3.PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const buyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_v2');
 const exactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_quote_in_v2');
+const nativeBuyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy');
+const nativeExactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_sol_in');
 const REASONS = new Set(['invalid-integer','invalid-u64','invalid-percent','dust-route',
   'unsupported-mint-extension','uninitialized-mint','unexpected-signer','transaction-too-large',
   'non-native-only','invalid-slot','invalid-tables','account-owner','token-program',
   'curve-graduated-or-quote-mismatch','dlmm-quote-mismatch','dlmm-token-program',
-  'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected']);
+  'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
+  'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
+  'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit',
+  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected']);
 
 function integer(v) {
   if (!/^[0-9]+$/.test(String(v))) throw Error('invalid-integer');
@@ -48,11 +54,20 @@ function exactQuoteInstruction(ix, quoteIn, minOut) {
     data:Buffer.concat([Buffer.from(exactIdl.discriminator),
                        quoteIn.toArrayLike(Buffer,'le',8),minOut.toArrayLike(Buffer,'le',8)])});
 }
-function safeMint(mint) {
+function exactNativeInstruction(ix, amount, minOut) {
+  assert.deepEqual(nativeBuyIdl.accounts,nativeExactIdl.accounts);
+  assert(ix.programId.equals(pump.PUMP_PROGRAM_ID));
+  assert(ix.data.length===25 && ix.data.subarray(0,8).equals(Buffer.from(nativeBuyIdl.discriminator)));
+  return new web3.TransactionInstruction({programId:ix.programId,keys:ix.keys,
+    data:Buffer.concat([Buffer.from(nativeExactIdl.discriminator),
+      amount.toArrayLike(Buffer,'le',8),minOut.toArrayLike(Buffer,'le',8),ix.data.subarray(24)])});
+}
+function safeMint(mint, allowTransferFee=false) {
   // SPCX has dormant hook, pausable, default-state and confidential-capability
   // extensions. Public transfers are supported while initialized/unpaused and
   // with no active hook. Confidential balances themselves are never used.
   const allowed = new Set([0,3,4,6,10,12,14,18,19,20,21,22,23,25,26]);
+  if (allowTransferFee) allowed.add(1);
   if (spl.getExtensionTypes(mint.tlvData).some(t => !allowed.has(t)))
     throw Error('unsupported-mint-extension');
   const hook=spl.getTransferHook(mint);
@@ -68,20 +83,14 @@ function compile(user, blockhash, instructions, tables) {
     instructions}).compileToV0Message(tables);
   if (msg.header.numRequiredSignatures !== 1) throw Error('unexpected-signer');
   const tx = new web3.VersionedTransaction(msg);
-  if (tx.serialize().length > 1232) throw Error('transaction-too-large');
+  if (tx.serialize().length > 1232) {const e=Error('transaction-too-large');e.bytes=tx.serialize().length;throw e;}
   return tx;
 }
 
-async function build(input, injectedConnection) {
-  const user = new web3.PublicKey(input.wallet), mint = new web3.PublicKey(input.mint);
-  const quoteMint = new web3.PublicKey(input.quoteMint), poolKey = new web3.PublicKey(input.pool);
-  const tokenProgram = new web3.PublicKey(input.tokenProgram), quoteProgram = new web3.PublicKey(input.quoteProgram);
-  if (quoteMint.equals(spl.NATIVE_MINT) || quoteMint.equals(web3.PublicKey.default)) throw Error('non-native-only');
-  const amount = integer(input.amount);
-  fraction(input.slippagePercent);
+function connectionFor(input) {
   if (!Number.isSafeInteger(input.minSlot) || input.minSlot < 0) throw Error('invalid-slot');
   if (!Array.isArray(input.lookupTables) || input.lookupTables.length > 8) throw Error('invalid-tables');
-  const connection = injectedConnection || new web3.Connection(input.rpc, {
+  return new web3.Connection(input.rpc, {
     commitment:'confirmed', disableRetryOnRateLimit:true,
     // Apply the signal slot to SDK account reads as well as our own reads.
     fetchMiddleware: (url, options, next) => {
@@ -89,12 +98,80 @@ async function build(input, injectedConnection) {
       const index = {getAccountInfo:1,getMultipleAccounts:1,getProgramAccounts:1,
                      getLatestBlockhash:0,simulateTransaction:1}[body.method];
       if (index !== undefined) {
-        body.params[index] = {...body.params[index], minContextSlot:input.minSlot};
+        body.params[index] = {...body.params[index], minContextSlot:Math.max(input.minSlot,body.params[index]?.minContextSlot||0)};
         options.body = JSON.stringify(body);
       }
       next(url, options);
     }
   });
+}
+
+async function finish(connection,input,user,ixs,check) {
+  if(input.prewarm)return {warmed:true};
+  // Adjacent route adapters may request the same idempotent ATA setup. Avoid
+  // spending packet space and compute on identical create instructions.
+  const created=new Set();
+  ixs=ixs.filter(ix=>{
+    if(!ix.programId.equals(spl.ASSOCIATED_TOKEN_PROGRAM_ID)||ix.data.length!==1||ix.data[0]!==1)return true;
+    const key=ix.keys.map(k=>k.pubkey.toBase58()+':'+k.isSigner+':'+k.isWritable).join(',');
+    if(created.has(key))return false;created.add(key);return true;
+  });
+  const tables = (await Promise.all(input.lookupTables.map(async key =>
+    (await connection.getAddressLookupTable(new web3.PublicKey(key))).value))).filter(Boolean);
+  let block=await connection.getLatestBlockhash('confirmed');
+  let tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units:1400000}),...ixs],tables);
+  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:'confirmed',
+    ...(check?{accounts:{encoding:'base64',addresses:check.addresses}}:{})});
+  if (simulated.value.err || !simulated.value.unitsConsumed) throw Error('simulation-rejected');
+  if(check)check.verify(simulated.value.accounts);
+  const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*1.2));
+  block=await connection.getLatestBlockhash('confirmed');
+  tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units}),...ixs],tables);
+  return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units};
+}
+
+async function buildNative(input,injectedConnection) {
+  const user=new web3.PublicKey(input.wallet),mint=new web3.PublicKey(input.mint);
+  const tokenProgram=new web3.PublicKey(input.tokenProgram),amount=integer(input.amount);
+  if (!new web3.PublicKey(input.quoteMint).equals(spl.NATIVE_MINT)) throw Error('native-only');
+  if (![spl.TOKEN_PROGRAM_ID,spl.TOKEN_2022_PROGRAM_ID].some(p=>p.equals(tokenProgram))) throw Error('token-program');
+  fraction(input.slippagePercent);
+  const connection=injectedConnection || connectionFor(input);
+  const targetAta=spl.getAssociatedTokenAddressSync(mint,user,false,tokenProgram);
+  const accounts=await connection.getMultipleAccountsInfo([
+    mint,pump.bondingCurvePda(mint),pump.GLOBAL_PDA,pump.PUMP_FEE_CONFIG_PDA,targetAta]);
+  [tokenProgram,pump.PUMP_PROGRAM_ID,pump.PUMP_PROGRAM_ID,pump.PUMP_FEE_PROGRAM_ID].forEach((owner,i)=>{
+    if (!accounts[i] || accounts[i].executable || !accounts[i].owner.equals(owner)) throw Error('account-owner');
+  });
+  const baseMint=spl.unpackMint(mint,accounts[0],tokenProgram);safeMint(baseMint);
+  const curve=pump.PUMP_SDK.decodeBondingCurve(accounts[1]);
+  if (curve.complete || !pump.normalizeQuoteMint(curve.quoteMint).equals(spl.NATIVE_MINT))
+    throw Error('curve-graduated-or-quote-mismatch');
+  const global=pump.PUMP_SDK.decodeGlobal(accounts[2]);
+  const feeConfig=pump.PUMP_SDK.decodeFeeConfig(accounts[3]);
+  const expected=pump.getBuyTokenAmountFromSolAmount({global,feeConfig,
+    mintSupply:new BN(baseMint.supply.toString()),bondingCurve:curve,amount});
+  const {minOut}=minimums(amount,expected,input.slippagePercent);
+  const ixs=await pump.PUMP_SDK.buyInstructions({global,bondingCurveAccountInfo:accounts[1],bondingCurve:curve,
+    associatedUserAccountInfo:accounts[4],mint,user,amount:minOut,solAmount:amount,slippage:0,tokenProgram});
+  const exactIxs=ixs.map(ix=>ix.programId.equals(pump.PUMP_PROGRAM_ID)?exactNativeInstruction(ix,amount,minOut):ix);
+  return {...await finish(connection,input,user,exactIxs),wallet:user.toBase58(),mint:mint.toBase58(),
+    targetAta:targetAta.toBase58(),amount:amount.toString(),quotedOut:expected.toString(),minOut:minOut.toString(),
+    quoteIn:amount.toString(),quoteOut:amount.toString()};
+}
+
+async function build(input, injectedConnection) {
+  if (input.route==='sol_to_stonk_curve') return require('./stonk.cjs').buildStonk(input,
+    {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction});
+  if (input.route==='pump_native_curve') return buildNative(input,injectedConnection);
+  if (input.route && input.route!=='meteora_dlmm_to_pump_curve') throw Error('unknown-route');
+  const user = new web3.PublicKey(input.wallet), mint = new web3.PublicKey(input.mint);
+  const quoteMint = new web3.PublicKey(input.quoteMint), poolKey = new web3.PublicKey(input.pool);
+  const tokenProgram = new web3.PublicKey(input.tokenProgram), quoteProgram = new web3.PublicKey(input.quoteProgram);
+  if (quoteMint.equals(spl.NATIVE_MINT) || quoteMint.equals(web3.PublicKey.default)) throw Error('non-native-only');
+  const amount = integer(input.amount);
+  fraction(input.slippagePercent);
+  const connection=injectedConnection || connectionFor(input);
   const accounts = await connection.getMultipleAccountsInfo([
     mint,quoteMint,poolKey,pump.bondingCurvePda(mint),pump.GLOBAL_PDA,pump.PUMP_FEE_CONFIG_PDA]);
   const owners=[tokenProgram,quoteProgram,DLMM_ID,pump.PUMP_PROGRAM_ID,pump.PUMP_PROGRAM_ID,pump.PUMP_FEE_PROGRAM_ID];
@@ -125,6 +202,15 @@ async function build(input, injectedConnection) {
   const pumpQuote = q => pump.getBuyTokenAmountFromSolAmount({global,feeConfig,
     mintSupply:new BN(baseMint.supply.toString()),bondingCurve:curve,amount:q});
   const expected = pumpQuote(quote.outAmount);
+  const df=require('./local-routes.cjs').dlmmRisk(quote);
+  const pf=pump.computeFeesBps({global,feeConfig,mintSupply:new BN(baseMint.supply.toString()),
+    virtualQuoteReserves:curve.virtualQuoteReserves,virtualTokenReserves:curve.virtualTokenReserves,
+    quoteMint:curve.quoteMint,creatorFeeBps:curve.creatorFeeBps});
+  const bps=BigInt(pf.protocolFeeBps.add(curve.creator.equals(web3.PublicKey.default)?new BN(0):pf.creatorFeeBps).toString());
+  const quoteAmount=BigInt(quote.outAmount.toString()),effective=(quoteAmount-1n)*10000n/(10000n+bps);
+  const ideal=effective*BigInt(curve.virtualTokenReserves.toString())/BigInt(curve.virtualQuoteReserves.toString());
+  const metrics=risk.check(input,[df.fee,risk.ppm(quoteAmount-effective,quoteAmount)],
+    [df.impact,risk.impact(expected.toString(),ideal)],[df.fee,bps*100n]);
   const {quoteIn,minOut} = minimums(quote.outAmount,expected,input.slippagePercent);
   if (pumpQuote(quoteIn).lt(minOut)) throw Error('rounding-exhausts-slippage');
   const nativeAta = spl.getAssociatedTokenAddressSync(spl.NATIVE_MINT,user);
@@ -154,21 +240,12 @@ async function build(input, injectedConnection) {
     ? exactQuoteInstruction(ix,quoteIn,minOut) : ix));
   // Preserve a pre-existing wrapped SOL account and its balance.
   if (!nativeExisting) ixs.push(spl.createCloseAccountInstruction(nativeAta,user,user));
-  const tables = (await Promise.all(input.lookupTables.map(async key =>
-    (await connection.getAddressLookupTable(new web3.PublicKey(key))).value))).filter(Boolean);
-  let block = await connection.getLatestBlockhash('confirmed');
-  let tx = compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units:1400000}),...ixs],tables);
-  const simulated = await connection.simulateTransaction(tx,{sigVerify:false,commitment:'confirmed'});
-  if (simulated.value.err || !simulated.value.unitsConsumed) throw Error('simulation-rejected');
-  const units = Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*1.2));
-  block = await connection.getLatestBlockhash('confirmed');
-  tx = compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units}),...ixs],tables);
-  return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,
+  return {...await finish(connection,input,user,ixs),
     wallet:user.toBase58(),mint:mint.toBase58(),targetAta:targetAta.toBase58(),
     amount:amount.toString(),quotedOut:expected.toString(),minOut:minOut.toString(),
-    quoteIn:quoteIn.toString(),quoteOut:quote.outAmount.toString(),units};
+    quoteIn:quoteIn.toString(),quoteOut:quote.outAmount.toString(),risk:metrics};
 }
-module.exports = {build,minimums,exactQuoteInstruction,safeMint,compile};
+module.exports = {build,minimums,exactQuoteInstruction,exactNativeInstruction,safeMint,compile,connectionFor,REASONS};
 if (require.main === module) {
   let input='';
   process.stdin.setEncoding('utf8');
@@ -176,6 +253,7 @@ if (require.main === module) {
   process.stdin.on('end',async()=>{
     try {process.stdout.write(JSON.stringify(await build(JSON.parse(input))));}
     catch (error) {process.stdout.write(JSON.stringify({error:REASONS.has(error.message)
-      ? error.message : 'sdk-or-rpc-failed'}));process.exitCode=1;}
+      ? error.message : 'sdk-or-rpc-failed',
+      ...(error.message==='jupiter-rate-limited'?{retryAfter:error.retryAfter}:{})}));process.exitCode=1;}
   });
 }

@@ -1,3 +1,3 @@
-"""Atomic pre-graduation non-native Pump buys."""
+"""Pre-graduation Pump buys with native SOL or an atomic DLMM quote swap."""
 
-VENUES = ('meteora_dlmm_to_pump_curve',)
+VENUES = ('meteora_dlmm_to_pump_curve', 'pump_native_curve', 'sol_to_stonk_curve')

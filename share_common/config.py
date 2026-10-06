@@ -48,6 +48,16 @@ def percent(value):
         raise ValueError('invalid-slippage-percent') from exc
 
 
+def risk_bps(value):
+    try:
+        n = Decimal(str(value)) * 100
+        if not n.is_finite() or not 0 <= n <= 2000 or n != n.to_integral_value():
+            raise ValueError('invalid-risk-percent')
+        return int(n)
+    except InvalidOperation as exc:
+        raise ValueError('invalid-risk-percent') from exc
+
+
 def cex_load(path):
     groups = json.loads(Path(path).read_text(encoding='utf-8'))['exchanges']
     result = {}
@@ -97,6 +107,11 @@ class Config:
     grpc_endpoint: str = 'https://solana-mainnet.streaming.alchemy.com'
     public_timeout: float = 2.0
     history_rps: int = 2
+    max_pool_fee_bps: int = 200
+    max_total_fee_bps: int = 300
+    max_price_impact_bps: int = 200
+    quote_cache_ttl_ms: int = 2000
+    quote_cache_accounts: int = 512
 
     @property
     def mode(self):
@@ -176,4 +191,9 @@ def load(root=ROOT, env=None):
         grpc_endpoint=endpoint,
         public_timeout=integer('SOL_PUBLIC_RPC_TIMEOUT_MS', 2000, 100, 8000)/1000,
         history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
+        max_pool_fee_bps=risk_bps(get('SOL_MAX_POOL_FEE_PERCENT', '2')),
+        max_total_fee_bps=risk_bps(get('SOL_MAX_TOTAL_FEE_PERCENT', '3')),
+        max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),
+        quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
+        quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
     )

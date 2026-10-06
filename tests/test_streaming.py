@@ -64,6 +64,10 @@ def wire(raw):
             data=item['parsed']['info']
             target.accounts=bytes([names.index(data['source']),names.index(data['destination'])])
             target.data=struct.pack('<IQ',2,int(data['lamports']))
+        if item.get('parsed',{}).get('type')=='transferChecked':
+            data=item['parsed']['info']
+            target.accounts=bytes(names.index(data[k]) for k in ('source','mint','destination','authority'))
+            target.data=struct.pack('<BQB',12,int(data['tokenAmount']['amount']),int(data['tokenAmount']['decimals']))
         if 'stack_height' in target.DESCRIPTOR.fields_by_name and item.get('stackHeight') is not None:
             target.stack_height=item['stackHeight']
     for item in msg['instructions']:

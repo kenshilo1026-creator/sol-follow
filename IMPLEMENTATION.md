@@ -102,8 +102,8 @@ JSON 保留根目錄原檔；運行資料夾由程式建立，不以 `.gitkeep` 
 `signature、slot、block_time、instruction_path、wallet_owner、mint、side、quote_mint、quote_raw、token_raw、venue、confirmation`。
 
 2026-10-05 範圍修正：只納入 pump.fun／stonk 旗下代幣，使用者提供的兩個 mint 是辨認平台的樣本，
-不是只交易兩個 mint。發射台來源與交易 DEX 分開：來源由 `launchpads/` 核驗；目前接入 `trade_execution/` 的畢業前非 SOL quote Pump 原子買入及新買單成交核對，退出仍未接入。
-來源 gate 已完成；PumpSwap、LaunchLab、SOL quote 買入及所有賣出仍待接入。
+不是只交易兩個 mint。發射台來源與交易 DEX 分開：來源由 `launchpads/` 核驗；目前接入 `trade_execution/` 的畢業前 SOL／非 SOL quote Pump 買入及新買單成交核對，退出仍未接入。
+來源 gate 已完成；PumpSwap、LaunchLab 買入及所有賣出仍待接入。
 已接入路由的 Token-2022 公開轉帳及 creator fee 報價由 pinned SDK 與當前鏈上設定處理；不能將來源辨識成功視為可交易驗收。
 
 - 以已知 program 的 instruction 語義、必要 account 關係、CPI／inner instructions、付款與收款證據共同判定 buy/sell。

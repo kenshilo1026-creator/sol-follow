@@ -4,9 +4,9 @@
 
 目前服務啟用 CEX／Privacy Cash 原生 SOL 入金、資格檢查、SQLite hotlist、Pump／Stonk Create 解碼、
 WebSocket 即時入口、歷史補查、持久化 jobs／cursor、有限重試、finalized 入金核對、
-資料庫容量管理與 Telegram／健康統計。另啟用 Pump 畢業前非 SOL quote 的
+資料庫容量管理與 Telegram／健康統計。另啟用 Pump 畢業前原生 SOL 買入及非 SOL quote 的
 Meteora DLMM → Pump 原子買入、hotlist 計票／預留、模擬及新買單的 finalized 核對。
-`check` 與啟動通知列出 `meteora_dlmm_to_pump_curve`；DRY_RUN 只模擬，LIVE 才讀本地 keypair 簽名廣播。
+`check` 與啟動通知列出 `meteora_dlmm_to_pump_curve`／`pump_native_curve`；DRY_RUN 只模擬，LIVE 才讀本地 keypair 簽名廣播。
 賣出、止盈止損、Stonk 買入與其他交易場所仍未接入。
 
 簽名交易以 FULL durability 保存後才送出；逾時／查不到結果保留簽名及 mint 預留，不重簽重買。
@@ -14,6 +14,10 @@ DRY_RUN 保存 dry-simulated，不捏造已成交持倉；LIVE finalized 後以 
 既有其他路由訂單不修改，啟動時提示人工核對；所有賣出仍需人工管理。
 每段共用 `SOL_SLIPPAGE_PERCENT` 推導同一個最終輸出下限，不讓兩段滑點相乘。
 第一段保留半份滑點，第二段只花保證 quote，多出 quote 留在錢包。
+原生 SOL 路由以 `buy_exact_sol_in` 固定 SOL 預算並設最終 min-out；成交成本從該買入指令的實際 SOL 轉帳取值。
+參考 `471cEVk3z8NvmgGRDNtTBkoaEpKnbaAA9tLHk23Kh9aHfnJrQtUDxfRLh8cBTHqprDuRyrcQsiimzr9fpQGXvyiF`
+是同一筆交易中 4 個不同簽名者分別買入。解碼按指令隔離付款／收幣證據，不把 fee payer 當成全部買方；
+每個地址需獨立符合 hotlist 資格。先完成該交易的全部計票／預留，再執行一次跟買，避免失敗後由後續買方重觸發。
 
 ## 發射台來源
 
@@ -26,7 +30,7 @@ DRY_RUN 保存 dry-simulated，不捏造已成交持倉；LIVE finalized 後以 
 - 成功證據快取最多 4096 mint／300 秒，未找到來源 15 秒；RPC 失敗不記成不存在。
 - 来源核驗使用共用 `chain_common/accounts.py`，不依賴任何交易 adapter。
 - `features.probe --mint` 可唯讀核驗來源；Create tx 已支援，見 [四個主網樣本與 ABI 範圍](create-tx-decoding.md)。
-  支援上述畢業前非 SOL quote Pump 買入；PumpSwap、LaunchLab、SOL quote 買入及賣出仍待實作。
+  支援上述畢業前 SOL／非 SOL quote Pump 買入；PumpSwap、LaunchLab 買入及賣出仍待實作。
 
 來源規格：[Pump 官方文件](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_PROGRAM_README.md)、
 [LaunchLab layout](https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/layout.ts)、
@@ -52,5 +56,38 @@ Pump／Stonk SOL 與非 SOL Create、CPI、四個主網樣本、重播／最終�
 Node 測試使用 pinned Pump／Meteora SDK 驗證指令帳戶、滑點、lookup table、1232-byte 限制及完整組單。
 `pump_route_accounts.json` 是公開帳戶快照；離線測試明確把已畢業曲線改成合成未畢業狀態，RPC 模擬回覆也是測試替身。
 2026-10-05 主網唯讀 probe 確認參考 EM 曲線已畢業，正確拒絕；沒有聲稱主網買入模擬或成交成功。
+原生 SOL 的 4 買方參考也已加入 fixture、解碼／隔離／計票回歸及 SDK 組單測試；唯讀 probe 時曲線亦已畢業，拒絕買入。
 以當前 pytest／npm test 輸出為準；不代表實盤成交驗收。
 Privacy Cash 公開 fixture 仍驗證收款人收到 29.889 SOL（pool 減少 30 SOL、fee 0.111 SOL）。
+
+
+## Stonk non-SOL copy-buy, 2026-10-05
+
+The reference transaction buys Stompy with DJT obtained from a Jupiter/Orca USDC swap.
+The observed funding asset does not replace the configured SOL budget. After the existing
+hotlist N/W threshold, a fresh SOL-to-quote Jupiter v2 build is followed by a locally
+constructed LaunchLab BuyExactIn in one transaction. Only Whirlpool and Meteora DLMM
+are requested/accepted for the first leg; no additional trading venue implementation is added.
+No sample nonce, priority bid, relay tip, referral fee, wallet or transaction bytes are copied.
+Jupiter uses keyless access with no authentication header or credential configuration.
+The official documentation lists a 0.5 RPS keyless limit. A shared Python gate serializes
+Stonk builders within each service event loop and spaces completion-to-start by two seconds,
+so fresh Node subprocesses cannot bypass the limit. Separate processes and other traffic
+sharing the IP are outside this local gate. A 429 starts a Retry-After cooldown (60 seconds
+if unavailable); long cooldowns reject fresh builds rather than queue stale signals.
+Pump builders bypass this gate. Signed transactions are sent only through the configured public RPC.
+
+Only the proven Stonk platform, derived pool/vaults, current constant-curve state and current
+protocol/platform/creator rates are used. Target Token-2022 transfer fees are subtracted before
+applying the end-to-end slippage bound; LaunchLab receives a net minimum, as in its official SDK.
+Quote-token transfer fees remain unsupported. A bounded first-hop minimum funds the second leg;
+excess quote stays in the wallet. Simulation checks net target gain and preservation of existing
+quote/intermediate token balances and authorities. The existing durable sign/send/reconcile path
+remains responsible for deduplication and finalized fills.
+
+Sources: https://developers.jup.ag/docs/llms.txt ; https://developers.jup.ag/docs/swap/build ;
+https://github.com/raydium-io/raydium-sdk-V2/tree/master/src/raydium/launchpad ;
+https://github.com/raydium-io/raydium-idl/blob/master/raydium_launchpad/raydium_launchpad.json .
+The actual sample and read-only account snapshot are fixtures. Its pool is now graduated;
+tests reconstruct historical pre-trade reserves and mock first-hop routing/simulation explicitly.
+No live order or mainnet atomic simulation has been claimed from those offline tests.

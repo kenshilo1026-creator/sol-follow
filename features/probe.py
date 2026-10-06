@@ -10,7 +10,7 @@ from features.funding.decoder import decode as funding
 from share_common.config import load
 from launchpads import LaunchpadScope, pump_fun
 from launchpads.create import inspect as inspect_creates
-from trade_execution.route import decode as decode_buy_route
+from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.builder import build, BuildError
 
 
@@ -37,12 +37,13 @@ async def probe(args):
                     continue
                 tx=Tx(raw)
                 creation=inspect_creates(tx)
-                route=decode_buy_route(tx)
+                routes=decode_buy_routes(tx)
                 result={'signature':sig,'version':raw.get('version'),'funding':[f.dict() for f in funding(tx,config)],
                         'creates':[item.dict() for item in creation.creates],'create_rejections':creation.rejected,
-                        'trades':[route.trade.__dict__] if route else [],
-                        'route_status':'meteora_dlmm_to_pump_curve' if route else 'unsupported'}
-                if args.buy_route and route:
+                        'trades':[r.trade.__dict__ for r in routes],
+                        'route_status':list(dict.fromkeys(r.kind for r in routes)) or ['unsupported']}
+                if args.buy_route and routes:
+                    route=routes[0]
                     built=await build(config,route,config.wallet_address or route.trade.wallet)
                     result['buy_simulation']={k:v for k,v in built.items() if k!='transaction'}
                 if args.raw:

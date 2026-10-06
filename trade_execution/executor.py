@@ -7,6 +7,7 @@ from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from trade_execution.builder import build
+from trade_execution.native import decode_native
 
 MARKER = 'atomic-pump-buy-v1'
 
@@ -128,7 +129,9 @@ class Executor:
                 if tokens<int(row['min_out']):
                     self.notices.emit('buy fill requires review',{'order':row['id']},alert=True,key='fill-review:'+row['id'])
                     continue
-                if self.store.fill(row['id'],tokens,int(row['amount'])):
+                native=[r for r in decode_native(tx) if r.trade.wallet==wallet and r.trade.mint==row['mint']]
+                quote=native[0].trade.quote if len(native)==1 else int(row['amount'])
+                if self.store.fill(row['id'],tokens,quote):
                     self.notices.emit('buy finalized',{'order':row['id'],'signature':row['signature'],'tokens':tokens},alert=True)
             elif status and status.get('err') is None and status.get('confirmationStatus')=='confirmed':
                 self.store.update_order(row['id'],state='confirmed')

@@ -16,8 +16,9 @@ from launchpads import ENABLED, pump_fun, stonk
 from launchpads.create import inspect as inspect_creates, SUPPORTED as CREATE_DECODERS
 from share_common.notify import Notices
 from share_common.metrics import Metrics
+from trade_execution.cache import CachedBuilder
 from trade_execution import VENUES
-from trade_execution.route import decode as decode_buy_route
+from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.executor import Executor, MARKER
 
 
@@ -32,6 +33,7 @@ class Service:
         self.last_pending=0
         self.growing=0
         self.metrics=Metrics()
+        self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
 
     async def qualify(self,item,rpc):
         if not Pubkey.from_string(item.wallet).is_on_curve():
@@ -82,6 +84,8 @@ class Service:
         self.metrics.add('decode',time.monotonic()-parse_started)
         for item in funding_items:
             await self.qualify(item,rpc)
+        for item in creation.creates:
+            self.quote_builder.observe_create(item)
         for item in self.store.record_creates(creation.creates):
             self.notices.emit('launchpad-create',item.dict())
         if creation.rejected:
@@ -89,14 +93,20 @@ class Service:
                               key='create-rejected',interval=60)
         if self.config.remaining:
             self.signals.observe_holdings(tx)
-        route=decode_buy_route(tx)
-        if route:
+        routes=decode_buy_routes(tx)
+        # Reserve before awaiting execution, so a failed first attempt cannot
+        # cause another buyer in this same signature to trigger a second buy.
+        pending=[]
+        for route in routes:
+            self.quote_builder.observe(route)
             oid=self.signals.observe(route.trade)
             if oid:
-                executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
-                await executor.buy(oid,route)
+                pending.append((oid,route))
+        for oid,route in pending:
+            executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
+            await executor.buy(oid,route)
         relevant_programs={pump_fun.PROGRAM,pump_fun.SWAP_PROGRAM,stonk.PROGRAM}
-        if not route and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
+        if not routes and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
             self.notices.emit('unsupported buy route; no vote',{'signature':tx.signature},
                               key='unsupported-route',interval=60)
         self.store.job_result(row['signature'],'done','processed',tx.slot)
@@ -167,7 +177,7 @@ class Service:
                     'new_jobs':self.store.new_jobs,'revisited_jobs':self.store.revisited_jobs,
                     'ws_received':discovery.received,'ws_new_jobs':discovery.added,'ws_connected':discovery.connected,
                     'subscribed':len(discovery.subscribed),'rpc_calls':rpc.calls,'rpc_429':rpc.limited,
-                    'timing':self.metrics.snapshot(),
+                    'timing':self.metrics.snapshot(),'quote_cache':self.quote_builder.stats,
                     'oldest_s':round(time.time()-rows['oldest']) if rows['oldest'] else 0}
             if hasattr(self,'hotlist_feed'):
                 feed=self.hotlist_feed
@@ -202,7 +212,7 @@ class Service:
             if grpc_mode:
                 from features.funding.grpc_feed import HotlistFeed
                 self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
-            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority)
+            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder)
             self.executor.recover_unsigned()
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
@@ -214,11 +224,14 @@ class Service:
                 'create_decoders':CREATE_DECODERS,
                 'hotlist_feed':self.config.feed_mode,'http_policy':'configured-public-only',
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
-            async with asyncio.TaskGroup() as group:
-                coroutines=[self.notices.run(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
-                                  Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                  self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
-                if grpc_mode:
-                    coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True)])
-                for coroutine in coroutines:
-                    group.create_task(coroutine)
+            try:
+                async with asyncio.TaskGroup() as group:
+                    coroutines=[self.quote_builder.warm(),self.notices.run(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
+                                      Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
+                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
+                    if grpc_mode:
+                        coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True)])
+                    for coroutine in coroutines:
+                        group.create_task(coroutine)
+            finally:
+                await self.quote_builder.close()

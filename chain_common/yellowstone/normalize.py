@@ -4,7 +4,7 @@ Block time comes from block metadata (or a bounded public RPC read), never the
 provider's delivery timestamp. Preserve v1 budget config, ALT keys and CPI depth.
 """
 import struct
-from chain_common.primitives import b58encode, SYSTEM
+from chain_common.primitives import b58encode, SYSTEM, TOKEN, TOKEN_2022
 from chain_common.transaction import Unsupported
 
 
@@ -47,6 +47,11 @@ def normalize(update, block_time=None):
         if program == SYSTEM and len(raw) == 12 and len(accounts) == 2 and raw[:4] == b'\x02\x00\x00\x00':
             result['parsed'] = {'type':'transfer','info':{'source':accounts[0],
                 'destination':accounts[1],'lamports':struct.unpack_from('<Q',raw,4)[0]}}
+        if program in (TOKEN, TOKEN_2022) and len(raw) == 10 and raw[0] == 12 and len(accounts) >= 4:
+            amount = struct.unpack_from('<Q', raw, 1)[0]
+            result['parsed'] = {'type':'transferChecked','info':{
+                'source':accounts[0], 'mint':accounts[1], 'destination':accounts[2],
+                'authority':accounts[3], 'tokenAmount':{'amount':str(amount),'decimals':raw[9]}}}
         return result
 
     message = dict(accountKeys=keys, recentBlockhash=_key(msg.recent_blockhash),

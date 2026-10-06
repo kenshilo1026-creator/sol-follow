@@ -7,6 +7,11 @@ import time
 import uuid
 
 FUNDING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS seen_non_sol(mint TEXT PRIMARY KEY, request TEXT NOT NULL,
+ wallet TEXT NOT NULL, seen REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS seen_non_sol_recent ON seen_non_sol(seen);
+CREATE TABLE IF NOT EXISTS seen_quote_mints(mint TEXT PRIMARY KEY, program TEXT NOT NULL, seen REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS quote_recipes(mint TEXT PRIMARY KEY, recipe TEXT NOT NULL, updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS funding(event TEXT PRIMARY KEY, signature TEXT, wallet TEXT,
  source TEXT, provider TEXT, amount TEXT, slot INTEGER, time INTEGER, expires INTEGER);
 CREATE INDEX IF NOT EXISTS funding_wallet_time ON funding(wallet,time);

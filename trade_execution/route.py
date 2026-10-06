@@ -17,9 +17,10 @@ class Route:
     quote_program: str
     dlmm_pool: str
     lookup_tables: tuple
+    kind: str = 'meteora_dlmm_to_pump_curve'
 
     def request(self):
-        return dict(mint=self.trade.mint, quoteMint=self.quote_mint,
+        return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
                     tokenProgram=self.token_program, quoteProgram=self.quote_program,
                     pool=self.dlmm_pool, lookupTables=list(self.lookup_tables), minSlot=self.trade.slot)
 
@@ -73,3 +74,11 @@ def decode(tx):
     return Route(Trade(f'{tx.signature}:{i}',tx.signature,tx.slot,tx.time,wallet,mint,'buy',
                        amount,target[2]-before[2],target[2],a[10]),
                  quote,base_program,quote_program,pool,lookups)
+
+
+def decode_all(tx):
+    from trade_execution.native import decode_native
+    from trade_execution.stonk import decode_stonk
+    routes=decode_native(tx)
+    non_native=decode(tx)
+    return routes+([non_native] if non_native else [])+decode_stonk(tx)
