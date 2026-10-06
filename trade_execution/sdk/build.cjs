@@ -21,7 +21,7 @@ const REASONS = new Set(['invalid-integer','invalid-u64','invalid-percent','dust
   'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
   'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
   'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit',
-  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected']);
+  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority']);
 
 function integer(v) {
   if (!/^[0-9]+$/.test(String(v))) throw Error('invalid-integer');
@@ -91,14 +91,16 @@ function connectionFor(input) {
   if (!Number.isSafeInteger(input.minSlot) || input.minSlot < 0) throw Error('invalid-slot');
   if (!Array.isArray(input.lookupTables) || input.lookupTables.length > 8) throw Error('invalid-tables');
   return new web3.Connection(input.rpc, {
-    commitment:'confirmed', disableRetryOnRateLimit:true,
+    commitment:input.commitment||'confirmed', disableRetryOnRateLimit:true,
+    ...(input.ws?{wsEndpoint:input.ws}:{}),
+    fetch:(url,options)=>fetch(url,{...options,signal:AbortSignal.timeout(8000)}),
     // Apply the signal slot to SDK account reads as well as our own reads.
     fetchMiddleware: (url, options, next) => {
       const body = JSON.parse(options.body);
       const index = {getAccountInfo:1,getMultipleAccounts:1,getProgramAccounts:1,
-                     getLatestBlockhash:0,simulateTransaction:1}[body.method];
+                     getLatestBlockhash:0,getEpochInfo:0,simulateTransaction:1}[body.method];
       if (index !== undefined) {
-        body.params[index] = {...body.params[index], minContextSlot:Math.max(input.minSlot,body.params[index]?.minContextSlot||0)};
+        body.params[index] = {...body.params[index], commitment:input.commitment||'confirmed', minContextSlot:Math.max(input.minSlot,body.params[index]?.minContextSlot||0)};
         options.body = JSON.stringify(body);
       }
       next(url, options);
@@ -107,7 +109,6 @@ function connectionFor(input) {
 }
 
 async function finish(connection,input,user,ixs,check) {
-  if(input.prewarm)return {warmed:true};
   // Adjacent route adapters may request the same idempotent ATA setup. Avoid
   // spending packet space and compute on identical create instructions.
   const created=new Set();
@@ -118,14 +119,14 @@ async function finish(connection,input,user,ixs,check) {
   });
   const tables = (await Promise.all(input.lookupTables.map(async key =>
     (await connection.getAddressLookupTable(new web3.PublicKey(key))).value))).filter(Boolean);
-  let block=await connection.getLatestBlockhash('confirmed');
+  if(input.prewarm)return {warmed:true};
+  const block=await connection.getLatestBlockhash(input.commitment||'confirmed');
   let tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units:1400000}),...ixs],tables);
-  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:'confirmed',
+  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',
     ...(check?{accounts:{encoding:'base64',addresses:check.addresses}}:{})});
   if (simulated.value.err || !simulated.value.unitsConsumed) throw Error('simulation-rejected');
   if(check)check.verify(simulated.value.accounts);
   const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*1.2));
-  block=await connection.getLatestBlockhash('confirmed');
   tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units}),...ixs],tables);
   return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units};
 }

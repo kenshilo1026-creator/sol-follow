@@ -51,12 +51,13 @@ def decode_native(tx):
             continue
         # A transfer can change the end balance; retain it separately for the
         # existing 'remaining position' gate instead of counting it as a buy.
-        candidates.append((index,mint,wallet,program,curve,spent,received,post[2]))
+        candidates.append((index,mint,wallet,program,curve,spent,received,post[2],first if raw[:8]==EXACT else second,
+                           'exact-input-budget' if raw[:8]==EXACT else 'maximum-input-budget'))
     counts=Counter((r[1],r[2]) for r in candidates)
     tables=tuple(row['accountKey'] for row in tx.raw['transaction']['message'].get('addressTableLookups',[]))
     if len(tables)>8:
         return []
     return [Route(Trade(f'{tx.signature}:{i}',tx.signature,tx.slot,tx.time,wallet,mint,'buy',spent,received,remaining,curve),
-                  WSOL,program,TOKEN,'',tables,'pump_native_curve')
-            for i,mint,wallet,program,curve,spent,received,remaining in candidates
+                  WSOL,program,TOKEN,'',tables,'pump_native_curve',observed_amount=budget,observed_mint=WSOL,observed_kind=kind)
+            for i,mint,wallet,program,curve,spent,received,remaining,budget,kind in candidates
             if counts[mint,wallet]==1]

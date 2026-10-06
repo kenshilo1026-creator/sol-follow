@@ -7,6 +7,10 @@ import time
 import uuid
 
 FUNDING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS processed_signals(signature TEXT PRIMARY KEY, slot INTEGER NOT NULL,
+ seen REAL NOT NULL, live INTEGER NOT NULL, state TEXT NOT NULL, due REAL NOT NULL, reason TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS processed_due ON processed_signals(state,due);
+CREATE TABLE IF NOT EXISTS dead_slots(slot INTEGER PRIMARY KEY, time REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS seen_non_sol(mint TEXT PRIMARY KEY, request TEXT NOT NULL,
  wallet TEXT NOT NULL, seen REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS seen_non_sol_recent ON seen_non_sol(seen);
@@ -37,6 +41,8 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS order_sources(order_id TEXT, signature TEXT, slot INTEGER,
+ PRIMARY KEY(order_id,signature));
 CREATE TABLE IF NOT EXISTS events(event TEXT PRIMARY KEY, time INTEGER, signature TEXT);
 CREATE INDEX IF NOT EXISTS events_time ON events(time);
 CREATE TABLE IF NOT EXISTS votes(mint TEXT, wallet TEXT, time INTEGER, slot INTEGER,
@@ -171,6 +177,21 @@ class Store:
                 c.execute('DELETE FROM stream_payloads WHERE signature=?', (sig,))
             c.commit()
 
+    def finish_processed(self, signature, reason, slot):
+        with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
+            c.execute("UPDATE jobs SET state='done',reason=?,slot=? WHERE signature=? AND reason!='confirmed-follow-up'",
+                      (reason,slot,signature))
+            c.execute('DELETE FROM stream_payloads WHERE signature=?',(signature,))
+            c.commit()
+
+    def reject_vote(self, trade):
+        with self.db('trading') as c:
+            c.execute('BEGIN IMMEDIATE')
+            c.execute('INSERT OR IGNORE INTO events VALUES (?,?,?)',(trade.event,trade.time,trade.signature))
+            c.execute('DELETE FROM votes WHERE mint=? AND wallet=? AND slot<=?',(trade.mint,trade.wallet,trade.slot))
+            c.commit()
+
     def stream_state(self, name, default=None):
         rows = self.rows('funding', 'SELECT value FROM stream_state WHERE name=?', (name,))
         return json.loads(rows[0]['value']) if rows else default
@@ -187,6 +208,9 @@ class Store:
             now = time.time()
             added = c.execute("INSERT OR IGNORE INTO jobs(signature,state,first_seen,due,slot) VALUES (?,'pending',?,?,?)",
                               (sig,now,now,raw['slot'])).rowcount
+            if raw.get('_stream',{}).get('commitment')=='processed':
+                from features.funding.processed import Processed
+                Processed.record(c,raw,now)
             state = c.execute('SELECT state FROM jobs WHERE signature=?',(sig,)).fetchone()['state']
             if state == 'pending':
                 c.execute('INSERT OR REPLACE INTO stream_payloads VALUES (?,?)',(sig,json.dumps(raw)))
@@ -269,7 +293,7 @@ class Store:
             c.commit()
         return bool(new)
 
-    def reserve(self, config, mint, pool, amount, side='buy', rule_id=''):
+    def reserve(self, config, mint, pool, amount, side='buy', rule_id='', sources=()):
         key = f'{config.strategy}:{config.mode}:{mint}'
         oid = uuid.uuid4().hex
         with self.db('trading') as c:
@@ -286,6 +310,8 @@ class Store:
             c.execute('INSERT INTO orders(id,signal_key,mode,mint,pool,side,state,amount,created,updated,rule_id) '
                       "VALUES (?,?,?,?,?,?,'reserved',?,?,?,?)",
                       (oid, key, config.mode, mint, pool, side, str(amount), now, now, rule_id))
+            c.executemany('INSERT OR IGNORE INTO order_sources VALUES (?,?,?)',
+                          [(oid,r['signature'],r['slot']) for r in sources])
             c.commit()
         return oid
 

@@ -14,6 +14,7 @@ class Unsupported(ValueError):
 @dataclass
 class Tx:
     raw: dict
+    observed_at: float | None = None
 
     def __post_init__(self):
         r = self.raw
@@ -21,9 +22,16 @@ class Tx:
             raise Unsupported('unsupported-version')
         if not r.get('meta') or r['meta'].get('err') is not None:
             raise Unsupported('failed-or-missing-meta')
-        if not isinstance(r.get('blockTime'), int) or r['blockTime'] <= 0:
-            raise Unsupported('block-time-unavailable')
-        self.slot, self.time = int(r['slot']), r['blockTime']
+        stamp = r.get('blockTime')
+        self.time_source = 'chain'
+        if not isinstance(stamp, int) or stamp <= 0:
+            if self.observed_at is None or not self.observed_at > 0:
+                raise Unsupported('block-time-unavailable')
+            # Only Service's validated live-processed path supplies this value.
+            # Keep raw.blockTime null: receipt time is never persisted as chain time.
+            stamp = int(self.observed_at)
+            self.time_source = 'stream-receipt'
+        self.slot, self.time = int(r['slot']), stamp
         msg = r['transaction']['message']
         self.signature = r['transaction']['signatures'][0]
         self.keys = [k['pubkey'] if isinstance(k, dict) else k for k in msg['accountKeys']]

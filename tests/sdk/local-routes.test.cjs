@@ -100,3 +100,39 @@ test('real DLMM snapshot builds the direct cached SOL-DJT route and Stonk packet
   assert.equal(result.quoteOut,fixture.expected);
   await assert.rejects(build({...input,risk:{poolFeeBps:0,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
 });
+
+
+test('source cap values real non-SOL routes entirely from warmed snapshots',async t=>{
+  const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
+  const {quoteLimit}=require('../../trade_execution/sdk/observed-buy.cjs');
+  let now=snapshot.timestamp;t.mock.method(Date,'now',()=>now);
+  const user=web3.Keypair.generate().publicKey,{connection,rows}=fixtureConnection(user);
+  const cache=new AccountCache(connection,{refreshMs:999999,commitment:'processed'});t.after(()=>cache.close());
+  const slot=snapshot.epoch.absoluteSlot;
+  for(const [k,row] of Object.entries(rows))cache.record(k,row,slot);
+  cache.misc.set('epoch',{at:now,value:snapshot.epoch});
+  const input={route:'sol_to_stonk_curve',wallet:user.toBase58(),quoteMint:snapshot.recipe.steps.at(-1).outputMint,
+    limitAmount:'5000000000',minLiquidity:'0',swapRecipe:snapshot.recipe};
+  // Warm missing tick-array sentinels, then make EVERY network function throw.
+  const warm=await quoteLimit(input,cache.view(slot));
+  for(const name of Object.keys(connection))if(typeof connection[name]==='function')connection[name]=async()=>{throw Error('network-forbidden');};
+  const quoted=await quoteLimit(input,cache.view(slot,true));
+  assert.equal(quoted.quoteLimit,warm.quoteLimit);assert(BigInt(quoted.quoteLimit)>0n);
+  now+=2001;
+  await assert.rejects(quoteLimit(input,cache.view(slot,true)),/price-cache-miss/);
+});
+
+test('foreground cold discovery never waits on paused background discovery',async()=>{
+  let release,entered;
+  const waiting=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+  const args={user:web3.Keypair.generate().publicKey,quoteMint:web3.Keypair.generate().publicKey,
+    quoteAta:web3.Keypair.generate().publicKey,amount:1000n,slippageBps:200,connection:{},
+    background:true,waitForBackground:async()=>{entered();await gate;}};
+  const warm=jupiter.buildHop(args,async()=>{throw Error('fixture-end');});
+  const completed=assert.rejects(warm,/jupiter-build-failed/);
+  await waiting;
+  try{
+    await assert.rejects(jupiter.buildHop({...args,background:false}),/price-cache-miss/);
+    await assert.rejects(jupiter.buildHop({...args,quoteMint:web3.Keypair.generate().publicKey,background:false}),/price-cache-miss/);
+  }finally{release();await completed;}
+});

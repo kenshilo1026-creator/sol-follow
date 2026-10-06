@@ -83,9 +83,9 @@ def child_environment():
 
 
 def payload_for(config, request, wallet):
-    return {**request, 'rpc':config.rpc, 'wallet':wallet,
+    return {**request, 'rpc':config.rpc, 'ws':config.ws, 'wallet':wallet,
             'amount':str(config.buy_amount), 'slippagePercent':format(config.slippage_percent,'f'),
-            'minLiquidity':str(config.min_liquidity),
+            'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
             'risk':{'poolFeeBps':config.max_pool_fee_bps, 'totalFeeBps':config.max_total_fee_bps,
                     'impactBps':config.max_price_impact_bps}}
 

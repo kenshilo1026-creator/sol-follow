@@ -25,7 +25,8 @@ def main():
                           'pending_routes':['pump_swap_buy_sell','stonk_native_buy','all_sell_routes','other_quote_swap_venues'],
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
-                          'hotlist_feed':config.feed_mode,'alchemy_key_configured':bool(config.alchemy_key),
+                          'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,
+                          'max_target_buy_lamports':config.max_observed_buy,'alchemy_key_configured':bool(config.alchemy_key),
                           'http_policy':'configured-public-only','background_rpc_rps':config.history_rps,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return

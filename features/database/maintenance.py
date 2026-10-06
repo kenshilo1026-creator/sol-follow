@@ -9,7 +9,7 @@ def usage(store):
 
 
 def batch(store, name, table, where, params, limit=128):
-    allowed={'audit','jobs','hotlist','funding','events','votes','launch_creates','block_times'}
+    allowed={'audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
     start=time.monotonic()
@@ -37,6 +37,8 @@ class Maintenance:
         deleted=0
         tasks=[('audit','audit','time<?',(now-cfg.audit_retention,)),
                ('funding','block_times','time<?',(now-cfg.backfill_age*2,)),
+               ('funding','processed_signals','seen<?',(now-max(cfg.backfill_age*2,86400),)),
+               ('funding','dead_slots','time<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','jobs',"state IN ('done','expired') AND first_seen<?",(now-max(cfg.backfill_age*2,86400),)),
                ('funding','hotlist','expires<?',(now,)),
                ('funding','funding','expires<? AND signature NOT IN (SELECT signature FROM chain_checks)',(now-cfg.window,)),

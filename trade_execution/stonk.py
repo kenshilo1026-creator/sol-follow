@@ -22,6 +22,10 @@ class StonkRoute:
     quote_program: str
     lookup_tables: tuple
     kind: str = 'sol_to_stonk_curve'
+    observed_amount: int = 0
+    observed_mint: str = ''
+    observed_kind: str = 'exact-input-budget'
+    funding_sol_limit: int = 0
 
     def request(self):
         return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
@@ -74,11 +78,11 @@ def decode_stonk(tx):
         # wallet/mint are rejected below because balance deltas cannot split them.
         if not (0 < paid <= limit and 0 < net <= received and net >= minimum):
             continue
-        candidates.append((index, wallet, mint, quote, a[11], a[12], a[4], paid, net, post[2]))
+        candidates.append((index, wallet, mint, quote, a[11], a[12], a[4], paid, net, post[2], limit))
     tables = tuple(r['accountKey'] for r in tx.raw['transaction']['message'].get('addressTableLookups', []))
     if len(tables) > 8:
         return []
     return [StonkRoute(Trade(f'{tx.signature}:{i}', tx.signature, tx.slot, tx.time,
-                            wallet, mint, 'buy', paid, net, remaining, pool), quote, base_program, quote_program, tables)
-            for i, wallet, mint, quote, base_program, quote_program, pool, paid, net, remaining in candidates
+                            wallet, mint, 'buy', paid, net, remaining, pool), quote, base_program, quote_program, tables, observed_amount=limit, observed_mint=quote)
+            for i, wallet, mint, quote, base_program, quote_program, pool, paid, net, remaining, limit in candidates
             if identities[wallet, mint] == 1]

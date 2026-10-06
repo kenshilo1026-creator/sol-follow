@@ -10,6 +10,8 @@ from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
 from features.funding.discovery import Discovery
+from features.funding.processed import Processed
+from trade_execution.observed_buy import check as check_observed_buy
 from features.database.maintenance import Maintenance
 from features.database.storage import Store
 from launchpads import ENABLED, pump_fun, stonk
@@ -29,6 +31,7 @@ class Service:
         self.notices=Notices(config,self.store)
         self.priority=Priority()
         self.signals=Signals(self.store,config)
+        self.proofs=Processed(self.store)
         self.completed=self.expired=self.received=0
         self.last_pending=0
         self.growing=0
@@ -56,7 +59,7 @@ class Service:
         raw=self.store.stream_payload(row['signature'])
         if raw is None:
             raw=await rpc.transaction(row['signature'])
-        elif raw.get('blockTime') is None:
+        elif raw.get('blockTime') is None and raw.get('_stream',{}).get('commitment')!='processed':
             stamp=self.store.block_time(raw['slot'])
             if stamp is None:
                 stamp=await rpc.call('getBlockTime',[raw['slot']])
@@ -70,7 +73,13 @@ class Service:
             self.completed+=1
             return
         parse_started=time.monotonic()
-        tx=Tx(raw)
+        processed=raw.get('_stream',{}).get('commitment')=='processed'
+        proof=self.proofs.row(row['signature']) if processed else None
+        if processed and (not proof or proof['state']!='pending' or not self.proofs.usable(row['signature'],slot=raw['slot'])):
+            self.store.finish_processed(row['signature'],'processed-not-live-or-invalid',raw['slot'])
+            self.completed+=1
+            return
+        tx=Tx(raw,observed_at=proof['seen'] if proof else None)
         if tx.signature!=row['signature']:
             raise ValueError('transaction-signature-mismatch')
         if tx.time>time.time()+30:
@@ -79,14 +88,14 @@ class Service:
             self.store.job_result(row['signature'],'expired','chain-time-outside-coverage',tx.slot)
             self.expired+=1
             return
-        funding_items=funding_decode(tx,self.config)
+        funding_items=[] if processed else funding_decode(tx,self.config)
         creation=inspect_creates(tx)
         self.metrics.add('decode',time.monotonic()-parse_started)
         for item in funding_items:
             await self.qualify(item,rpc)
         for item in creation.creates:
             self.quote_builder.observe_create(item)
-        for item in self.store.record_creates(creation.creates):
+        for item in ([] if processed else self.store.record_creates(creation.creates)):
             self.notices.emit('launchpad-create',item.dict())
         if creation.rejected:
             self.notices.emit('create instruction rejected',{'signature':tx.signature,'rejected':creation.rejected},
@@ -99,7 +108,18 @@ class Service:
         pending=[]
         for route in routes:
             self.quote_builder.observe(route)
-            oid=self.signals.observe(route.trade)
+            # Confirmed recovery may refresh identities/funding, never initiate a late buy.
+            if self.config.hotlist_commitment=='processed' and not processed:
+                continue
+            trade=route.trade
+            if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
+                    and self.proofs.usable(trade.signature,slot=trade.slot)):
+                allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
+                if not allowed:
+                    self.signals.reject(trade)
+                    self.notices.emit('target buy skipped',{'signature':trade.signature,**detail})
+                    continue
+            oid=self.signals.observe(trade)
             if oid:
                 pending.append((oid,route))
         for oid,route in pending:
@@ -109,7 +129,10 @@ class Service:
         if not routes and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
             self.notices.emit('unsupported buy route; no vote',{'signature':tx.signature},
                               key='unsupported-route',interval=60)
-        self.store.job_result(row['signature'],'done','processed',tx.slot)
+        if processed:
+            self.store.finish_processed(row['signature'],'processed-provisional',tx.slot)
+        else:
+            self.store.job_result(row['signature'],'done','processed',tx.slot)
         self.completed+=1
 
     async def worker(self,rpc,streamed=None):
@@ -212,7 +235,7 @@ class Service:
             if grpc_mode:
                 from features.funding.grpc_feed import HotlistFeed
                 self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
-            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder)
+            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
             self.executor.recover_unsigned()
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
@@ -222,7 +245,8 @@ class Service:
             self.notices.emit('service started',{'mode':self.config.mode,'cex_sources':len(self.config.cex),
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
                 'create_decoders':CREATE_DECODERS,
-                'hotlist_feed':self.config.feed_mode,'http_policy':'configured-public-only',
+                'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
+                'max_target_buy_sol':self.config.max_observed_buy/1_000_000_000,'http_policy':'configured-public-only',
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
@@ -230,7 +254,8 @@ class Service:
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
                                       self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
                     if grpc_mode:
-                        coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True)])
+                        coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
+                            self.proofs.run(self.background_rpc,self.signals,self.notices,self.config.backfill_age)])
                     for coroutine in coroutines:
                         group.create_task(coroutine)
             finally:

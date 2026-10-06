@@ -104,11 +104,28 @@ Stonk 回歸樣本：`2R6jsVXbZN2CRN59VwHysxgadAgropybVwk7ou2DQYjDLJ74CFqgf7cmMh
 不必等 hotlist 票數達標。`funding.sqlite3` 的 `seen_non_sol`、`seen_quote_mints`、`quote_recipes`
 不按 TTL 清除；啟動時亦匯入仍保留在資料庫的歷史 Create。它們是身分／路徑提示，不是價格、資格證據或已簽交易。
 
-常駐 Node 程序保留 SDK 及最多 `SOL_QUOTE_CACHE_ACCOUNTS=512` 個活躍帳戶，
-公共 RPC account 訂閱配合每秒最多一批 100 帳戶刷新。每次讀取必須在 `SOL_QUOTE_CACHE_TTL_MS=2000`
-內且 context slot 不早於訊號交易；過期、slot 落後、斷線時重新讀取，讀取失敗便拒絕建單。
-背景預熱佇列最多 128 個，重啟預熱最近 32 個；舊代幣的資料仍永久保留，但冷門代幣再次出現可能需要刷新。
-沒有把所有曾見過的地址永久訂閱，也沒有改用 Alchemy HTTP。health 的 `quote_cache` 顯示 hits／misses／accounts。
+常駐 Node 程序保留 SDK 及最多 `SOL_QUOTE_CACHE_ACCOUNTS=512` 個活躍帳戶。
+帳戶及 ALT 使用 `SOL_SOURCE_WS_URL` 的公共 WebSocket 更新，不再定時 HTTP 刷新帳戶。
+首次讀取、斷線恢復、快取淘汰或資料 slot 落後訊號時，才按需 HTTP 補查。
+`SOL_QUOTE_CACHE_TTL_MS=2000` 限制未取得連續訂閱覆蓋的快照及 WebSocket 心跳時效；
+訂閱已確認、初始快照完整且連線健康時，未變動帳戶可以繼續使用。心跳不會提升帳戶資料 slot，
+池資料仍須不早於訊號交易。斷線或 processed 分叉失效會清除快取，補查失敗則拒絕建單。
+ALT 同樣訂閱更新；停用的表拒絕使用，新增地址須遵守下一 slot 才可用的限制。
+
+`getLatestBlockhash` 使用共用背景快取，預設 `SOL_BLOCKHASH_REFRESH_MS=1000`、
+`SOL_BLOCKHASH_CACHE_TTL_MS=5000`；同一建單的兩次模擬共用同一 hash。
+買入不因 hash 缺失而即時查 RPC；快取過期、距觀察到的 slot 超過 32 或失效便拒絕該次建單。
+背景 blockhash HTTP 更新仍保留；取消的是帳戶的定時 HTTP 輪詢。
+
+交易期間，歷史補查、預熱、Jupiter 背景尋路、訂單對帳及 blockhash 更新會暫停發起新請求。
+已送出的請求可以完成，WebSocket 更新繼續接收。Node 建單完成後，退避持續至 Python 模擬／送單結束。
+背景預熱佇列最多 128 個，重啟預熱最近 32 個；舊代幣身分／路徑永久保留，冷門代幣可能需要重新補齊帳戶。
+沒有把所有曾見過的地址永久訂閱，也沒有改用 Alchemy HTTP。
+health 的 `quote_cache` 顯示帳戶及 blockhash hits／misses。
+
+快取完整時，建單及送單路徑省去原本兩次即時 blockhash 查詢；仍保留 SDK 模擬、Python 模擬及
+`sendTransaction` preflight。首次代幣或 slot 落後仍可能增加帳戶讀取。
+這能縮短等待，但公共 RPC 延遲、processed 訊號到達時間及 leader 排程仍影響成交 slot；沒有同 slot 保證。
 
 Stonk 首次以 Jupiter `maxAccounts=32` 尋找 Whirlpool／Meteora DLMM 路徑，保存池與 lookup table 地址。
 其後依最新池資料使用 Orca／Meteora SDK 本地報價及組指令，快取命中不必再等 Jupiter。
@@ -175,3 +192,41 @@ sudo journalctl -u sol-follow -f
 審計容量優先可淘汰，不代表完整歷史計數。一般資料採用 WAL + NORMAL；新買單簽名在廣播前以 FULL durability 保存。
 
 策略／取捨和測試範圍見 [docs/DECISIONS.md](docs/DECISIONS.md)，原設計見 [IMPLEMENTATION.md](IMPLEMENTATION.md)。
+
+
+## Processed hotlist 訊號與買額上限
+
+`SOL_HOTLIST_COMMITMENT=processed` 使用 Alchemy gRPC 完整交易及執行 metadata，
+直接解碼 hotlist 買入，沒有 `getTransaction`／`getBlockTime` 等待。
+有 Alchemy key 時預設 processed；legacy websocket 只能用 confirmed。
+CEX 入金資格仍使用 confirmed 證據。processed 是節點已執行、尚未確認，並非執行前 pending。
+
+`SOL_FOLLOW_MAX_TARGET_BUY_SOL=5` 限制目標錢包每次買入的 calldata 付款預算，
+等於 5 SOL 可跟買、大於便跳過；本人的買額仍由 `SOL_BUY_AMOUNT_SOL` 控制。
+Pump `buy`／`buy_v2` 使用最高付款欄位；exact-input 使用輸入預算，
+因此即使實際成交低於 5 SOL，只要指令允許支付更多也會保守跳過。
+SOL 直接比較 lamports；非 SOL 用已記錄路徑、有效期內的本地池快照計算
+5 SOL 可換得多少付款代幣，再與目標輸入額比較，包含該兌換的費用及價格影響。
+這是近期快取的 SOL 重置成本估算，非逐筆還原目標錢包先前換幣成本；
+快照可早於目標交易（預設最多 2 秒），本人建單仍保留 minContextSlot。
+DLMM→Pump 亦檢查第一段 SOL 預算，避免忽略既有付款代幣或超額第一段。
+
+上限檢查只讀取 calldata、本地 SQLite 路徑和 Node 記憶體快照，不發報價 RPC／Jupiter 請求。
+沒有路徑、缺少快照、過期或風險限制未通過時跳過該訊號，並由背景佇列預熱；
+不會等補齊後追買同一事件。帳戶／epoch 背景更新與本人建單、模擬及送單仍使用公共 RPC。
+既有 minOut、滑點、池費、總費用和價格影響限制保留。
+
+重播訊號必須通過即時 slot／區塊時間錨點檢查，不能把收到歷史交易的時間當成新交易。
+缺少 blockTime 的即時訊號使用明確標記的首次接收時間；確認後另走公共 RPC 補資格及 Create 記錄。
+processed 來源和每張訂單的來源票數均持久化；dead slot、來源失敗、slot 改變或超過 30 秒未能確認會撤票，
+建單／簽名／送出前再次檢查。背景確認使用批次 getSignatureStatuses，並不輪詢 hotlist 地址的交易歷史。
+同一事件在 processed／confirmed 間不會重複跟買。已廣播的跟買無法因來源回滾而撤回。
+
+
+Processed 模式只容許即時 processed 來源新增跟買票數及觸發買單。
+confirmed 補查仍可更新入金資格、Create、持倉及快取，但不能觸發補買；舊 confirmed-only 票數不計入 processed 策略。
+若背景已得知觸發交易 confirmed/finalized，尚未送出的跟買也會停止。這只依據本地已收到的狀態，不能保證鏈上尚未確認。
+processed 不保證同 slot 成交；`minContextSlot` 是 RPC 最低讀取 slot，不是交易有效 slot 上限。
+建單、模擬、公共 RPC 排隊及區塊收錄仍有延遲。本程式沒有鏈上同-slot 限制指令。
+部署時明確設定 `SOL_FEED_MODE=alchemy_grpc`、`SOL_HOTLIST_COMMITMENT=processed`，
+並配置 `ALCHEMY_API_KEY`，可讓缺少 key 時直接報配置錯誤，避免 auto 模式選用 confirmed websocket。

@@ -24,7 +24,7 @@ async def probe(config, count=10000, seconds=15, wallets=()):
             call=stream_call(channel,config)
             try:
                 async with asyncio.timeout(seconds):
-                    await call.write(subscription(addresses))
+                    await call.write(subscription(addresses,commitment=config.hotlist_commitment))
                     while report['messages']<200:
                         update=await call.read()
                         if update is grpc.aio.EOF:

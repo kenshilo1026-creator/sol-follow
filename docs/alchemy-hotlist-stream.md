@@ -1,7 +1,7 @@
 # Alchemy hotlist stream / public execution
 
 Alchemy is used only for the hotlist transaction stream, plus small block metadata
-messages needed for chain timestamps. CEX/Privacy Cash source logs, HTTP reads,
+messages needed for chain timestamps, and slot status updates for fork invalidation. CEX/Privacy Cash source logs, HTTP reads,
 historical catch-up, SDK quotes, simulations, transaction submission and order
 reconciliation use the configured public RPC. There is **no Alchemy HTTP fallback**.
 Adding an API key never rewrites `SOL_RPC_HTTP_URL` or `SOL_RPC_WS_URL`.
@@ -13,6 +13,8 @@ Add to this project's `.env` (do not paste credentials into chat or commit them)
 ```dotenv
 ALCHEMY_API_KEY=your-key
 SOL_FEED_MODE=alchemy_grpc
+SOL_HOTLIST_COMMITMENT=processed
+SOL_FOLLOW_MAX_TARGET_BUY_SOL=5
 SOL_ALCHEMY_GRPC_ENDPOINT=https://solana-mainnet.streaming.alchemy.com
 SOL_RPC_HTTP_URL=https://api.mainnet-beta.solana.com
 SOL_RPC_WS_URL=wss://api.mainnet-beta.solana.com
@@ -36,11 +38,13 @@ credentials. It does not prove live gRPC access.
 - The Alchemy gRPC filter contains active hotlist addresses, chunked at 10,000 keys
   per named filter. No unfiltered transaction/block subscription is used. An empty
   hotlist closes the stream. Account limits must be verified on the actual account.
-- Confirmed, successful non-vote transactions carry the full message, balances,
+- Successful non-vote transactions (processed by default, optionally confirmed) carry the full message, balances,
   inner instructions and ALT keys. The adapter preserves legacy/v0/v1 and feeds the
   existing decoders. It does not expand the supported buy/sell route set.
-- Block metadata supplies chain time. If absent, one public `getBlockTime` result
-  is cached per slot. The delivery timestamp is never treated as chain time.
+- Block metadata supplies chain time and a recent live-stream anchor. Processed
+  signals without blockTime use an explicitly marked first-receipt timestamp only
+  after passing the anchor/replay barrier, with no getBlockTime wait. Confirmed
+  mode can fetch missing blockTime once per slot. Receipt time is not chain time.
 - The full normalized transaction is durably inserted alongside its job before
   advancing the checkpoint. Completed payloads are removed. Replays deduplicate by
   signature. A metadata/schema rejection queues a public `getTransaction` fallback,
@@ -48,8 +52,11 @@ credentials. It does not prove live gRPC access.
 - Stream jobs have a separate worker from history/source jobs. Background public
   reads are rate-budgeted and yield while a buy is active. They still share the
   provider's IP limits; this cannot guarantee a buy is never rate limited.
-- Existing funding qualification, strategy votes, holding checks and order
-  reservation rules remain in place. This change does not implement first-buy
+- CEX funding admission still requires confirmed evidence. Target buy budgets
+  above the configured SOL cap, undecodable budgets, and missing/stale non-SOL
+  cached valuations do not vote. Processed sources are durably recorded and
+  reconciled in public status batches; dead slots revoke votes and block unsent buys.
+  Confirmed follow-up retains event deduplication. This change does not implement first-buy
   retirement or add unsupported buy routes.
 
 ## Recovery without continuous polling

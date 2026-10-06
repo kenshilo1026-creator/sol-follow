@@ -112,6 +112,10 @@ class Config:
     max_price_impact_bps: int = 200
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
+    hotlist_commitment: str = 'confirmed'
+    max_observed_buy: int = 5_000_000_000
+    blockhash_cache_ttl_ms: int = 5000
+    blockhash_refresh_ms: int = 1000
 
     @property
     def mode(self):
@@ -143,6 +147,12 @@ def load(root=ROOT, env=None):
         feed_mode = 'alchemy_grpc' if key else 'websocket'
     if feed_mode not in ('alchemy_grpc', 'websocket') or (feed_mode == 'alchemy_grpc' and not key):
         raise ValueError('alchemy-grpc-requires-api-key-or-invalid-feed-mode')
+    hotlist_commitment = get('SOL_HOTLIST_COMMITMENT', 'processed' if feed_mode == 'alchemy_grpc' else 'confirmed')
+    if hotlist_commitment not in ('processed', 'confirmed') or (hotlist_commitment == 'processed' and feed_mode != 'alchemy_grpc'):
+        raise ValueError('processed-hotlist-requires-alchemy-grpc')
+    maximum_buy = lamports(get('SOL_FOLLOW_MAX_TARGET_BUY_SOL', '5'))
+    if maximum_buy <= 0:
+        raise ValueError('invalid-target-buy-limit')
     endpoint = get('SOL_ALCHEMY_GRPC_ENDPOINT', 'https://solana-mainnet.streaming.alchemy.com')
     parsed = urlparse(endpoint)
     if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
@@ -196,4 +206,7 @@ def load(root=ROOT, env=None):
         max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
+        hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy,
+        blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
+        blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),
     )

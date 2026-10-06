@@ -125,15 +125,15 @@ test('native SOL builder spends the configured budget with common min-out and no
   curve.writeBigUInt64LE(1000000000000000n,8);curve.writeBigUInt64LE(30000000000n,16);
   curve.writeBigUInt64LE(800000000000000n,24);curve.writeBigUInt64LE(5000000000n,32);curve[48]=0;
   const user=web3.Keypair.generate().publicKey;
-  let simulationError=null;
+  let simulationError=null,blockCalls=0;
   const connection={
     async getMultipleAccountsInfo(keys){return keys.map(k=>values[k.toBase58()] || null);},
-    async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:100};},
-    async simulateTransaction(){return {value:{err:simulationError,unitsConsumed:80000}};},
+    async getLatestBlockhash(commitment){blockCalls++;assert.equal(commitment,'processed');return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:100};},
+    async simulateTransaction(tx,options){assert.equal(options.commitment,'processed');return {value:{err:simulationError,unitsConsumed:80000}};},
   };
-  const input={route:'pump_native_curve',wallet:user.toBase58(),mint:a[2],quoteMint:spl.NATIVE_MINT.toBase58(),
+  const input={commitment:'processed',route:'pump_native_curve',wallet:user.toBase58(),mint:a[2],quoteMint:spl.NATIVE_MINT.toBase58(),
     tokenProgram:spl.TOKEN_PROGRAM_ID.toBase58(),lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2'};
-  const result=await build(input,connection);
+  const result=await build(input,connection);assert.equal(blockCalls,1);
   const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
   const ixs=web3.TransactionMessage.decompile(tx.message).instructions;
   assert.equal(ixs.length,3); // Compute budget, base ATA, Pump buy.

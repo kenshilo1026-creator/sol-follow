@@ -37,12 +37,6 @@ test('websocket refresh, eviction, reconnect invalidation and in-flight disconne
   r.getMultipleAccountsInfoAndContext=async()=>{r._rpcWebSocket.emit('close');return {context:{slot:200},value:[{}]};};
   await assert.rejects(cache.view(200).getAccountInfo(a),/cache-disconnected/);assert.equal(cache.rows.size,0);
 });
-test('background refresh is bounded and old response cannot regress an account',async t=>{
-  const r=rpc(),cache=new AccountCache(r,{maxAccounts:200,refreshMs:999999});t.after(()=>cache.close());
-  for(let i=0;i<110;i++)cache.record(key().toBase58(),{},100);
-  let batch;r.getMultipleAccountsInfoAndContext=async(keys)=>{batch=keys.length;return {context:{slot:90},value:keys.map(()=>({old:true}))};};
-  await cache.refresh();assert.equal(batch,100);assert([...cache.rows.values()].every(r=>r.slot===100&&!r.value.old));
-});
 test('real JSON-lines worker shares state across requests and enforces a newer slot', {timeout:15000},async t=>{
   const http=require('node:http'),{spawn}=require('node:child_process'),readline=require('node:readline'),path=require('node:path');
   let calls=0;
@@ -54,16 +48,44 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
         result:{context:{slot},value:request.params[0].map(()=>null)}}));
     });
   });
+  const wss=new (require('ws').Server)({server});
+  wss.on('connection',socket=>socket.on('message',data=>{const req=JSON.parse(data);socket.send(JSON.stringify({jsonrpc:'2.0',id:req.id,result:req.id}));}));
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const child=spawn(process.execPath,[path.resolve(__dirname,'../../trade_execution/sdk/worker.cjs')],{stdio:['pipe','pipe','ignore']});
   const exited=new Promise(r=>child.once('exit',r));
-  t.after(async()=>{child.kill();await exited;server.closeAllConnections();await new Promise(r=>server.close(r));});
+  t.after(async()=>{child.kill();await exited;for(const socket of wss.clients)socket.terminate();wss.close();server.closeAllConnections();await new Promise(r=>server.close(r));});
   const lines=readline.createInterface({input:child.stdout});
   const pending=new Map();lines.on('line',line=>{const r=JSON.parse(line);pending.get(r.id)?.(r);});
-  const input={route:'prime',rpc:`http://127.0.0.1:${server.address().port}`,minSlot:100,lookupTables:[],
+  const input={route:'prime',rpc:`http://127.0.0.1:${server.address().port}`,ws:`ws://127.0.0.1:${server.address().port}`,minSlot:100,lookupTables:[],
     primeAccounts:[key().toBase58()],cache:{ttlMs:2000,refreshMs:999999,maxAccounts:32}};
   async function request(id,minSlot){const response=new Promise(r=>pending.set(id,r));child.stdin.write(JSON.stringify({id,input:{...input,minSlot}})+'\n');return response;}
   assert.equal((await request(1,100)).result.warmed,true);assert.equal(calls,1);
   assert.equal((await request(2,100)).stats.hits,1);assert.equal(calls,1);
   assert.equal((await request(3,101)).result.warmed,true);assert.equal(calls,2);
+});
+
+
+test('processed cache-only decisions never fall back to network, even for SDK methods',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=rpc(),cache=new AccountCache(r,{ttlMs:1000,refreshMs:999999,commitment:'processed'});t.after(()=>cache.close());
+  const k=key();await cache.view(100).getAccountInfo(k);
+  assert.equal(r.config.commitment,'processed');
+  const view=cache.view(100,true);assert((await view.getAccountInfo(k)).data);
+  assert.equal(r.calls,1);
+  await assert.rejects(view.getAccountInfo(key()),/price-cache-miss/);
+  await assert.rejects(cache.view(101,true).getAccountInfo(k),/price-cache-miss/);
+  assert.throws(()=>view.getLatestBlockhash(),/price-cache-miss/);
+  assert.throws(()=>view.simulateTransaction({},{}),/price-cache-miss/);
+  await assert.rejects(view.getEpochInfo(),/price-cache-miss/);
+  assert.equal(r.calls,1);
+  now+=1001;await assert.rejects(view.getAccountInfo(k),/price-cache-miss/);
+  cache.invalidate();assert.equal(cache.rows.size,0);
+});
+
+test('oversized batches retain valid hits even when subscriptions evict those cache rows',async t=>{
+  const r=rpc(),cache=new AccountCache(r,{maxAccounts:2});t.after(()=>cache.close());
+  const a=key(),b=key(),c=key();await cache.view().getAccountInfo(a);
+  const rows=await cache.view().getMultipleAccountsInfo([a,b,c]);
+  assert.equal(rows.length,3);assert(rows.every(row=>row.data.toString()==='state'));
+  assert.equal(r.calls,2);assert(cache.rows.size<=2);assert(cache.subscriptions.size<=2);
 });

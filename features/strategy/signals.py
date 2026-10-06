@@ -1,12 +1,14 @@
 """Distinct-wallet rolling votes, persistent dedupe and atomic order reservation."""
 import time
 from chain_common.primitives import ata, TOKEN, TOKEN_2022
+from features.funding.processed import Processed
 
 
 class Signals:
     def __init__(self, store, config, started=None):
         self.store, self.config = store, config
         self.started = time.time() if started is None else started
+        self.proofs = Processed(store)
         self.votes = {}
         for row in store.rows('trading','SELECT * FROM votes WHERE time>=?',(time.time()-config.window,)):
             self.votes.setdefault(row['mint'],{})[row['wallet']] = row
@@ -15,6 +17,12 @@ class Signals:
         now = time.time() if now is None else now
         cfg = self.config
         if not self.store.eligible(trade.wallet, trade.slot, trade.time, now):
+            return None
+        processed=cfg.hotlist_commitment=='processed'
+        proof=self.proofs.row(trade.signature) if processed else None
+        if processed and (not proof or proof['state']!='pending'):
+            return None
+        if not self.proofs.usable(trade.signature, now, trade.slot,require_processed=processed):
             return None
         fresh = self.store.vote(trade)
         current=self.store.rows('trading','SELECT * FROM votes WHERE mint=? AND wallet=?',(trade.mint,trade.wallet))
@@ -25,15 +33,21 @@ class Signals:
         if not current or current[0]['signature']!=trade.signature or current[0]['slot']!=trade.slot:
             return None
         rows = [r for r in self.votes.get(trade.mint,{}).values() if r['time']>=now-cfg.window]
-        count=0
+        selected=[]
         for r in rows:
             if cfg.remaining and int(r['amount'])<=0:
                 continue
-            if self.store.eligible(r['wallet'],r['slot'],r['time'],now):
-                count+=1
-                if count>=cfg.n:
-                    return self.store.reserve(cfg, trade.mint, trade.pool, cfg.buy_amount)
+            if self.proofs.usable(r['signature'],now,r['slot'],require_processed=processed) and self.store.eligible(r['wallet'],r['slot'],r['time'],now):
+                selected.append(r)
+                if len(selected)>=cfg.n:
+                    return self.store.reserve(cfg, trade.mint, trade.pool, cfg.buy_amount,sources=selected)
         return None
+
+    def reject(self, trade):
+        self.store.reject_vote(trade)
+        current=self.votes.get(trade.mint,{}).get(trade.wallet)
+        if current and current['slot']<=trade.slot:
+            self.votes[trade.mint].pop(trade.wallet,None)
 
     def prune(self, now=None):
         now=time.time() if now is None else now

@@ -139,7 +139,7 @@ async def test_expired_signal_never_builds(config,store):
 
 
 @pytest.mark.asyncio
-async def test_hotlist_buy_signal_reaches_executor(config,store):
+async def test_hotlist_buy_signal_reaches_executor(config,store,monkeypatch):
     raw=sample();raw['blockTime']=int(time.time());route=decode(Tx(raw))
     cfg=replace(config,n=1)
     f=Funding('fund','fund',route.trade.wallet,address(),'cex:test',10**9,route.trade.slot-1,raw['blockTime']-10)
@@ -151,6 +151,8 @@ async def test_hotlist_buy_signal_reaches_executor(config,store):
     class TransactionRPC:
         async def transaction(self,sig):return raw
     service.executor=Engine()
+    async def cached_limit(route):return {"quoteLimit":str(route.observed_amount)}
+    monkeypatch.setattr(service.quote_builder,"quote_limit",cached_limit)
     await service.process({'signature':route.trade.signature},TransactionRPC())
     await service.process({'signature':route.trade.signature},TransactionRPC())
     assert len(calls)==1 and calls[0][1].dlmm_pool==route.dlmm_pool

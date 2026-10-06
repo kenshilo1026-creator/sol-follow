@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local unsigned Pump and Meteora instruction builder",
   "scripts": {
-    "test": "node --test trade_execution/sdk/build.test.cjs trade_execution/sdk/stonk.test.cjs tests/sdk/cache.test.cjs tests/sdk/local-routes.test.cjs"
+    "test": "node --test trade_execution/sdk/build.test.cjs trade_execution/sdk/stonk.test.cjs tests/sdk/cache.test.cjs tests/sdk/local-routes.test.cjs tests/sdk/public-cache.test.cjs"
   },
   "engines": {
     "node": ">=20.18.0"

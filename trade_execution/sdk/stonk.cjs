@@ -81,7 +81,7 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   const [configs,epoch,hop]=await Promise.all([
     connection.getMultipleAccountsInfo([state.config,PLATFORM]),connection.getEpochInfo(),
     jupiter.buildHop({user,quoteMint:quote,quoteAta,amount,slippageBps,connection,safeMint,
-      minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe})]);
+      minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,waitForBackground:input.waitForBackground,background:input.background})]);
   const rate=feeSchedule(configs[0],configs[1],quote);
   const details=quoteDetails(state,hop.expected,rate,base,epoch.epoch),expected=details.net;
   const metrics=risk.check(input,[...hop.fees,...details.fees],[...hop.impacts,details.impact],[...hop.fees,rate]);

@@ -116,22 +116,39 @@ class CachedBuilder:
                 if not future.done():
                     future.set_exception(BuildError('route-builder-stopped'))
 
-    async def request(self, request, wallet, warm=False):
+    async def request(self, request, wallet, warm=False, operation="build"):
         await self.start()
         payload = payload_for(self.config, request, wallet)
-        payload.update(prewarm=warm, cache={'ttlMs': self.config.quote_cache_ttl_ms,
-                                         'maxAccounts': self.config.quote_cache_accounts, 'refreshMs': 1000})
+        payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
+                       cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
+                                         'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
+                       blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
         if request['route'] == 'sol_to_stonk_curve':
             payload['swapRecipe'] = self.seen.recipe(request['quoteMint'])
+        return await self.exchange(payload)
+
+    async def set_priority(self, active):
+        await self.exchange({"operation":"priority","active":active})
+
+    async def exchange(self, payload):
+        await self.start()
         self.counter += 1
         identifier = self.counter
         future = asyncio.get_running_loop().create_future()
         self.pending[identifier] = future
         try:
             async with self.write_lock:
+                payload["activeTrades"]=self.priority.active
+                if payload.get("operation")=="priority":
+                    payload["active"]=self.priority.active
                 self.process.stdin.write((json.dumps({'id': identifier, 'input': payload})+'\n').encode())
                 await self.process.stdin.drain()
-            row = await asyncio.wait_for(future, timeout=30)
+            background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap")
+            if background:
+                # Pausing background work is not a hung foreground build.
+                row=await future
+            else:
+                row = await asyncio.wait_for(future, timeout=30)
             result_or_error(row)
             return row['result']
         except asyncio.TimeoutError as exc:
@@ -145,10 +162,19 @@ class CachedBuilder:
         finally:
             self.pending.pop(identifier, None)
 
+    async def quote_limit(self, route):
+        return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation="quote_limit")
+
     async def __call__(self, config, route, wallet):
         return await self.request(route.request(), wallet)
 
     async def warm(self):
+        # Initialise the shared blockhash before any target is known.
+        try:
+            await self.request({"route":"prime","minSlot":0,"lookupTables":[],"primeAccounts":[]},
+                               self.config.wallet_address,operation="bootstrap")
+        except BuildError:
+            self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
         await self.import_creates()
         for request, wallet in self.seen.recent():
             self.enqueue(request, wallet)
@@ -161,6 +187,8 @@ class CachedBuilder:
             _, (request, wallet) = self.queue.popitem(last=False)
             try:
                 await self.request(request, self.config.wallet_address or wallet, warm=True)
+                if request["route"]!="prime":
+                    await self.request(request,self.config.wallet_address or wallet,operation="warm_limit")
             except Exception as exc:
                 reason = str(exc) if isinstance(exc, BuildError) else type(exc).__name__
                 self.notices.emit('quote cache warm deferred', {'mint': request['mint'], 'reason': reason},

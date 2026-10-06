@@ -50,6 +50,7 @@ async function discover(args,fetcher=fetch) {
     dexes:DEXES.join(','),maxAccounts:'32'});
   let body;
   try {
+    await args.waitForBackground?.();
     const response=await fetcher('https://api.jup.ag/swap/v2/build?'+params,
       {signal:AbortSignal.timeout(8000),redirect:'error'});
     if(response.status===429){
@@ -87,8 +88,11 @@ async function buildHop(args,fetcher=fetch){
   const key=args.quoteMint.toBase58();
   let recipe=args.swapRecipe||recipes.get(key);
   if(!recipe){
+    // A foreground trade must not wait on discovery paused by that same trade.
+    // Warm recipes remain usable; a cold route can be tried on a future signal.
+    if(!args.background&&[...pending.values()].some(p=>p.background))throw Error('price-cache-miss');
     let p=pending.get(key);
-    if(!p){p=gatedDiscovery(args,fetcher);pending.set(key,p);}
+    if(!p){p=gatedDiscovery(args,fetcher);p.background=!!args.background;pending.set(key,p);}
     try{recipe=await p;}finally{if(pending.get(key)===p)pending.delete(key);}
   }
   require('./local-routes.cjs').validateRecipe(recipe,args.quoteMint);

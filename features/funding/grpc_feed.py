@@ -13,8 +13,11 @@ from chain_common.yellowstone import geyser_pb2 as pb
 from chain_common.yellowstone.normalize import normalize
 
 
-def subscription(addresses, from_slot=None, chunk_size=10000):
-    request = pb.SubscribeRequest(commitment=pb.CONFIRMED)
+def subscription(addresses, from_slot=None, chunk_size=10000, commitment="confirmed"):
+    request = pb.SubscribeRequest(commitment=pb.PROCESSED if commitment=="processed" else pb.CONFIRMED)
+    if commitment=="processed":
+        request.slots["forks"].filter_by_commitment=False
+        request.slots["forks"].interslot_updates=True
     addresses = sorted(set(addresses))
     for start in range(0,len(addresses),chunk_size):
         f = request.transactions['hotlist_'+str(start//chunk_size)]
@@ -51,14 +54,21 @@ class HotlistFeed:
         self.subscribed = set()
         self.received = self.added = self.bytes_received = self.reconnects = 0
         self.last_slot = int(store.stream_state('grpc_slot',0))
+        self.live_floor = self.last_slot+1
+        self.anchor = None
 
     def addresses(self):
         return set(self.store.hotlist(time.time()))
 
     async def resume_slot(self, addresses):
+        commitment=self.config.hotlist_commitment
+        self.anchor=None
+        if not self.last_slot and commitment!='processed':
+            return None
+        head = await self.rpc.call('getSlot',[{'commitment':commitment}])
+        self.live_floor=max(head,self.last_slot)+1
         if not self.last_slot:
             return None
-        head = await self.rpc.call('getSlot',[{'commitment':'confirmed'}])
         # Inclusive overlap also recovers unfinished slots and duplicate delivery.
         start = max(0,self.last_slot-128)
         if head-start >= 5800 or start > head:
@@ -72,11 +82,17 @@ class HotlistFeed:
         self.bytes_received += update.ByteSize()
         kind = update.WhichOneof('update_oneof')
         slot = 0
-        if kind == 'block_meta':
+        if kind == 'slot' and update.slot.status==pb.SLOT_DEAD:
+            from features.funding.processed import Processed
+            count=Processed(self.store).dead_slot(update.slot.slot)
+            if count:
+                self.notices.emit('processed slot dropped; votes revoked', {'slot':update.slot.slot,'signals':count},alert=True)
+        elif kind == 'block_meta':
             block = update.block_meta
             slot = block.slot
             if block.HasField('block_time') and block.block_time.timestamp > 0:
                 self.store.block_time(slot,block.block_time.timestamp)
+                self.anchor=(slot,block.block_time.timestamp,time.time())
         elif kind == 'transaction':
             value = update.transaction
             slot = value.slot
@@ -92,6 +108,11 @@ class HotlistFeed:
                 self.notices.emit('stream transaction requires public RPC decoding',
                     {'slot':slot,'type':type(exc).__name__},key='grpc-normalize')
             else:
+                if self.config.hotlist_commitment=='processed':
+                    now=time.time(); a=self.anchor
+                    live=bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
+                              and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
+                    raw['_stream']={'commitment':'processed','live':live}
                 self.added += self.store.stream_transaction(raw)
         if slot > self.last_slot:
             # Only reached once the incoming transaction (if any) is durable.
@@ -101,7 +122,7 @@ class HotlistFeed:
     async def connection(self, channel, addresses, start):
         call = stream_call(channel,self.config)
         try:
-            await call.write(subscription(addresses,start))
+            await call.write(subscription(addresses,start,commitment=self.config.hotlist_commitment))
             previous = set(self.store.stream_state('grpc_watch',[]))
             self.store.request_histories(addresses-previous)
             self.store.set_stream_state('grpc_watch',sorted(addresses))
@@ -132,7 +153,7 @@ class HotlistFeed:
                         if not desired:
                             return
                         if desired != addresses:
-                            await call.write(subscription(desired))
+                            await call.write(subscription(desired,commitment=self.config.hotlist_commitment))
                             # Catch up newcomers once after the filter update;
                             # background requests are durable and rate-budgeted.
                             self.store.request_histories(desired-addresses)

@@ -18,6 +18,10 @@ class Route:
     dlmm_pool: str
     lookup_tables: tuple
     kind: str = 'meteora_dlmm_to_pump_curve'
+    observed_amount: int = 0
+    observed_mint: str = ''
+    observed_kind: str = 'calldata-input-bound'
+    funding_sol_limit: int = 0
 
     def request(self):
         return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
@@ -73,7 +77,9 @@ def decode(tx):
         pubkey(key)
     return Route(Trade(f'{tx.signature}:{i}',tx.signature,tx.slot,tx.time,wallet,mint,'buy',
                        amount,target[2]-before[2],target[2],a[10]),
-                 quote,base_program,quote_program,pool,lookups)
+                 quote,base_program,quote_program,pool,lookups,
+                 observed_amount=int.from_bytes(data[8:16] if data[:8]==discriminator('global','buy_exact_quote_in_v2') else data[16:24], 'little'),
+                 observed_mint=quote, funding_sol_limit=amount)
 
 
 def decode_all(tx):
