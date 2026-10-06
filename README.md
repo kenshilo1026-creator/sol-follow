@@ -51,7 +51,7 @@ PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍
 Python 3.11+、Node 20.18+；在 **sol-follow 目錄** 執行，不能在上層 token_alert 執行同名 package。
 
 ```bash
-cd /home/ubuntu/sol-follow
+cd /sol-follow
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 npm ci --ignore-scripts
@@ -181,15 +181,148 @@ probe 不開資料庫、不讀私鑰，最多抽 10 筆；`--tx` 列出交易版
 
 ## systemd
 
-把整個資料夾獨立部署到 `/home/ubuntu/sol-follow`，安裝依賴、設定 `.env`，先 `mkdir -p data`。
-檢查並按實際路徑修改 `deploy/sol-follow.service` 的 User／WorkingDirectory／ExecStart／ReadWritePaths，然後：
+VPS 新部署使用 [`deploy/sol-follow.service`](deploy/sol-follow.service)：
+固定 `/sol-follow`，獨立 `sol-follow` 使用者，開機啟動、失敗後 10 秒重啟，
+5 分鐘內連續失敗 5 次便停止重試。安裝後的 service 名稱為 `sol-follow`；
+同一部署只啟動一個實盤實例。
+
+以下以 Ubuntu 24.04 LTS／Debian 12+、有 sudo 權限的 SSH 帳戶 `ubuntu` 為例；
+把 `VPS_IP` 和 `ubuntu` 換成實際 IP／SSH 使用者。Python 需 3.11+，以下安裝 Node.js 22 LTS。
+Node 安裝方式依 [NodeSource 文件](https://github.com/nodesource/distributions/blob/master/DEV_README.md)，
+版本生命週期見 [Node.js Releases](https://nodejs.org/en/about/previous-releases)。
+程式不提供 HTTP 服務，無須新增應用程式入站 port；需能出站存取 RPC、WebSocket、gRPC、Jupiter 及 Telegram。
+
+### 1. 從 Windows 打包及上傳
+
+在本專案 PowerShell 執行。此包不含 `.env`、私鑰、資料庫及 Windows 依賴。
+`cex_addresses.json`、`take_profit_rules.json` 雖被 Git 忽略，卻是啟動必要檔案，打包時保留。
+
+```powershell
+tar.exe -czf sol-follow-vps.tar.gz --exclude=sol-follow-vps.tar.gz --exclude=.git --exclude=.venv --exclude=node_modules --exclude=.env --exclude=wallets --exclude=data --exclude=__pycache__ --exclude=.pytest_cache --exclude=.codex --exclude=.agents .
+scp .\sol-follow-vps.tar.gz ubuntu@VPS_IP:~/sol-follow-vps.tar.gz
+ssh ubuntu@VPS_IP
+```
+
+這是新建資料庫的部署流程。如果是搬遷正在使用的實例，先停止舊服務，再另外完整搬移
+`data/`（含 SQLite、WAL、SHM、訂單與持倉）及所需錢包；新 VPS 啟動前確保舊實例已停止。
+單機 lock 不會阻止不同 VPS 同時使用同一錢包。
+
+### 2. 在 VPS 安裝執行環境
+
+以下指令均在 VPS 的 Bash 執行。Node 安裝到系統 PATH，systemd 不會載入互動 shell 的 nvm 設定。
 
 ```bash
-sudo cp deploy/sol-follow.service /etc/systemd/system/sol-follow.service
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip build-essential ca-certificates curl nano
+curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/sol-follow-node-setup.sh
+sudo bash /tmp/sol-follow-node-setup.sh
+sudo apt-get install -y nodejs
+python3 --version
+node --version
+npm --version
+
+sudo useradd --system --user-group --create-home --home-dir /var/lib/sol-follow --shell /usr/sbin/nologin sol-follow
+sudo install -d -o sol-follow -g sol-follow -m 750 /sol-follow
+sudo tar -xzf "$HOME/sol-follow-vps.tar.gz" -C /sol-follow --no-same-owner
+sudo chown -R sol-follow:sol-follow /sol-follow
+sudo install -d -o sol-follow -g sol-follow -m 700 /sol-follow/data /sol-follow/wallets
+cd /sol-follow
+
+sudo -u sol-follow -H python3 -m venv .venv
+sudo -u sol-follow -H .venv/bin/python -m pip install -r requirements.txt
+sudo -u sol-follow -H npm ci --omit=dev
+```
+
+已有 `sol-follow` 帳戶時跳過 `useradd`；若依賴安裝失敗，先處理錯誤再繼續。
+不要沿用從 Windows 搬來的 `.venv` 或 `node_modules`。
+
+### 3. 設定環境變數
+
+只在首次部署複製範例；更新時保留現有 `.env`。
+
+```bash
+sudo -u sol-follow cp -n .env.example .env
+sudo chmod 600 .env
+sudo -u sol-follow nano .env
+```
+
+第一輪保持 `DRY_RUN=true`。範例明確選擇 `alchemy_grpc`／`processed`，必須填入自己的
+`ALCHEMY_API_KEY`。若暫不用 Alchemy，把這兩項改為 `SOL_FEED_MODE=auto`、
+`SOL_HOTLIST_COMMITMENT=confirmed`，並讓 key 留空；不能保持 gRPC 模式而不填 key。
+
+需要 Telegram 時填 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`。
+RPC 可用程式預設值，或自行加入 `SOL_RPC_HTTP_URL` 與 `SOL_RPC_WS_URL`。
+兩個 RPC 地址各自設定；不要將 Windows 路徑放進 VPS 設定。
+檢查 `SOL_BUY_AMOUNT_SOL`、`SOL_SLIPPAGE_PERCENT` 等交易設定；範例的明確值會覆蓋程式 default。
+
+```bash
+sudo -u sol-follow -H .venv/bin/python -B -m features.app check
+```
+
+先確認輸出有 `mode: dry`、`trading_enabled: false`、正確 feed、門檻及買入金額。
+`check` 驗證本地設定／JSON，不代表 RPC、Telegram 或買入路由已通過網路測試。
+
+### 4. 安裝並啟動 service
+
+```bash
+sudo install -m 644 deploy/sol-follow.service /etc/systemd/system/sol-follow.service
+sudo systemd-analyze verify /etc/systemd/system/sol-follow.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now sol-follow
-sudo journalctl -u sol-follow -f
+sudo systemctl status sol-follow --no-pager
+sudo journalctl -u sol-follow -n 100 --no-pager
+sudo journalctl -u sol-follow -f -o cat
 ```
+
+`active (running)` 只表示程序存活；在日誌核對啟動設定及後續 health 的連線／訂閱狀態。
+`Ctrl+C` 只退出 journal 追蹤，服務仍會繼續。systemd 啟動前亦會執行 `check`。
+`.env` 由 Python 自行讀取，不需要 `source .env` 或額外 `EnvironmentFile`。
+service 使用唯讀程式目錄，只有 `data/` 可寫；私鑰請放在 `/sol-follow/wallets/`，
+不要放在被 `ProtectHome=true` 隱藏的 `/home` 或 `/root`。
+
+### 5. 切換 LIVE（準備實盤時才做）
+
+先停止服務，透過 SCP／SFTP 將自己的 Solana CLI JSON keypair 放到
+`/sol-follow/wallets/trader.json`，擁有者設為 `sol-follow`、權限 `600`。
+在 `.env` 設定匹配的公鑰與 Linux 路徑：
+
+```dotenv
+DRY_RUN=false
+SOL_WALLET_KEYPAIR_PATH=wallets/trader.json
+SOL_WALLET_ADDRESS=填入與該私鑰匹配的公鑰
+```
+
+再次執行 `check` 後 `sudo systemctl start sol-follow`。這一步才允許系統簽名及實際買入；
+成功訊息分為 `buy submitted`（已送出）與 `buy finalized`（最終成交核對完成）。
+目前沒有自動賣出，持倉退出需人工處理。
+
+### 維護、更新及排錯
+
+```bash
+sudo systemctl stop sol-follow
+sudo systemctl start sol-follow
+sudo systemctl restart sol-follow
+sudo systemctl disable --now sol-follow
+sudo journalctl -u sol-follow --since "30 minutes ago" --no-pager
+```
+
+以上是各自獨立的管理指令，按需要執行。修改 `.env` 後 restart 即可；修改 service 後需先 daemon-reload。
+若因多次失敗被停止，修正原因後執行 `sudo systemctl reset-failed sol-follow` 再 start。
+`203/EXEC` 通常是 Python 路徑／權限錯誤；`217/USER` 是帳戶不存在；
+`226/NAMESPACE` 要檢查 `data/` 是否存在。`node` 找不到時確認系統安裝，而非只在 nvm 裡。
+缺少兩個必要 JSON、gRPC key 留空、WS 模式卻設 processed，會在 check 階段失敗。
+
+更新前先 stop，並完整備份 `data/`；例如在 VPS 登入帳戶的 home 建立私有備份：
+
+```bash
+sudo systemctl stop sol-follow
+install -d -m 700 "$HOME/sol-follow-backups"
+sudo tar -C /sol-follow -czf "$HOME/sol-follow-backups/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" data
+```
+
+上傳並解壓新版程式，保留 `.env`、`wallets/`、`data/`；重新執行 pip install、npm ci、check。
+新版 unit 亦需 install、verify、daemon-reload，然後 start。不要刪除資料庫以處理啟動問題。
+本機 Windows 無 systemd，範本未在本機實際啟動；VPS 上的 verify、check 及日誌檢查是部署驗收步驟。
 
 舊訂單與持倉保留在資料庫。新路由的已簽名訂單會恢復成交核對；未簽名的中斷訂單取消。
 舊路由訂單及所有持倉退出仍需人工處理。

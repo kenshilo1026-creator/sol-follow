@@ -1,24 +1,41 @@
+# Ubuntu 24.04 / Debian 12+, Python 3.11+, system-wide Node.js 22 LTS.
+# Install as /etc/systemd/system/sol-follow.service (one service per deployment).
+# Create /sol-follow/data before starting. The application reads its own .env.
 [Unit]
 Description=Solana hotlist group-follow bot
-After=network-online.target
 Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/sol-follow
-ExecStart=/home/ubuntu/sol-follow/.venv/bin/python -m features.app run
+User=sol-follow
+Group=sol-follow
+WorkingDirectory=/sol-follow
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/sol-follow/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/env node --version
+ExecStartPre=/sol-follow/.venv/bin/python -B -m features.app check
+ExecStart=/sol-follow/.venv/bin/python -B -m features.app run
 Restart=on-failure
 RestartSec=10
-TimeoutStopSec=20
+TimeoutStopSec=60
+# Let Python cancel its tasks and close the Node worker before final cgroup cleanup.
 KillSignal=SIGINT
+KillMode=mixed
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/sol-follow/data
-Environment=PYTHONUNBUFFERED=1
+ProtectHome=true
+ReadWritePaths=/sol-follow/data
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sol-follow
 
 [Install]
 WantedBy=multi-user.target
