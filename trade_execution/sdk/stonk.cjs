@@ -66,7 +66,9 @@ function buyInstruction({user,pool,mint,quote,baseProgram,quoteProgram,state,tar
 async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fraction}) {
   const user=new web3.PublicKey(input.wallet),mint=new web3.PublicKey(input.mint),quote=new web3.PublicKey(input.quoteMint);
   const pool=new web3.PublicKey(input.pool),baseProgram=new web3.PublicKey(input.tokenProgram),quoteProgram=new web3.PublicKey(input.quoteProgram);
-  if(quote.equals(spl.NATIVE_MINT)||quote.equals(web3.PublicKey.default)||mint.equals(quote))throw Error('non-native-only');
+  const native=input.route==='stonk_native_curve';
+  if(native&&(!quote.equals(spl.NATIVE_MINT)||!quoteProgram.equals(spl.TOKEN_PROGRAM_ID)))throw Error('native-only');
+  if((!native&&quote.equals(spl.NATIVE_MINT))||quote.equals(web3.PublicKey.default)||mint.equals(quote))throw Error('non-native-only');
   for(const p of [baseProgram,quoteProgram])if(![spl.TOKEN_PROGRAM_ID,spl.TOKEN_2022_PROGRAM_ID].some(x=>x.equals(p)))throw Error('token-program');
   const amount=integer(input.amount),{numerator,denominator}=fraction(input.slippagePercent);
   const slippageBps=numerator.muln(10000).div(denominator.muln(2)).toNumber();
@@ -80,6 +82,7 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   safeMint(base,true);safeMint(quoteInfo); // Quote transfer taxes need a different first-leg adapter.
   const [configs,epoch,hop]=await Promise.all([
     connection.getMultipleAccountsInfo([state.config,PLATFORM]),connection.getEpochInfo(),
+    native?{expected:BigInt(amount.toString()),minimum:BigInt(amount.toString()),fees:[],impacts:[],setup:[],swaps:[],tables:[]}:
     jupiter.buildHop({user,quoteMint:quote,quoteAta,amount,slippageBps,connection,safeMint,
       minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,waitForBackground:input.waitForBackground,background:input.background})]);
   const rate=feeSchedule(configs[0],configs[1],quote);
@@ -97,7 +100,7 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   if(!rows[4])ixs.push(spl.createCloseAccountInstruction(nativeAta,user,user));
   const before=rows[3]?spl.unpackAccount(targetAta,rows[3],baseProgram).amount:0n;
   // A SOL-funded route must not consume pre-existing quote/intermediate assets.
-  const touched=[...new Set((hop.swaps||[hop.swap]).flatMap(ix=>ix.keys).filter(k=>k.isWritable).map(k=>k.pubkey.toBase58()))];
+  const touched=native?[nativeAta.toBase58()]:[...new Set((hop.swaps||[hop.swap]).flatMap(ix=>ix.keys).filter(k=>k.isWritable).map(k=>k.pubkey.toBase58()))];
   if(touched.length>96)throw Error('jupiter-route-rejected');
   const existing=await connection.getMultipleAccountsInfo(touched.map(k=>new web3.PublicKey(k)));
   const protectedAccounts=[];

@@ -164,7 +164,7 @@ async function buildNative(input,injectedConnection) {
 async function build(input, injectedConnection) {
   if (input.route==='sol_to_pump_curve') return require('./pump-quote.cjs').buildPumpQuote(input,
     {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction,exactQuoteInstruction});
-  if (input.route==='sol_to_stonk_curve') return require('./stonk.cjs').buildStonk(input,
+  if (['sol_to_stonk_curve','stonk_native_curve'].includes(input.route)) return require('./stonk.cjs').buildStonk(input,
     {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction});
   if (input.route==='pump_native_curve') return buildNative(input,injectedConnection);
   if (input.route && input.route!=='meteora_dlmm_to_pump_curve') throw Error('unknown-route');

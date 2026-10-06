@@ -293,7 +293,10 @@ async def test_probe_outputs_real_creates(row,config,monkeypatch,capsys):
     await module.probe(SimpleNamespace(mint=None,tx=row['signature'],raw=False,buy_route=False))
     output=json.loads(capsys.readouterr().out)
     assert output['creates'][0]['mint']==row['mint'] and output['create_rejections']==[]
-    if row['mint'].startswith('4Nr7xP'):
+    if row['mint'].startswith(('4Nr7xP','GcHEn2')):
         assert len(output['trades'])==1 and output['trades'][0]['mint']==row['mint']
+        if row['mint'].startswith('GcHEn2'):
+            assert output['route_status']==['stonk_native_curve']
+            assert output['trades'][0]['quote']==5000000000
     else:
         assert output['trades']==[]

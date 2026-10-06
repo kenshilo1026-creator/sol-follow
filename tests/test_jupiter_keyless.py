@@ -12,7 +12,8 @@ def route(kind='sol_to_stonk_curve'):
     return SimpleNamespace(kind=kind,request=lambda:{'route':kind})
 
 
-def test_concurrent_builds_share_gate_and_pump_bypasses_it(monkeypatch):
+@pytest.mark.parametrize('native_kind',['pump_native_curve','stonk_native_curve'])
+def test_concurrent_builds_share_gate_and_native_bypasses_it(monkeypatch,native_kind):
     async def scenario():
         clock=[100.0]
         monkeypatch.setattr(builder,'time',SimpleNamespace(monotonic=lambda:clock[0]))
@@ -36,7 +37,7 @@ def test_concurrent_builds_share_gate_and_pump_bypasses_it(monkeypatch):
         second=asyncio.create_task(builder.build(None,route(),'second'))
         await asyncio.sleep(0)
         assert calls==[('first',100.0)]
-        assert await builder.build(None,route('pump_native_curve'),'pump')=='pump'
+        assert await builder.build(None,route(native_kind),'pump')=='pump'
         # Advance our clock when the gate sleeps, without changing asyncio's clock.
         real_sleep=asyncio.sleep
         async def advance(delay):

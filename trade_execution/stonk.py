@@ -47,7 +47,8 @@ def decode_stonk(tx):
         if (wallet not in tx.signers or a[3] != PLATFORM or a[1] != AUTH
                 or a[13] != EVENT or a[14] != PROGRAM
                 or a[11] not in (TOKEN, TOKEN_2022) or a[12] not in (TOKEN, TOKEN_2022)
-                or quote in (SYSTEM, WSOL) or mint == quote):
+                or a[15] != SYSTEM or quote == SYSTEM or mint == quote
+                or (quote == WSOL and a[12] != TOKEN)):
             continue
         if (a[4] != pool_address(mint, quote)
                 or a[5] != ata(wallet, mint, a[11]) or a[6] != ata(wallet, quote, a[12])
@@ -83,6 +84,8 @@ def decode_stonk(tx):
     if len(tables) > 8:
         return []
     return [StonkRoute(Trade(f'{tx.signature}:{i}', tx.signature, tx.slot, tx.time,
-                            wallet, mint, 'buy', paid, net, remaining, pool), quote, base_program, quote_program, tables, observed_amount=limit, observed_mint=quote)
+                            wallet, mint, 'buy', paid, net, remaining, pool), quote, base_program, quote_program, tables,
+                       kind='stonk_native_curve' if quote == WSOL else 'sol_to_stonk_curve',
+                       observed_amount=limit, observed_mint=quote)
             for i, wallet, mint, quote, base_program, quote_program, pool, paid, net, remaining, limit in candidates
             if identities[wallet, mint] == 1]

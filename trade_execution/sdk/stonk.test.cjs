@@ -8,6 +8,9 @@ const stonk=require('./stonk.cjs');
 const jupiter=require('./jupiter.cjs');
 const ref=require('../../tests/fixtures/stonk_non_sol_buy.json');
 const snapshot=require('../../tests/fixtures/stonk_route_accounts.json');
+const nativeRef=require('../../tests/fixtures/stonk_native_buy.json');
+const nativeSnapshot=require('../../tests/fixtures/stonk_native_accounts.json');
+const na=nativeRef.transaction.message.instructions[6].accounts;
 const a=ref.transaction.message.instructions[4].accounts;
 const pk=s=>new web3.PublicKey(s);
 function values(){return Object.fromEntries(Object.entries(snapshot.accounts).filter(([,r])=>r).map(([k,r])=>
@@ -19,6 +22,85 @@ function active(rows){
   for(const [offset,value] of [[29,793100000000000n],[37,1073025605785265n],[45,405865756n],
     [53,335434497553928n],[61,184575674n]])d.writeBigUInt64LE(value,offset);
 }
+
+function nativeValues(){
+  const rows=Object.fromEntries(Object.entries(nativeSnapshot.accounts).filter(([,r])=>r).map(([k,r])=>
+    [k,{...r,owner:pk(r.owner),data:Buffer.from(r.data[0],'base64')}]));
+  // Historical TradeEvent pre-buy state. The actual snapshot is graduated.
+  const d=rows[na[4]].data;d[17]=0;
+  for(const [offset,value] of [[29,793100000000000n],[37,1073025605596382n],[45,30000852951n],
+    [53,138432646230590n],[61,4443750000n]])d.writeBigUInt64LE(value,offset);
+  return rows;
+}
+
+test('native Stonk historical quote reproduces 4.34 SOL input and 1% transfer-tax receipt',()=>{
+  const r=nativeValues();
+  const state=stonk.poolState(r[na[4]],pk(na[4]),pk(na[9]),pk(na[10]));
+  const rate=stonk.feeSchedule(r[na[2]],r[na[3]],pk(na[10]));
+  const mint=spl.unpackMint(pk(na[9]),r[na[9]],spl.TOKEN_2022_PROGRAM_ID);
+  assert.equal(rate,12500n);
+  assert.equal(stonk.quoteNet(state,4340000000n,rate,mint,2000),102384232409726n);
+  const ix=stonk.buyInstruction({user:pk(na[0]),pool:pk(na[4]),mint:pk(na[9]),quote:pk(na[10]),
+    baseProgram:pk(na[11]),quoteProgram:pk(na[12]),state,targetAta:pk(na[5]),quoteAta:pk(na[6]),amount:4340000000n,minOut:1n});
+  assert.deepEqual(ix.keys.map(k=>k.pubkey.toBase58()),na);
+  assert.equal(ix.data.readBigUInt64LE(8),4340000000n);
+});
+
+test('native Stonk build uses SOL budget, shared slippage and no Jupiter; preserves existing WSOL',async t=>{
+  const r=nativeValues(),user=web3.Keypair.generate().publicKey;
+  const target=spl.getAssociatedTokenAddressSync(pk(na[9]),user,false,spl.TOKEN_2022_PROGRAM_ID);
+  const wsol=spl.getAssociatedTokenAddressSync(spl.NATIVE_MINT,user);
+  let existing=0n,net=1000000000000n,consume=false,simulationError=null;
+  function tokenRow(mint,amount,program){
+    const data=Buffer.alloc(165);mint.toBuffer().copy(data);user.toBuffer().copy(data,32);
+    data.writeBigUInt64LE(amount,64);data[108]=1;
+    return {owner:program,data,executable:false,lamports:2000000};
+  }
+  t.mock.method(jupiter,'buildHop',async()=>assert.fail('Native Stonk must not request an external quote'));
+  const connection={
+    async getMultipleAccountsInfo(keys){return keys.map(k=>existing&&k.equals(wsol)?
+      tokenRow(spl.NATIVE_MINT,existing,spl.TOKEN_PROGRAM_ID):r[k.toBase58()]||null);},
+    async getEpochInfo(){return {epoch:2000};},
+    async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};},
+    async simulateTransaction(tx,options){
+      assert.deepEqual(options.accounts.addresses,[target.toBase58(),...(existing?[wsol.toBase58()]:[])]);
+      const accounts=[tokenRow(pk(na[9]),net,spl.TOKEN_2022_PROGRAM_ID),
+        ...(existing?[tokenRow(spl.NATIVE_MINT,existing-(consume?1n:0n),spl.TOKEN_PROGRAM_ID)]:[])];
+      return {value:{err:simulationError,unitsConsumed:150000,accounts:accounts.map(row=>
+        ({...row,owner:row.owner.toBase58(),data:[row.data.toString('base64'),'base64']}))}};
+    },
+  };
+  const input={route:'stonk_native_curve',wallet:user.toBase58(),mint:na[9],quoteMint:na[10],
+    tokenProgram:na[11],quoteProgram:na[12],pool:na[4],lookupTables:[],minSlot:0,
+    amount:'10000000',slippagePercent:'2',minLiquidity:'0'};
+  const result=await build(input,connection);
+  assert.equal(result.quoteIn,'10000000');assert.equal(result.quoteOut,'10000000');
+  assert.equal(BigInt(result.minOut),(BigInt(result.quotedOut)*98n+99n)/100n);
+  const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
+  assert(tx.signatures[0].every(x=>x===0));assert.equal(tx.message.header.numRequiredSignatures,1);
+  const instructions=web3.TransactionMessage.decompile(tx.message).instructions;
+  const buy=instructions.find(ix=>ix.programId.equals(stonk.PROGRAM));
+  assert.equal(buy.data.readBigUInt64LE(8),10000000n);
+  assert.equal(buy.data.readBigUInt64LE(16),BigInt(result.minOut));
+  assert.equal(buy.data.readBigUInt64LE(24),0n);
+  const transfers=instructions.filter(ix=>ix.programId.equals(web3.SystemProgram.programId));
+  assert.equal(transfers.length,1);assert.equal(transfers[0].data.readBigUInt64LE(4),10000000n);
+  assert(transfers[0].keys[1].pubkey.equals(wsol));
+  assert.equal(instructions.filter(ix=>ix.programId.equals(spl.ASSOCIATED_TOKEN_PROGRAM_ID)).length,2);
+  const closes=ixs=>ixs.filter(ix=>ix.programId.equals(spl.TOKEN_PROGRAM_ID)&&ix.data[0]===9);
+  assert.equal(closes(instructions).length,1);
+  existing=50n;const withWsol=await build(input,connection);
+  assert.equal(closes(web3.TransactionMessage.decompile(web3.VersionedTransaction.deserialize(
+    Buffer.from(withWsol.transaction,'base64')).message).instructions).length,0);
+  consume=true;await assert.rejects(build(input,connection),/stonk-fill-rejected/);consume=false;
+  net=1n;await assert.rejects(build(input,connection),/stonk-fill-rejected/);net=1000000000000n;
+  simulationError={InstructionError:[4,'test']};await assert.rejects(build(input,connection),/simulation-rejected/);
+  simulationError=null;
+  await assert.rejects(build({...input,quoteMint:a[10]},connection),/native-only/);
+  await assert.rejects(build({...input,quoteProgram:spl.TOKEN_2022_PROGRAM_ID.toBase58()},connection),/native-only/);
+  await assert.rejects(build({...input,risk:{poolFeeBps:100,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
+  r[na[4]].data[17]=2;await assert.rejects(build(input,connection),/stonk-pool-rejected/);
+});
 test('historical LaunchLab quote reproduces exact transfer-tax net receipt',()=>{
   const r=values();active(r);
   const state=stonk.poolState(r[a[4]],pk(a[4]),pk(a[9]),pk(a[10]));

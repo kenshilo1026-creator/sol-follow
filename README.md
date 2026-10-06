@@ -31,16 +31,18 @@ pump.fun／stonk 鏈上來源核驗可透過 `--mint` probe 使用。
 **Pump／Stonk 的 SOL 與非 SOL 對 Create tx 解碼已接入**，支援頂層／可驗證 CPI、
 legacy／v0／v1，保存 mint、creator、quote、curve／pool 及名稱等欄位。
 四個指定主網樣本已加入回歸 fixture；詳見 [Create 解碼範圍](docs/create-tx-decoding.md)。
-新增 Stonk 非 SOL 報價幣的頂層 `BuyExactIn` 識別，包含前段透過 Jupiter 換幣的樣本。
-自己的跟買仍用 `SOL_BUY_AMOUNT_SOL`：Jupiter `/swap/v2/build` 尋找 SOL → quote（Orca Whirlpool／Meteora DLMM），
+支援 Stonk SOL 與非 SOL 報價幣的頂層 `BuyExactIn` 識別，包含前段透過 Jupiter 換幣的樣本。
+SOL 對使用 `stonk_native_curve`：本地包裝 WSOL 後直接呼叫 LaunchLab，無需 Jupiter 報價或限速等待。
+金額沿用 `SOL_BUY_AMOUNT_SOL`，扣稅後 min-out 使用共用 `SOL_SLIPPAGE_PERCENT`；既有 WSOL 餘額保留。
+非 SOL 對的跟買亦用 `SOL_BUY_AMOUNT_SOL`：Jupiter `/swap/v2/build` 尋找 SOL → quote（Orca Whirlpool／Meteora DLMM），
 再接 LaunchLab 買入，合成一筆本地組裝的交易，由公共 RPC 模擬及送出。
 Jupiter 使用免 key 存取（0.5 RPS），不需認證 header；不使用 Jupiter 代送、不加樣本小費或 integrator fee。
-同一程序的 Stonk 組單共用限速，上一筆完成後至少隔 2 秒；收到 429 按 Retry-After 冷卻（缺省 60 秒）。
+需要 Jupiter 的非 SOL 組單共用限速，上一筆完成後至少隔 2 秒；收到 429 按 Retry-After 冷卻（缺省 60 秒）。
 長冷卻期間拒絕新組單，避免等待過期訊號；多程序或共用 IP 的其他流量仍可能觸發供應商限流。
 支援已核驗 Stonk platform 的未畢業 constant curve，目標幣可有 Token-2022 轉帳稅；
 報價讀當前 epoch 費率，滑點下限及持倉均按扣稅後實收。報價幣有轉帳稅、未知平台、畢業池、
 CPI 內的 LaunchLab 買入、缺少有效尋路或交易超過 1232 bytes 時拒絕。
-Stonk SOL 報價買入、PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍待實作。
+PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍待實作。
 新買單保存簽名後才送出，依 finalized 交易核對實收數量；未知送單結果保留預留，不另簽新買單。
 舊訂單／持倉資料保留，通知人工管理；目前沒有自動賣出或止盈止損。
 
@@ -95,11 +97,14 @@ Pump 支援上述 DLMM → Pump 和原生 SOL → Pump 路徑；曲線已畢業�
 支援普通 SPL 和可公開轉帳的 Token-2022（包含 SPCX 的未啟用 hook、未暫停擴充）。
 使用訊號交易的 lookup table 作壓縮提示，帳戶及數量由 SDK 重新推導。
 CU 上限按完整交易模擬消耗自動加 20% 餘量；沒有另設優先費參數。
-`check` 會列出 `meteora_dlmm_to_pump_curve`、`pump_native_curve` 及 `sol_to_stonk_curve`。
+`check` 會列出 `meteora_dlmm_to_pump_curve`、`pump_native_curve`、`sol_to_pump_curve`、`sol_to_stonk_curve` 及 `stonk_native_curve`。
 `check` 的 `jupiter_access=keyless` 表示免 key 模式，不代表 API、流動性或 LIVE 實測已通過。
 DRY_RUN 的 `trading_enabled=false`。Stonk 本地路徑亦檢查第一段池的 WSOL reserve，並套用相同流動性門檻。
 
-Stonk 回歸樣本：`2R6jsVXbZN2CRN59VwHysxgadAgropybVwk7ou2DQYjDLJ74CFqgf7cmMhCkYNZ5cDJk9Ki3Un17mxjBwKXffaDT`。
+Stonk SOL 回歸樣本：`39FLtNUXE65aTrBBxtTPQ8t2bPkHBoft9gqBDwnPndnVhGXGMNs3Tvy5bge5A7ddUEAn4G5gGDLM7nEUHN9NHmDM`。
+樣本花費 4.34 SOL，扣除目標幣 1% 轉帳稅後實收 102384232.409726 枚；租金、小費不計入買入金額。
+目前池已畢業，歷史池狀態重建僅供離線測試；現時路由會拒絕該池，不切換至畢業後場所。
+Stonk 非 SOL 回歸樣本：`2R6jsVXbZN2CRN59VwHysxgadAgropybVwk7ou2DQYjDLJ74CFqgf7cmMhCkYNZ5cDJk9Ki3Un17mxjBwKXffaDT`。
 歷史交易的 JSON／protobuf 解碼和扣稅報價有離線測試。樣本池目前已畢業；
 離線組單測試使用明確重建的歷史池狀態及 mocked Jupiter／模擬回應，不代表主網完整買入成功。
 首次尋路需要 Jupiter 免 key 服務；已保存的路徑用本地 SDK 重算。完整主網模擬仍需要當前未畢業池。

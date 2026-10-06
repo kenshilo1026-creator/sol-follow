@@ -22,7 +22,7 @@ def main():
         print(json.dumps({'mode':config.mode,'cex_sources':len(config.cex),'privacy_cash':bool(config.privacy_pools),
                           'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not config.dry_run,
                           'create_decoders':CREATE_DECODERS,'create_quote_assets':['SOL','SPL Token','Token-2022'],
-                          'pending_routes':['pump_swap_buy_sell','stonk_native_buy','all_sell_routes','other_quote_swap_venues'],
+                          'pending_routes':['pump_swap_buy_sell','all_sell_routes','other_quote_swap_venues'],
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
                           'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,

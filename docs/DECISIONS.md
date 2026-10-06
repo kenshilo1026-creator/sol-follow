@@ -7,7 +7,7 @@ WebSocket 即時入口、歷史補查、持久化 jobs／cursor、有限重試�
 資料庫容量管理與 Telegram／健康統計。另啟用 Pump 畢業前原生 SOL 買入及非 SOL quote 的
 Meteora DLMM → Pump 原子買入、hotlist 計票／預留、模擬及新買單的 finalized 核對。
 `check` 與啟動通知列出 `meteora_dlmm_to_pump_curve`／`pump_native_curve`；DRY_RUN 只模擬，LIVE 才讀本地 keypair 簽名廣播。
-賣出、止盈止損、Stonk 買入與其他交易場所仍未接入。
+Stonk 畢業前 SOL 與非 SOL 買入已接入，詳見下方路由決策。賣出、止盈止損與其他交易場所仍未接入。
 
 簽名交易以 FULL durability 保存後才送出；逾時／查不到結果保留簽名及 mint 預留，不重簽重買。
 DRY_RUN 保存 dry-simulated，不捏造已成交持倉；LIVE finalized 後以 token balance delta 入帳。
@@ -60,6 +60,26 @@ Node 測試使用 pinned Pump／Meteora SDK 驗證指令帳戶、滑點、lookup
 以當前 pytest／npm test 輸出為準；不代表實盤成交驗收。
 Privacy Cash 公開 fixture 仍驗證收款人收到 29.889 SOL（pool 減少 30 SOL、fee 0.111 SOL）。
 
+
+## Stonk SOL copy-buy, 2026-10-06
+
+Reference: `39FLtNUXE65aTrBBxtTPQ8t2bPkHBoft9gqBDwnPndnVhGXGMNs3Tvy5bge5A7ddUEAn4G5gGDLM7nEUHN9NHmDM`, slot 453660847.
+The top-level LaunchLab BuyExactIn spends 4.34 WSOL on mint
+`J5hGf8AEr8e1yDUMoRKSvKtN5KG64WNH4G2oErAY6VVZ`. The gross token transfer is
+103418416.575481; after 1% Token-2022 withholding the user receives 102384232.409726.
+Only the proven quote-vault CPI counts as spending; account rent and the unrelated tip do not.
+
+`stonk_native_curve` uses the configured SOL budget, wraps it to WSOL, then builds a fresh
+LaunchLab BuyExactIn. It shares current curve/fee checks, target transfer-tax handling,
+the common slippage percentage, net receipt simulation and durable execution with the
+non-SOL adapter. It never calls Jupiter and bypasses its rate gate. Existing WSOL balances
+and authorities are checked after simulation and retained; only a newly created WSOL ATA
+is closed. Native observed-buy caps are checked directly in lamports, with no quote lookup.
+
+The sampled pool is now migrated (status 2), and the read-only mainnet probe rejects it
+with `stonk-pool-rejected`. Tests reconstruct the pre-buy reserves from its TradeEvent
+for historical math and offline transaction assembly; this is not a successful live buy.
+Top-level buys only; graduated pools and CPI-wrapped LaunchLab buys remain unsupported.
 
 ## Stonk non-SOL copy-buy, 2026-10-05
 
