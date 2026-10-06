@@ -41,13 +41,15 @@ class CachedBuilder:
         if route.quote_mint == WSOL:
             return
         request = self.seen.remember(route.request(), route.trade.wallet)
+        if request.get('swapRecipe') and not self.seen.recipe(request['quoteMint']):
+            self.seen.save_recipe(request['quoteMint'], request['swapRecipe'])
         self.enqueue(request, route.trade.wallet)
 
     def observe_create(self, item, enqueue=True):
         if item.quote_mint == WSOL:
             return
         from launchpads import stonk
-        request = dict(route='sol_to_stonk_curve' if item.launchpad == stonk.NAME else 'prime',
+        request = dict(route='sol_to_stonk_curve' if item.launchpad == stonk.NAME else 'sol_to_pump_curve',
                        mint=item.mint, quoteMint=item.quote_mint, tokenProgram=item.base_token_program,
                        quoteProgram=item.quote_token_program, pool=item.pool, minSlot=item.slot,
                        lookupTables=[], primeAccounts=[item.mint, item.quote_mint, item.pool])
@@ -123,8 +125,8 @@ class CachedBuilder:
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
-        if request['route'] == 'sol_to_stonk_curve':
-            payload['swapRecipe'] = self.seen.recipe(request['quoteMint'])
+        if request['route'] in ('sol_to_stonk_curve','sol_to_pump_curve'):
+            payload['swapRecipe'] = self.seen.recipe(request['quoteMint']) or request.get('swapRecipe')
         return await self.exchange(payload)
 
     async def set_priority(self, active):
@@ -177,6 +179,9 @@ class CachedBuilder:
             self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
         await self.import_creates()
         for request, wallet in self.seen.recent():
+            if request['route']=='prime':
+                request={**request,'route':'sol_to_pump_curve'}
+                request=self.seen.remember(request,wallet)
             self.enqueue(request, wallet)
         # Start/load SDKs before the first qualifying signal.
         await self.start()

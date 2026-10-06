@@ -47,7 +47,7 @@ _jupiter_gates=WeakKeyDictionary()
 
 
 async def build(config, route, wallet):
-    if route.kind=='sol_to_stonk_curve':
+    if route.kind in ('sol_to_stonk_curve','sol_to_pump_curve'):
         loop=asyncio.get_running_loop()
         gate=_jupiter_gates.setdefault(loop,JupiterGate())
         async with gate.slot():

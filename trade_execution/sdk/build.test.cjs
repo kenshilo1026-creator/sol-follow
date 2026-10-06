@@ -109,6 +109,24 @@ test('full atomic builder uses official SDK metas, lookup tables and one final s
   assert(simulated.signatures[0].every(x=>x===0));
   assert.equal(new BN(result.quotedOut).muln(98).addn(99).divn(100).toString(),result.minOut);
   assert.equal(instructions.at(-1).data[0],9); // close only the newly created WSOL ATA
+  // The same quote token also works through the generic, persisted route path.
+  const wrappedMint=Buffer.alloc(82);wrappedMint[44]=9;wrappedMint[45]=1;
+  values[spl.NATIVE_MINT.toBase58()]={owner:spl.TOKEN_PROGRAM_ID,data:wrappedMint,executable:false};
+  connection.getAccountInfo=async k=>values[k.toBase58()]||null;
+  connection.simulateTransaction=async(tx,options)=>{
+    const data=Buffer.alloc(165);new web3.PublicKey(a[1]).toBuffer().copy(data);user.toBuffer().copy(data,32);
+    data.writeBigUInt64LE(1000000000000000n,64);data[108]=1;
+    return {value:{err:null,unitsConsumed:400000,accounts:options.accounts.addresses.map(()=>
+      ({owner:a[3],data:[data.toString('base64'),'base64'],executable:false,lamports:2000000}))}};
+  };
+  const generic=await build({...input,route:'sol_to_pump_curve',pool:a[10],swapRecipe:{version:1,
+    tables:input.lookupTables,steps:[{label:'Meteora DLMM',pool:b[0],inputMint:spl.NATIVE_MINT.toBase58(),outputMint:a[2]}]}},connection);
+  const packet=web3.VersionedTransaction.deserialize(Buffer.from(generic.transaction,'base64'));
+  assert(packet.serialize().length<=1232);assert(packet.signatures[0].every(x=>x===0));
+  const genericIxs=web3.TransactionMessage.decompile(packet.message,{addressLookupTableAccounts:tables}).instructions;
+  const genericBuy=genericIxs.find(ix=>ix.programId.equals(pump.PUMP_PROGRAM_ID));
+  assert.equal(genericBuy.data.readBigUInt64LE(16).toString(),generic.minOut);
+  connection.simulateTransaction=async tx=>{simulated=tx;return {value:{err:simError,unitsConsumed:400000}};};
   curve[48]=1;
   await assert.rejects(build(input,connection),/curve-graduated/);
   curve[48]=0;simError={InstructionError:[6,{Custom:6000}]};

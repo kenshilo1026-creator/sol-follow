@@ -14,12 +14,18 @@
 `launchpads/` 負責來源識別，買入路由放在 `trade_execution/`。
 stonk 目前識別樣本所屬的 LaunchLab platform；未驗證的其他 platform／舊版發射路徑不自動納入。
 
-**目前支援 Pump 畢業前非 SOL quote 的原子買入：SOL → WSOL → Meteora DLMM → quote token → Pump。**
+**Pump 畢業前非 SOL quote 買入已改為通用路由：SOL → 自動尋找／快取的 quote 換幣路徑 → Pump。**
+quote mint 沒有 SPCX／DJT／USDC 白名單；按 Pump 指令、mint program 及曲線狀態識別。
+目標可直接花既有 quote，或經其他平台換幣後買 Pump；不再要求前一段必須是 DLMM。
+支援 `buy_v2`／`buy_exact_quote_in_v2` 頂層及具有完整 stackHeight／轉帳證據的 CPI；
+同錢包同 mint 的多筆買入無法唯一歸屬時拒絕計票。Create 階段便保存 quote、預熱及尋路。
+自己的 SOL → quote 路徑共用 Stonk 的 Orca Whirlpool／Meteora DLMM 引擎，最多三跳，按 quote mint 永久保存路徑。
+原有直接 DLMM 樣本可提供路徑提示，舊路由仍相容；實際建單重新驗證池 owner、mint、流動性及最新報價。
+**通用 mint 不代表任意 DEX 或任意 Token-2022 擴充都可執行**；沒有可用路徑、未知 hook、
+轉帳稅、不足流動性、費用／滑點超標或超過交易大小上限時拒絕。詳見 [Pump 非 SOL 路由](docs/pump-quote-routing.md)。
 亦支援 **畢業前原生 SOL → Pump** 買入，辨認 `buy`／`buy_exact_sol_in`。
 同一交易的多個買方按各自指令、簽名者及實際 SOL／token 轉帳分開解碼；每個合資格 hotlist 地址一票。
-參考 `471cEVk3…QGXvyiF` 中的 4 個買方不會變成機器人的 4 個下單錢包；仍只使用設定錢包跟買一次。
-辨認監聽交易中同一簽名者的頂層 DLMM `swap2` 及 Pump `buy_v2`／`buy_exact_quote_in_v2`，
-hotlist 錢包達到 N/W 門檻後，用當前鏈上狀態重新報價、組單；不複製舊交易的數量或指令。
+仍只使用設定錢包跟買一次，不複製舊交易的數量或指令。
 服務仍保留 CEX／Privacy Cash 入金資格、hotlist、交易取得／補查、持久化佇列及健康通知。
 pump.fun／stonk 鏈上來源核驗可透過 `--mint` probe 使用。
 **Pump／Stonk 的 SOL 與非 SOL 對 Create tx 解碼已接入**，支援頂層／可驗證 CPI、
@@ -105,7 +111,7 @@ Stonk 回歸樣本：`2R6jsVXbZN2CRN59VwHysxgadAgropybVwk7ou2DQYjDLJ74CFqgf7cmMh
 不按 TTL 清除；啟動時亦匯入仍保留在資料庫的歷史 Create。它們是身分／路徑提示，不是價格、資格證據或已簽交易。
 
 常駐 Node 程序保留 SDK 及最多 `SOL_QUOTE_CACHE_ACCOUNTS=512` 個活躍帳戶。
-帳戶及 ALT 使用 `SOL_SOURCE_WS_URL` 的公共 WebSocket 更新，不再定時 HTTP 刷新帳戶。
+帳戶及 ALT 使用 `SOL_RPC_WS_URL` 的公共 WebSocket 更新，不再定時 HTTP 刷新帳戶。
 首次讀取、斷線恢復、快取淘汰或資料 slot 落後訊號時，才按需 HTTP 補查。
 `SOL_QUOTE_CACHE_TTL_MS=2000` 限制未取得連續訂閱覆蓋的快照及 WebSocket 心跳時效；
 訂閱已確認、初始快照完整且連線健康時，未變動帳戶可以繼續使用。心跳不會提升帳戶資料 slot，
@@ -130,7 +136,7 @@ health 的 `quote_cache` 顯示帳戶及 blockhash hits／misses。
 Stonk 首次以 Jupiter `maxAccounts=32` 尋找 Whirlpool／Meteora DLMM 路徑，保存池與 lookup table 地址。
 其後依最新池資料使用 Orca／Meteora SDK 本地報價及組指令，快取命中不必再等 Jupiter。
 只接受單一路徑、最多三段；拒絕拆單、循環及未知場地。每段只花上一段的保證輸出，多出的中間代幣留在錢包。
-Pump 的已知 DLMM → Pump 路徑同樣使用帳戶快取；只有 Create、尚未知道 DLMM 池時先預熱 mint／曲線。
+Pump 非 SOL Create／買入共用 quote 路徑快取並預熱換幣帳戶；已知 DLMM 前段可作路徑提示，其他 quote 自動尋路。
 
 預設限制（皆為百分比，可在 `.env` 覆蓋，精度 0.01%，0 表示不容許）：
 
@@ -230,3 +236,15 @@ processed 不保證同 slot 成交；`minContextSlot` 是 RPC 最低讀取 slot�
 建單、模擬、公共 RPC 排隊及區塊收錄仍有延遲。本程式沒有鏈上同-slot 限制指令。
 部署時明確設定 `SOL_FEED_MODE=alchemy_grpc`、`SOL_HOTLIST_COMMITMENT=processed`，
 並配置 `ALCHEMY_API_KEY`，可讓缺少 key 時直接報配置錯誤，避免 auto 模式選用 confirmed websocket。
+
+## 非 SOL 跟買失敗通知
+
+設定 `TELEGRAM_BOT_TOKEN` 及 `TELEGRAM_CHAT_ID` 後，非 SOL 的目標買額檢查失敗
+（包括快取缺失、超過上限）及合資格 hotlist 錢包的已知 Pump／Stonk 非 SOL 買入指令
+未通過路由驗證，都會排入 Telegram 通知。
+建單／尋路／池費檢查、模擬、簽名、送單及鏈上失敗也會通知；重啟時中斷的未簽訂單會通知。
+內容包含代幣、報價幣、階段、可安全顯示的原因、來源交易及可取得的自身交易簽名。
+送單逾時仍標示「結果未知」並保留訂單，不當作確定失敗而重新買入。
+DRY_RUN 的失敗同樣通知並標示 dry。背景預熱本身、非 hotlist 地址及未達策略門檻不當成買單失敗。
+同一事件重試的跳過通知會去重，不使用所有代幣共用的限頻 key。
+通知沿用獨立非阻塞佇列；Telegram 未設定、服務不可用或佇列滿時仍可能送達失敗，請查看服務日誌。

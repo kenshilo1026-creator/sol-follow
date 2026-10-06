@@ -7,6 +7,32 @@ import aiohttp
 log = logging.getLogger('sol-follow')
 
 
+BUY_TITLES = {
+    'target buy skipped':'跟買已跳過', 'non-SOL buy skipped':'非 SOL 跟買已跳過',
+    'buy rejected':'跟買失敗（未送出）', 'buy deferred':'跟買送單結果未知',
+    'buy failed on chain':'跟買鏈上失敗', 'buy fill requires review':'跟買實收異常',
+    'buy status unknown after expiry; reservation retained':'跟買狀態未知（保留訂單）',
+}
+
+
+def message(kind, detail):
+    if kind not in BUY_TITLES:
+        return f'[SOL] {kind}\n{detail}'[:3900]
+    lines=[f"[SOL] {BUY_TITLES[kind]}"]
+    fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
+            ('reason','原因'),('outcome','結果'),('route','路徑'),('source_wallet','目標錢包'),
+            ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單')]
+    for field,label in fields:
+        if field=='wallet' and detail.get('source_wallet'):
+            continue
+        if field=='signature' and detail.get('signature')==detail.get('source_signature'):
+            continue
+        value=detail.get(field)
+        if value is not None:
+            lines.append(f'{label}: {value}')
+    return '\n'.join(lines)[:3900]
+
+
 class Notices:
     def __init__(self, config, store):
         self.config, self.store = config, store
@@ -38,7 +64,7 @@ class Notices:
                 if alert and self.config.telegram_token and self.config.telegram_chat:
                     try:
                         async with session.post('https://api.telegram.org/bot'+self.config.telegram_token+'/sendMessage',
-                            json={'chat_id':self.config.telegram_chat,'text':f'[SOL] {kind}\n{detail}'[:3900]}) as response:
+                            json={'chat_id':self.config.telegram_chat,'text':message(kind,detail)}) as response:
                             if response.status != 200:
                                 log.error('[SOL] Telegram failed HTTP=%s', response.status)
                     except Exception as exc:

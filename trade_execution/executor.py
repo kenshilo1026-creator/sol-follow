@@ -9,6 +9,7 @@ from chain_common.transaction import Tx
 from trade_execution.builder import build
 from features.funding.processed import Processed
 from trade_execution.native import decode_native
+from features.notifications.buy_failures import context as buy_context, reason as failure_reason
 
 MARKER = 'atomic-pump-buy-v1'
 
@@ -34,6 +35,8 @@ class Executor:
             return
         self.store.update_order(oid,reason=MARKER)
         signed=False
+        stage='precheck'
+        signature=None
         self.priority.active+=1
         try:
             if self.store.rows('trading',"SELECT 1 FROM positions WHERE mint=? AND mode=? AND amount!='0'",(row['mint'],row['mode'])):
@@ -45,6 +48,7 @@ class Executor:
             wallet=self.config.wallet_address or route.trade.wallet
             if hasattr(self.builder,"set_priority"):
                 await self.builder.set_priority(self.priority.active)
+            stage='build'
             result=await self.builder(self.config,route,wallet)
             if not self.fresh(route,oid):
                 raise ValueError('signal-expired-after-build')
@@ -56,6 +60,7 @@ class Executor:
                 or not 0<int(result['minOut'])<=int(result['quotedOut'])):
                 raise ValueError('invalid-built-transaction')
             self.store.update_order(oid,min_out=result['minOut'],quoted_out=result['quotedOut'])
+            stage='simulate'
             simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
                 {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])
             if simulation['value']['err'] is not None:
@@ -73,6 +78,7 @@ class Executor:
                 return
             # Local Solana CLI JSON keypair. No key material goes through Node,
             # provider request bodies, logs or the database.
+            stage='sign'
             keydata=json.loads(self.config.wallet_file.read_text(encoding='utf-8'))
             keypair=Keypair.from_bytes(bytes(keydata))
             if str(keypair.pubkey())!=wallet:
@@ -93,6 +99,7 @@ class Executor:
             signed=True
             if not self.fresh(route,oid):
                 raise ValueError('signal-invalid-before-send')
+            stage='submit'
             response=await self.rpc.call('sendTransaction',[raw,{'encoding':'base64','skipPreflight':False,
                 'preflightCommitment':self.config.hotlist_commitment,'maxRetries':0,'minContextSlot':route.trade.slot}])
             if response!=signature:
@@ -107,7 +114,9 @@ class Executor:
             else:
                 self.store.fail_order(oid,'build-or-simulation-rejected:'+type(exc).__name__)
             self.notices.emit('buy deferred' if signed else 'buy rejected',
-                {'order':oid,'type':type(exc).__name__,'signed':signed},alert=True)
+                {'order':oid,**buy_context(self.config,route),'stage':stage,'reason':failure_reason(exc),
+                 'type':type(exc).__name__,'signed':signed,'signature':signature,
+                 'outcome':'unknown' if signed else 'not-submitted'},alert=True)
         finally:
             self.priority.active-=1
             if hasattr(self.builder,"set_priority"):
@@ -119,8 +128,10 @@ class Executor:
     def recover_unsigned(self):
         # An interrupted build has no signed bytes to broadcast. Never turn an
         # old reservation into a fresh buy after a process restart.
-        for row in self.store.rows('trading',"SELECT id FROM orders WHERE state='reserved' AND reason=?",(MARKER,)):
+        for row in self.store.rows('trading',"SELECT id,mint,mode FROM orders WHERE state='reserved' AND reason=?",(MARKER,)):
             self.store.fail_order(row['id'],'interrupted-before-signing')
+            self.notices.emit('buy rejected',{'order':row['id'],'mint':row['mint'],'mode':row['mode'],
+                'stage':'recovery','reason':'interrupted-before-signing','outcome':'not-submitted'},alert=True)
 
     async def reconcile_once(self):
         rows=self.store.rows('trading',"SELECT * FROM orders WHERE reason=? AND mode='live' "
@@ -132,7 +143,8 @@ class Executor:
             if status and status.get('confirmationStatus')=='finalized':
                 if status.get('err') is not None:
                     self.store.fail_order(row['id'],'finalized-transaction-error')
-                    self.notices.emit('buy failed on chain',{'order':row['id'],'signature':row['signature']},alert=True)
+                    self.notices.emit('buy failed on chain',{'order':row['id'],'mint':row['mint'],'mode':row['mode'],'signature':row['signature'],
+                        'stage':'finalized','reason':'finalized-transaction-error','outcome':'failed'},alert=True)
                     continue
                 raw=await self.reconcile_rpc.transaction(row['signature'],commitment='finalized')
                 if raw is None:
@@ -144,7 +156,8 @@ class Executor:
                     raise ValueError('fill-transaction-mismatch')
                 tokens=tx.owner_tokens('post',wallet,row['mint'])-tx.owner_tokens('pre',wallet,row['mint'])
                 if tokens<int(row['min_out']):
-                    self.notices.emit('buy fill requires review',{'order':row['id']},alert=True,key='fill-review:'+row['id'])
+                    self.notices.emit('buy fill requires review',{'order':row['id'],'mint':row['mint'],'signature':row['signature'],
+                        'stage':'reconcile','reason':'received-below-min-out'},alert=True,key='fill-review:'+row['id'])
                     continue
                 native=[r for r in decode_native(tx) if r.trade.wallet==wallet and r.trade.mint==row['mint']]
                 quote=native[0].trade.quote if len(native)==1 else int(row['amount'])
@@ -159,7 +172,8 @@ class Executor:
                 if height>row['last_height']:
                     self.store.update_order(row['id'],state='unknown')
                     self.notices.emit('buy status unknown after expiry; reservation retained',
-                        {'order':row['id'],'signature':row['signature']},alert=True,key='buy-unknown:'+row['id'],interval=1800)
+                        {'order':row['id'],'mint':row['mint'],'signature':row['signature'],
+                         'stage':'reconcile','reason':'status-unknown-after-expiry','outcome':'unknown'},alert=True,key='buy-unknown:'+row['id'],interval=1800)
 
     async def reconcile(self):
         while True:

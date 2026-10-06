@@ -6,7 +6,8 @@ import aiohttp
 from chain_common.rpc import Priority, Rpc
 from chain_common.background_rpc import BackgroundRpc
 from chain_common.transaction import Tx, Unsupported
-from chain_common.primitives import SYSTEM
+from chain_common.primitives import SYSTEM, WSOL
+from features.notifications.buy_failures import context as buy_context, unrecognized_non_sol
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
 from features.funding.discovery import Discovery
@@ -103,6 +104,12 @@ class Service:
         if self.config.remaining:
             self.signals.observe_holdings(tx)
         routes=decode_buy_routes(tx)
+        if (self.config.hotlist_commitment!='processed' or processed) and tx.time>=max(self.signals.started,time.time()-self.config.signal_age):
+            for detail in unrecognized_non_sol(tx,routes):
+                if (self.store.eligible(detail['source_wallet'],tx.slot,tx.time,time.time())
+                        and self.proofs.usable(tx.signature,slot=tx.slot)):
+                    self.notices.emit('non-SOL buy skipped',{'mode':self.config.mode,**detail},alert=True,
+                        key='unsupported-buy:'+detail['event'],interval=300)
         # Reserve before awaiting execution, so a failed first attempt cannot
         # cause another buyer in this same signature to trigger a second buy.
         pending=[]
@@ -117,7 +124,9 @@ class Service:
                 allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 if not allowed:
                     self.signals.reject(trade)
-                    self.notices.emit('target buy skipped',{'signature':trade.signature,**detail})
+                    self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
+                        'stage':'target-amount-check',**detail},alert=route.quote_mint!=WSOL,
+                        key='target-skip:'+trade.event,interval=300)
                     continue
             oid=self.signals.observe(trade)
             if oid:

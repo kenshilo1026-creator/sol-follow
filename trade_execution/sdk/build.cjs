@@ -21,7 +21,7 @@ const REASONS = new Set(['invalid-integer','invalid-u64','invalid-percent','dust
   'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
   'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
   'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit',
-  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority']);
+  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority','pump-fill-rejected']);
 
 function integer(v) {
   if (!/^[0-9]+$/.test(String(v))) throw Error('invalid-integer');
@@ -162,6 +162,8 @@ async function buildNative(input,injectedConnection) {
 }
 
 async function build(input, injectedConnection) {
+  if (input.route==='sol_to_pump_curve') return require('./pump-quote.cjs').buildPumpQuote(input,
+    {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction,exactQuoteInstruction});
   if (input.route==='sol_to_stonk_curve') return require('./stonk.cjs').buildStonk(input,
     {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction});
   if (input.route==='pump_native_curve') return buildNative(input,injectedConnection);

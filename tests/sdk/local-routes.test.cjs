@@ -118,6 +118,8 @@ test('source cap values real non-SOL routes entirely from warmed snapshots',asyn
   for(const name of Object.keys(connection))if(typeof connection[name]==='function')connection[name]=async()=>{throw Error('network-forbidden');};
   const quoted=await quoteLimit(input,cache.view(slot,true));
   assert.equal(quoted.quoteLimit,warm.quoteLimit);assert(BigInt(quoted.quoteLimit)>0n);
+  const pumpLimit=await quoteLimit({...input,route:'sol_to_pump_curve'},cache.view(slot,true));
+  assert.equal(pumpLimit.quoteLimit,quoted.quoteLimit);
   now+=2001;
   await assert.rejects(quoteLimit(input,cache.view(slot,true)),/price-cache-miss/);
 });

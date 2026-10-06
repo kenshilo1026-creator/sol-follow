@@ -53,7 +53,7 @@ def test_non_sol_creates_cached_and_native_creates_excluded(config, store):
             builder.observe_create(item)
     rows = builder.seen.recent()
     assert len(rows) == 2
-    assert {r['route'] for r, _ in rows} == {'prime', 'sol_to_stonk_curve'}
+    assert {r['route'] for r, _ in rows} == {'sol_to_pump_curve', 'sol_to_stonk_curve'}
     assert all(r['quoteMint'] != WSOL for r, _ in rows)
 
 

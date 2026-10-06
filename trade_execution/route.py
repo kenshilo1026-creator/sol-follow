@@ -26,7 +26,11 @@ class Route:
     def request(self):
         return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
                     tokenProgram=self.token_program, quoteProgram=self.quote_program,
-                    pool=self.dlmm_pool, lookupTables=list(self.lookup_tables), minSlot=self.trade.slot)
+                    pool=self.trade.pool if self.kind=='sol_to_pump_curve' else self.dlmm_pool,
+                    lookupTables=list(self.lookup_tables), minSlot=self.trade.slot,
+                    **({'swapRecipe': {'version':1,'tables':list(self.lookup_tables),'steps':[
+                        {'label':'Meteora DLMM','pool':self.dlmm_pool,'inputMint':WSOL,'outputMint':self.quote_mint}]}}
+                       if self.kind=='sol_to_pump_curve' and self.dlmm_pool else {}))
 
 
 def decode(tx):
@@ -87,4 +91,5 @@ def decode_all(tx):
     from trade_execution.stonk import decode_stonk
     routes=decode_native(tx)
     non_native=decode(tx)
-    return routes+([non_native] if non_native else [])+decode_stonk(tx)
+    from trade_execution.pump_quote import decode_quote
+    return routes+decode_quote(tx,non_native)+decode_stonk(tx)
