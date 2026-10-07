@@ -170,7 +170,7 @@ async def test_usd_service_removal_and_missing_price(config,store,monkeypatch,fi
     async def minimum(r):
         if paid is None:raise BuildError('market-cap-price-unavailable')
         return {'quoteLimit':'1000','solLimit':'333333334','minimumUsdMicros':'50000000'}
-    async def maximum(r):return {'quoteLimit':str(r.observed_amount)}
+    async def maximum(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
     service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_limit=maximum
     executed=[]
     class Engine:

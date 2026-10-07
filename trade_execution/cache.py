@@ -126,7 +126,8 @@ class CachedBuilder:
         payload = payload_for(self.config, request, wallet)
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
                        minimumUsdMicros=str(self.config.min_observed_buy_usd_micros),
-                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros or self.config.min_observed_buy_usd_micros),
+                       maximumUsdMicros=str(self.config.max_observed_buy_usd_micros),
+                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros or self.config.min_observed_buy_usd_micros or self.config.max_observed_buy_usd_micros),
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})

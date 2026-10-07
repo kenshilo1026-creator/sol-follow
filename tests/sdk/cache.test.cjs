@@ -67,6 +67,10 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
     route:'sol_to_stonk_curve',quoteMint:fixture.recipe.steps.at(-1).outputMint,
     wallet:key().toBase58(),swapRecipe:fixture.recipe,minLiquidity:'0'});
   assert.equal(result.error,'price-cache-miss');assert.equal(calls,2); // no HTTP on minimum decisions
+  const maximum=await request(5,101,{operation:'quote_limit',maximumUsdMicros:'500000000',
+    route:'sol_to_stonk_curve',quoteMint:fixture.recipe.steps.at(-1).outputMint,
+    wallet:key().toBase58(),swapRecipe:fixture.recipe,minLiquidity:'0'});
+  assert.equal(maximum.error,'price-cache-miss');assert.equal(calls,2);
 });
 
 

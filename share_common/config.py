@@ -136,6 +136,7 @@ class Config:
     min_observed_buy_usd_micros: int = 50_000_000
     min_observed_buy: int = 0
     max_observed_buy: int = 5_000_000_000
+    max_observed_buy_usd_micros: int = 500_000_000
     blockhash_cache_ttl_ms: int = 5000
     blockhash_refresh_ms: int = 1000
     max_market_cap_usd_micros: int = 0
@@ -177,6 +178,10 @@ def load(root=ROOT, env=None):
     minimum_buy = lamports(get('SOL_FOLLOW_MIN_TARGET_BUY_SOL', '0'))
     if minimum_buy > maximum_buy:
         raise ValueError('minimum-target-buy-exceeds-maximum')
+    maximum_usd = usd_micros(get('SOL_FOLLOW_MAX_TARGET_BUY_USD','500'))
+    minimum_usd = usd_micros(get('SOL_FOLLOW_MIN_TARGET_BUY_USD','50'))
+    if maximum_usd<=0 or minimum_usd>maximum_usd:
+        raise ValueError('invalid-target-buy-usd-range')
     if maximum_buy <= 0:
         raise ValueError('invalid-target-buy-limit')
     endpoint = get('SOL_ALCHEMY_GRPC_ENDPOINT', 'https://solana-mainnet.streaming.alchemy.com')
@@ -233,7 +238,7 @@ def load(root=ROOT, env=None):
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
         hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy, min_observed_buy=minimum_buy,
-        min_observed_buy_usd_micros=usd_micros(get('SOL_FOLLOW_MIN_TARGET_BUY_USD','50')),
+        min_observed_buy_usd_micros=minimum_usd, max_observed_buy_usd_micros=maximum_usd,
         max_market_cap_usd_micros=market_cap_micros(get('SOL_FOLLOW_MAX_MARKET_CAP_USD_K','0')),
         blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
         blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),

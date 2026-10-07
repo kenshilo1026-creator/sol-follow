@@ -164,6 +164,21 @@ class Service:
             trade=route.trade
             if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
+                allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
+                over_limit=not allowed and detail['reason'] in ('source-sol-budget-over-limit','source-token-budget-over-usd-limit')
+                if (over_limit and trade.side=='buy'
+                        and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)):
+                    # Persist removal before any slower market-cap lookup.
+                    self.store.remove_hotlist(trade,'buy-above-maximum')
+                    self.signals.reject(trade)
+                    trade_record(self.store,trade,'maximum','blocked',detail['reason'],{**detail,'hotlist_removed':True})
+                    self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
+                        'stage':'target-amount-check',**detail,'hotlist_removed':True},alert=route.quote_mint!=WSOL,
+                        key='target-skip:'+trade.event,interval=300)
+                    if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
+                        self.signals.reject_mint(trade.mint)
+                    await self.market_cap.check(route)  # Preserve first-observation valuation.
+                    continue
                 if trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age):
                     if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
                         self.signals.reject_mint(trade.mint)
@@ -190,9 +205,8 @@ class Service:
                         self.signals.reject_mint(trade.mint)
                         self.signals.reject(trade)
                         continue
-                allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 if not allowed:
-                    trade_record(self.store,trade,'maximum','blocked',detail['reason'],detail)
+                    trade_record(self.store,trade,'maximum','blocked' if over_limit else 'unavailable',detail['reason'],detail)
                     self.signals.reject(trade)
                     self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
                         'stage':'target-amount-check',**detail},alert=route.quote_mint!=WSOL,

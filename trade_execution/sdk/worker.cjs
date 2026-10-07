@@ -5,7 +5,7 @@ const {build,connectionFor,REASONS}=require('./build.cjs');
 const {AccountCache}=require('./account-cache.cjs');
 const {BlockhashCache}=require('./blockhash-cache.cjs');
 const {BackgroundGate}=require('./background-gate.cjs');
-const {quoteLimit,quoteMinimumUsd}=require('./observed-buy.cjs');
+const {quoteMaximumUsd,quoteMinimumUsd}=require('./observed-buy.cjs');
 const {marketCap,ORACLES}=require('./market-cap.cjs');
 const {withReporter}=require('./public-rpc.cjs');
 const gate=new BackgroundGate();
@@ -47,7 +47,7 @@ async function handle(message){
     }else if(input.operation==='quote_minimum'){
       result=await quoteMinimumUsd(input,connection);
     }else if(['quote_limit','warm_limit'].includes(input.operation)){
-      result=await quoteLimit(input,connection);
+      result=await quoteMaximumUsd(input,connection);
     }else if(input.route==='prime'){
       await connection.getMultipleAccountsInfo(input.primeAccounts.map(k=>new web3.PublicKey(k)));
       result={warmed:true};

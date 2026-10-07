@@ -20,14 +20,20 @@ async function quoteLimit(input,connection){
   risk.check(input,q.fees,q.impacts);
   return {quoteLimit:q.minimum.toString(),solLimit:amount.toString()};
 }
-async function quoteMinimumUsd(input,connection,now=Math.floor(Date.now()/1000)){
-  if(!/^[1-9][0-9]*$/.test(input.minimumUsdMicros)||input.minimumUsdMicros.length>24)throw Error('invalid-u64');
+async function quoteUsd(input,connection,key,roundUp,now){
+  if(!/^[1-9][0-9]*$/.test(input[key])||input[key].length>24)throw Error('invalid-u64');
   const rows=await connection.getMultipleAccountsInfo(ORACLES.map(o=>o.address));
   const oracle=selectUsd(rows,now);
-  // USD micro-units * 1000 / USD per SOL = lamports, rounded up.
-  const amount=new Decimal(input.minimumUsdMicros).mul(1000).div(oracle.value).ceil().toFixed(0);
+  // Round the minimum up and maximum down so lamport rounding cannot widen limits.
+  const lamports=new Decimal(input[key]).mul(1000).div(oracle.value);
+  const amount=(roundUp?lamports.ceil():lamports.floor()).toFixed(0);
   const result=await quoteLimit({...input,limitAmount:amount},connection);
-  return {...result,minimumUsdMicros:input.minimumUsdMicros,solUsd:oracle.value.toFixed(8),
-    oraclePublished:oracle.published};
+  return {...result,[key]:input[key],solUsd:oracle.value.toFixed(8),oraclePublished:oracle.published};
 }
-module.exports={quoteLimit,quoteMinimumUsd};
+async function quoteMinimumUsd(input,connection,now=Math.floor(Date.now()/1000)){
+  return quoteUsd(input,connection,'minimumUsdMicros',true,now);
+}
+async function quoteMaximumUsd(input,connection,now=Math.floor(Date.now()/1000)){
+  return quoteUsd(input,connection,'maximumUsdMicros',false,now);
+}
+module.exports={quoteLimit,quoteMinimumUsd,quoteMaximumUsd};

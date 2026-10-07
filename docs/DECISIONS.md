@@ -269,3 +269,26 @@ best effort and reports state that missing evidence is inconclusive. Decisions
 are indexed by wallet/time/signature and repeated identical outcomes are
 coalesced. These records are local and independent of Telegram. Reservation
 source mappings remain with orders, without changing admission/trading rules.
+
+
+## 2026-10-07: independent maximums and hotlist removal
+
+`SOL_FOLLOW_MAX_TARGET_BUY_SOL=5` applies to SOL pairs, and
+`SOL_FOLLOW_MAX_TARGET_BUY_USD=500` applies to non-SOL pairs. Exactly equal passes;
+above the relevant limit skips following and removes the source wallet. The
+non-SOL USD upper bound supersedes the earlier 5 SOL bound for non-SOL pairs.
+Both maximums must be positive and at least their corresponding minimum.
+
+The existing conservative calldata input-budget check is retained: an input
+ceiling above the limit can reject even if actual execution spent less. The
+minimum continues to use attributed actual payment. The USD upper bound uses
+cached Pyth SOL/USD and the existing conversion quote at that budget, rounded
+down to whole lamports, including fees/impact. Decision-time HTTP/quote API
+fallbacks are forbidden; unknown or stale valuation skips following without
+claiming an over-limit buy and without removing the wallet for that reason.
+
+For fresh eligible buys, proven over-limit removal and its developer-audit
+reason are persisted before market-cap work. The first-observation market-cap
+rule is retained. Removal survives restart/old-deposit replay; a newer qualified
+deposit can admit the wallet again. Existing public-WS oracle prewarming now
+also runs when only the USD maximum is enabled. No Telegram formatting change.

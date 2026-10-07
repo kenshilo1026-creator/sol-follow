@@ -141,9 +141,9 @@ test('foreground cold discovery never waits on paused background discovery',asyn
 
 
 for(const fixture of [snapshot,require('../fixtures/local_dlmm_quote_accounts.json')]){
- test('USD minimum uses cached Pyth and '+fixture.recipe.steps[0].label+' without network',async t=>{
+ test('USD minimum and maximum use cached Pyth and '+fixture.recipe.steps[0].label+' without network',async t=>{
   const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
-  const {quoteLimit,quoteMinimumUsd}=require('../../trade_execution/sdk/observed-buy.cjs');
+  const {quoteLimit,quoteMinimumUsd,quoteMaximumUsd}=require('../../trade_execution/sdk/observed-buy.cjs');
   const {ORACLES,FEED,PYTH_DISC}=require('../../trade_execution/sdk/market-cap.cjs');
   const now=snapshot.timestamp;t.mock.method(Date,'now',()=>now);
   const user=web3.Keypair.generate().publicKey,{connection,rows}=fixtureConnection(user,fixture);
@@ -159,13 +159,18 @@ for(const fixture of [snapshot,require('../fixtures/local_dlmm_quote_accounts.js
   const input={route:'sol_to_stonk_curve',wallet:user.toBase58(),quoteMint:fixture.recipe.steps.at(-1).outputMint,
     minimumUsdMicros:'50000000',minLiquidity:'0',swapRecipe:fixture.recipe};
   const expected=await quoteLimit({...input,limitAmount:'333333334'},cache.view(slot));
+  const expectedMax=await quoteLimit({...input,limitAmount:'3333333333'},cache.view(slot));
   for(const key of Object.keys(connection))if(typeof connection[key]==='function')connection[key]=async()=>{throw Error('network-forbidden');};
   const result=await quoteMinimumUsd(input,cache.view(slot,true));
   assert.equal(result.solLimit,'333333334');assert.equal(result.quoteLimit,expected.quoteLimit);
   assert.equal(result.minimumUsdMicros,'50000000');assert.equal(result.solUsd,'150.00000000');
   const pumpResult=await quoteMinimumUsd({...input,route:'sol_to_pump_curve'},cache.view(slot,true));
   assert.equal(pumpResult.quoteLimit,result.quoteLimit);
+  const maximum=await quoteMaximumUsd({...input,maximumUsdMicros:'500000000'},cache.view(slot,true));
+  assert.equal(maximum.solLimit,'3333333333');assert.equal(maximum.quoteLimit,expectedMax.quoteLimit);
+  assert.equal(maximum.maximumUsdMicros,'500000000');
   data.writeBigInt64LE(BigInt(Math.floor(now/1000)-91),93);
   await assert.rejects(quoteMinimumUsd(input,cache.view(slot,true)),/market-cap-price-unavailable/);
+  await assert.rejects(quoteMaximumUsd({...input,maximumUsdMicros:'500000000'},cache.view(slot,true)),/market-cap-price-unavailable/);
  });
 }

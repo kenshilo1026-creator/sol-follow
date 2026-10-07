@@ -68,14 +68,15 @@ async def test_non_sol_cache_boundary_failure_and_extra_existing_quote(config):
         calls=0
         async def quote_limit(self,route):
             self.calls+=1
-            return {'quoteLimit':str(r.observed_amount)}
+            return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
     cache=Cache()
     assert r.observed_mint!=WSOL and r.funding_sol_limit>0
     assert (await check(config,r,cache))[0]
     assert not (await check(config,replace(r,observed_amount=r.observed_amount+1),cache))[0]
     before=cache.calls
-    assert not (await check(config,replace(r,funding_sol_limit=5_000_000_001),cache))[0]
-    assert cache.calls==before
+    # Non-SOL pairs are governed by USD, independently of the old SOL funding hint.
+    assert (await check(config,replace(r,funding_sol_limit=5_000_000_001),cache))[0]
+    assert cache.calls==before+1
     class Missing:
         async def quote_limit(self,route):raise BuildError('price-cache-miss')
     assert not (await check(config,r,Missing()))[0]
