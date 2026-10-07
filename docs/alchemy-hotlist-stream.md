@@ -43,7 +43,7 @@ credentials. It does not prove live gRPC access.
   existing decoders. It does not expand the supported buy/sell route set.
 - Block metadata supplies chain time and a recent live-stream anchor. Processed
   signals without blockTime use an explicitly marked first-receipt timestamp only
-  after passing the anchor/replay barrier, with no getBlockTime wait. Confirmed
+  after passing the live-slot barrier, with no getBlockTime wait. Confirmed
   mode can fetch missing blockTime once per slot. Receipt time is not chain time.
 - The full normalized transaction is durably inserted alongside its job before
   advancing the checkpoint. Completed payloads are removed. Replays deduplicate by
@@ -61,24 +61,30 @@ credentials. It does not prove live gRPC access.
 
 ## Recovery without continuous polling
 
-There is no round-robin `getSignaturesForAddress` scan when idle. Persistent
-catch-up requests are created for a new hotlist address, first subscription,
-legacy WebSocket reconnection or an outage beyond the gRPC replay window. Failed
-catch-up and unfinished pages retry with backoff. An empty response completes the
-request; it is not polled again until another triggering event.
+There is no round-robin `getSignaturesForAddress` scan when idle. Only configured
+CEX/Privacy Cash source addresses receive startup/reconnection gap requests.
+Each gap covers at most the last 120 seconds (or the shorter configured backfill
+age), with one page of 100 signatures per turn and at most three pages per source.
+Pagination resumes its saved cursor instead of fetching the newest page again.
+Unknown timestamps are not fetched as part of this short window. A full page at
+the budget limit is logged as incomplete coverage; long outages are not backfilled.
 
-On gRPC reconnect the client resumes from the durable high-water slot minus 128
-slots, including partially delivered slots. The overlap is conservative and is
-not a formal arbitrary-out-of-order delivery guarantee. Alchemy documents 6,000
-slots of replay; this client uses a 5,800-slot margin before falling back to bounded
-public address catch-up. Catch-up still obeys `SOL_BACKFILL_MAX_AGE_SECONDS`; old
-signals cannot trigger a fresh buy. Subscription failures (including permissions
-and filter limits) remain visible and retry with exponential backoff; they do not
-silently switch the hotlist to public subscriptions or claim full coverage.
+New hotlist addresses only update the live subscription. Existing queued address
+scans for non-source wallets are discarded without RPC calls. On gRPC reconnect,
+the client reads the current slot and subscribes without `from_slot`; missed target
+buys are deliberately not replayed. Failures remain visible and retry with backoff.
+Watch-set updates do not trigger public history requests.
 
-Watch-set changes update the stream and queue one public catch-up for each added
-address. Providers do not return a per-address subscription acknowledgement, so
-live testing must include additions and events around the update boundary.
+Buying requires fresh in-memory receipt evidence from this process's WebSocket or
+a gRPC transaction that passes the current-slot/time anchor barrier. History jobs
+and payloads restored after restart cannot vote or trigger buy quotes. Untouched
+recovery jobs older than 120 seconds expire before a transaction fetch. Funding
+qualification retries retain their existing deadline. The independent 30-day
+pre-deposit signed-activity check, processed fork checks and own-order reconciliation
+remain enabled; this policy does not remove all historical RPC calls.
+
+Providers do not return a per-address subscription acknowledgement. Events around
+filter updates and during disconnection can be missed under this live-only policy.
 
 Health reports stream messages, received protobuf bytes, reconnects, slot and
 address count separately from public HTTP calls. Protobuf byte counts are a local
@@ -110,7 +116,7 @@ and license are in `chain_common/yellowstone/proto`. Python code was generated w
 
 Regression tests include 10,000-key serialization, four real Create fixtures and
 the supported buy-route fixture round-tripped through protobuf, restart durability,
-deduplication, no idle history calls, public-only routing, replay expiry, and an
+deduplication, no idle history calls, public-only routing, live-only reconnection, and an
 in-process gRPC server exercising receipt, filter updates and cancellation.
 
 Official references:

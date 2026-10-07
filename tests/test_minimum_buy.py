@@ -94,7 +94,7 @@ async def test_processed_minimum_skips_order_and_keeps_subscription(config,store
     class Engine:
         async def buy(self,oid,r):executed.append(oid)
     service.executor=Engine();store.stream_transaction(raw)
-    await service.process({'signature':route.trade.signature},NoRpc())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
     assert len(executed)==orders
     assert len(store.rows('trading','SELECT * FROM orders'))==orders
     if not orders:
@@ -129,7 +129,7 @@ async def test_small_buy_keeps_hotlist_even_if_market_cap_cancelled(config,store
     async def interrupted(r):raise asyncio.CancelledError
     service.market_cap.check=interrupted;store.stream_transaction(raw)
     with pytest.raises(asyncio.CancelledError):
-        await service.process({'signature':route.trade.signature},NoRpc())
+        service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
     assert route.trade.wallet in Store(config.data).hotlist(now)
     assert not store.rows('trading','SELECT * FROM orders')
 
@@ -176,7 +176,7 @@ async def test_usd_service_ignores_small_buy_and_missing_price(config,store,monk
     class Engine:
         async def buy(self,oid,r):executed.append(oid)
     service.executor=Engine();store.stream_transaction(raw)
-    await service.process({'signature':route.trade.signature},NoRpc())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
     assert bool(executed)==allowed
     assert (route.trade.wallet not in Store(config.data).hotlist(now))==removed
     if not allowed:assert not store.rows('trading','SELECT * FROM votes')
@@ -221,12 +221,12 @@ async def test_wallet_can_follow_later_buy_after_small_buy(config,store,monkeypa
     class Engine:
         async def buy(self,oid,r):executed.append(oid)
     service.executor=Engine();store.stream_transaction(raw)
-    await service.process({'signature':current.trade.signature},NoRpc())
+    service.store.mark_live(current.trade.signature);await service.process({'signature':current.trade.signature},NoRpc())
     assert not executed and current.trade.wallet in Store(config.data).hotlist(now)
     decision=store.rows('audit',"SELECT outcome,detail FROM decisions WHERE stage='ignore'")[0]
     assert decision['outcome']=='ignored' and not json.loads(decision['detail'])['hotlist_removed']
     second=deepcopy(raw);sig=b58encode(bytes([19])*64);second['transaction']['signatures'][0]=sig;second['slot']+=1
     current=replace(current,trade=replace(current.trade,signature=sig,event=sig+':buy',slot=second['slot'],quote=floor))
     store.stream_transaction(second)
-    await service.process({'signature':sig},NoRpc())
+    service.store.mark_live(sig);await service.process({'signature':sig},NoRpc())
     assert len(executed)==1

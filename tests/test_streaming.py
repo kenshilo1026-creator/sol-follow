@@ -155,7 +155,7 @@ async def test_no_background_network_when_idle_then_one_event_catchup(config,sto
     task=asyncio.create_task(d.urgent_history())
     try:
         await asyncio.sleep(0.05);assert rpc.calls==[]
-        d.request_history(address())
+        d.request_history(next(iter(config.cex)))
         async with asyncio.timeout(2):
             while not rpc.calls:await asyncio.sleep(0.01)
         await asyncio.sleep(0.6)
@@ -190,10 +190,12 @@ async def test_replay_overlap_and_expired_gap(config,store):
         async def call(self,*args):return self.head
     rpc=Public();d=Discovery(config,store,None,Notices());f=HotlistFeed(config,store,rpc,Notices(),d)
     f.last_slot=900
-    assert await f.resume_slot({'a'})==772
+    assert await f.resume_slot({'a'}) is None
+    assert f.live_floor==1001
     rpc.head=9000
     assert await f.resume_slot({'a'}) is None
-    assert store.rows('funding','SELECT address FROM history_requests')==[{'address':'a'}]
+    assert store.rows('funding','SELECT address FROM history_requests')==[]
+    assert f.live_floor==9001
 
 
 def test_checkpoint_does_not_advance_when_inbox_commit_fails(config,store,monkeypatch):
@@ -257,6 +259,7 @@ async def test_real_grpc_transport_dynamic_filter_and_durable_receive(config,sto
                 fund(store,second,time.time())
                 await asyncio.wait_for(changed.wait(),4)
                 assert seen==[{wallet},{wallet,second}]
+                assert store.rows('funding','SELECT * FROM history_requests')==[]
             finally:
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
     finally:

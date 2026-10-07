@@ -147,7 +147,7 @@ async def test_over_cap_never_votes_even_after_confirmed_retry(config,store):
     class Rpc:
         async def transaction(self,sig):return raw
     sig=raw['transaction']['signatures'][0]
-    store.enqueue([sig]);await service.process({'signature':sig},Rpc())
+    store.enqueue([sig],live=True);await service.process({'signature':sig},Rpc())
     assert not store.rows('trading','SELECT * FROM votes')
     assert not store.rows('trading','SELECT * FROM orders')
     assert len(store.rows('trading','SELECT * FROM events'))==4

@@ -98,7 +98,10 @@ async def test_websocket_subscribes_all_addresses(config,store):
                 assert body['method']=='logsSubscribe'
                 received.update(body['params'][0]['mentions'])
                 await ws.send_json({'jsonrpc':'2.0','id':body['id'],'result':body['id']})
-                if received==expected:complete.set()
+                if received==expected:
+                    await ws.send_json({'jsonrpc':'2.0','method':'logsNotification',
+                        'params':{'result':{'value':{'signature':'live-websocket-test','err':None}}}})
+                    complete.set()
         return ws
     app=web.Application();app.router.add_get('/ws',websocket)
     runner=web.AppRunner(app);await runner.setup()
@@ -111,9 +114,10 @@ async def test_websocket_subscribes_all_addresses(config,store):
     try:
         await asyncio.wait_for(complete.wait(),timeout=5)
         async with asyncio.timeout(5):
-            while discovery.subscribed!=expected:
+            while discovery.subscribed!=expected or not store.is_live('live-websocket-test',15):
                 await asyncio.sleep(0.01)
         assert received==expected
+        assert store.is_live('live-websocket-test',15)
     finally:
         task.cancel()
         await asyncio.gather(task,return_exceptions=True)

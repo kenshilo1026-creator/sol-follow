@@ -156,8 +156,8 @@ async def test_hotlist_buy_signal_reaches_executor(config,store,monkeypatch):
     service.executor=Engine()
     async def cached_limit(route):return {"quoteLimit":str(route.observed_amount),"maximumUsdMicros":"500000000"}
     monkeypatch.setattr(service.quote_builder,"quote_limit",cached_limit)
-    await service.process({'signature':route.trade.signature},TransactionRPC())
-    await service.process({'signature':route.trade.signature},TransactionRPC())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},TransactionRPC())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},TransactionRPC())
     assert len(calls)==1 and calls[0][1].dlmm_pool==route.dlmm_pool
 
 

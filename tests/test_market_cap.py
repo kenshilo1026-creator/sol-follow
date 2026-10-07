@@ -139,7 +139,7 @@ async def test_processed_service_checks_before_first_vote(config,store,cap,buys)
         async def buy(self,oid,route):executed.append(oid)
     service.executor=Engine()
     store.stream_transaction(raw)
-    await service.process({'signature':raw['transaction']['signatures'][0]},NoRpc())
+    service.store.mark_live(raw['transaction']['signatures'][0]);await service.process({'signature':raw['transaction']['signatures'][0]},NoRpc())
     assert len(checked)==1 and len(executed)==buys
     assert len(store.rows('trading','SELECT * FROM orders'))==buys
     if not buys:assert store.rows('trading','SELECT * FROM votes')==[]

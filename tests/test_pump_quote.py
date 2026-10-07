@@ -112,7 +112,7 @@ async def test_direct_quote_hotlist_buy_reaches_executor(config,store,monkeypatc
     async def limit(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
     service.executor=Engine();monkeypatch.setattr(service.quote_builder,'quote_limit',limit)
     store.enqueue([route.trade.signature])
-    await service.process({'signature':route.trade.signature},RPC())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},RPC())
     assert len(calls)==1 and calls[0].kind=='sol_to_pump_curve'
     assert builder_request(service)==route.quote_mint
 

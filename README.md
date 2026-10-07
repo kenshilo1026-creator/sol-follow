@@ -73,8 +73,11 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；報價、模擬、買入送單及 HTTP 查詢使用此公共 RPC。
 在本專案 `.env` 加入 `ALCHEMY_API_KEY` 並設定 `SOL_FEED_MODE=alchemy_grpc`，
 只有 hotlist 交易改用 Alchemy 完整交易串流；不會切換 HTTP 到 Alchemy。
-正常運作不循環查詢所有地址歷史，只在入列、首次訂閱或斷線補漏時觸發有界補查。
-設定、重播範圍及一萬地址連線測試見 [Alchemy hotlist 訂閱](docs/alchemy-hotlist-stream.md)。
+入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。
+新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。
+買入必須有本次程序的即時接收紀錄，補查及重啟恢復的交易不投票、不觸發買入報價。
+入金前 30 天簽名活動資格檢查、processed 分叉核對及自己已送出訂單的確認仍保留。
+設定、即時監控範圍及一萬地址連線測試見 [Alchemy hotlist 訂閱](docs/alchemy-hotlist-stream.md)。
 公共 RPC 僅適合短暫探測，不能承諾訂閱上限／延遲／零漏單。環境變數優先於 `.env`。
 Telegram 填本專案 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，不自動讀上層憑證。
 
@@ -399,7 +402,7 @@ DLMM→Pump 亦檢查第一段 SOL 預算，避免忽略既有付款代幣或超
 不會等補齊後追買同一事件。帳戶／epoch 背景更新與本人建單、模擬及送單仍使用公共 RPC。
 既有 minOut、滑點、池費、總費用和價格影響限制保留。
 
-重播訊號必須通過即時 slot／區塊時間錨點檢查，不能把收到歷史交易的時間當成新交易。
+gRPC 交易必須通過即時 slot／區塊時間錨點檢查，不能把收到歷史交易的時間當成新交易。
 缺少 blockTime 的即時訊號使用明確標記的首次接收時間；確認後另走公共 RPC 補資格及 Create 記錄。
 processed 來源和每張訂單的來源票數均持久化；dead slot、來源失敗、slot 改變或超過 30 秒未能確認會撤票，
 建單／簽名／送出前再次檢查。背景確認使用批次 getSignatureStatuses，並不輪詢 hotlist 地址的交易歷史。

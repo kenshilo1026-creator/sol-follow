@@ -83,6 +83,7 @@ def test_service_records_buy_route_before_hotlist_qualification(config, store, m
     monkeypatch.setattr('features.runtime.service.time.time', lambda: raw['blockTime']+1)
     raw_rpc = SimpleNamespace(transaction=lambda signature: asyncio.sleep(0, result=raw))
     signature = raw['transaction']['signatures'][0]
+    store.mark_live(signature)
     asyncio.run(service.process({'signature': signature}, raw_rpc))
     assert len(service.quote_builder.seen.recent()) == 1
     assert store.rows('trading', 'SELECT * FROM orders') == []

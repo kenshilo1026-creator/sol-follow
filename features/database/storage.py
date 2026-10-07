@@ -1,5 +1,6 @@
 """Independent WAL databases. No network operation occurs inside a transaction."""
 from contextlib import contextmanager
+from collections import OrderedDict
 import json
 from pathlib import Path
 import sqlite3
@@ -78,6 +79,8 @@ AUDIT_SCHEMA = '''CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time 
 class Store:
     def __init__(self, directory):
         self.directory = Path(directory)
+        # Live receipt evidence is deliberately not restored after a restart.
+        self.live_receipts = OrderedDict()
         self.new_jobs = 0
         self.revisited_jobs = 0
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -179,7 +182,20 @@ class Store:
                       '(SELECT 1 FROM hotlist WHERE wallet=?)',(trade.wallet,trade.wallet))
             c.commit()
 
-    def enqueue(self, signatures, now=None):
+    def mark_live(self, signature):
+        now = time.monotonic()
+        while self.live_receipts and next(iter(self.live_receipts.values())) < now-300:
+            self.live_receipts.popitem(last=False)
+        self.live_receipts.setdefault(signature, now)
+        while len(self.live_receipts) > 10000:
+            self.live_receipts.popitem(last=False)
+
+    def is_live(self, signature, max_age):
+        seen = self.live_receipts.get(signature)
+        return seen is not None and 0 <= time.monotonic()-seen <= max_age
+
+    def enqueue(self, signatures, now=None, *, live=False):
+        signatures = list(dict.fromkeys(signatures))
         now = time.time() if now is None else now
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
@@ -188,6 +204,9 @@ class Store:
             changed = c.total_changes
             c.commit()
         self.new_jobs += changed
+        if live:
+            for signature in signatures:
+                self.mark_live(signature)
         return changed
 
     def due(self, limit, now, oldest=False, streamed=None):
@@ -254,6 +273,8 @@ class Store:
                 c.execute('INSERT OR REPLACE INTO stream_payloads VALUES (?,?)',(sig,json.dumps(raw)))
             c.commit()
         self.new_jobs += added
+        if raw.get('_stream', {}).get('live'):
+            self.mark_live(sig)
         return added
 
     def stream_payload(self, signature):

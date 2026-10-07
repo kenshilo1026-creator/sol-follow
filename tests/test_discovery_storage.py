@@ -21,6 +21,7 @@ async def test_gap_checkpoint_survives_rpc_failure(store):
         async def call(self,method,params):
             if 'before' in params[1]:raise RuntimeError('429')
             return first
+    await history_page(RPC(),store,addr,3600,Notices())
     with pytest.raises(RuntimeError):await history_page(RPC(),store,addr,3600,Notices())
     state=store.cursor(addr)
     assert state['latest']=='0' and state['gaps'][0]['before']=='99'
@@ -34,7 +35,7 @@ async def test_gap_checkpoint_survives_rpc_failure(store):
     rpc=Recover()
     await history_page(rpc,store,addr,3600,Notices())
     assert store.cursor(addr)['gaps']==[]
-    assert rpc.calls[1]['before']=='99'
+    assert rpc.calls[0]['before']=='99'
 
 
 def test_persistent_jobs_and_original_ttl(config,store):

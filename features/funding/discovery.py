@@ -6,49 +6,50 @@ import aiohttp
 from chain_common.public_rpc import report_429
 
 
-async def history_page(rpc, store, address, max_age, notices):
-    """Latest page every visit; older unfinished pages receive a second request.
+FUNDING_GAP_SECONDS = 120
+FUNDING_GAP_PAGES = 3
 
-    Cursor advances atomically with the durable signatures. An incomplete gap
-    keeps its original boundary while new traffic continues to be discovered.
-    """
+
+async def history_page(rpc, store, address, max_age, notices):
+    """One page per turn, at most three pages of a fixed recent funding gap."""
+    now = time.time()
+    max_age = min(max_age, FUNDING_GAP_SECONDS)
     state = store.cursor(address)
-    options = {'limit':100, 'commitment':'confirmed'}
-    if state.get('latest'):
-        options['until'] = state['latest']
-    newest = await rpc.call('getSignaturesForAddress', [address, options])
-    if not isinstance(newest, list):
-        raise ValueError('invalid-signatures-response')
-    cutoff = time.time()-max_age
-    def eligible(rows):
-        return [r['signature'] for r in rows if r.get('err') is None and
-                (r.get('blockTime') is None or r['blockTime'] >= cutoff)]
-    pending = list(state.get('gaps', []))
-    if len(newest) == 100 and (newest[-1].get('blockTime') or time.time()) >= cutoff:
-        pending.append({'before':newest[-1]['signature'], 'until':state.get('latest'), 'revisit':not state.get('latest')})
-    if newest:
-        state['latest'] = newest[0]['signature']
-    state['gaps'] = pending
-    store.save_cursor(address, state, eligible(newest), revisit=not options.get('until'))
-    if not pending:
+    pending = state.get('gaps', [])
+    gap = pending[0] if pending else None
+    # Older versions had unbounded cursors. Start a fresh short window instead.
+    if gap and ('cutoff' not in gap or 'pages' not in gap):
+        gap = None
+    if gap and (gap['cutoff'] < now-2*max_age or gap['pages'] >= FUNDING_GAP_PAGES):
+        state['gaps'] = []
+        store.save_cursor(address, state, [])
         return
-    gap = pending[0]
-    opts = {'limit':100,'commitment':'confirmed','before':gap['before']}
-    if gap.get('until'):
-        opts['until'] = gap['until']
-    older = await rpc.call('getSignaturesForAddress', [address, opts])
-    if not isinstance(older, list):
+    options = {'limit': 100, 'commitment': 'confirmed'}
+    if gap:
+        options['before'] = gap['before']
+        if gap.get('until'):
+            options['until'] = gap['until']
+    elif state.get('latest'):
+        options['until'] = state['latest']
+    rows = await rpc.call('getSignaturesForAddress', [address, options])
+    if not isinstance(rows, list):
         raise ValueError('invalid-signatures-response')
-    crossed = any(r.get('blockTime') is not None and r['blockTime'] < cutoff for r in older)
-    if crossed:
-        notices.emit('history coverage cutoff', {'address':address,'seconds':max_age}, alert=True,
-                     key='history-gap:'+address, interval=1800)
-    if len(older)<100 or crossed:
-        pending.pop(0)
-    else:
-        gap['before'] = older[-1]['signature']
-    state['gaps'] = pending
-    store.save_cursor(address, state, eligible(older), revisit=gap.get('revisit',False))
+    cutoff = max(gap['cutoff'], now-max_age) if gap else now-max_age
+    # Unknown timestamps cannot establish that a signature belongs to this gap.
+    eligible = [r['signature'] for r in rows if r.get('err') is None
+                and isinstance(r.get('blockTime'), int) and cutoff <= r['blockTime'] <= now+30]
+    pages = gap['pages']+1 if gap else 1
+    crossed = any(isinstance(r.get('blockTime'), int) and r['blockTime'] < cutoff for r in rows)
+    more = len(rows) == 100 and not crossed
+    until = gap.get('until') if gap else state.get('latest')
+    if not gap and rows:
+        state['latest'] = rows[0]['signature']
+    state['gaps'] = ([dict(before=rows[-1]['signature'], until=until, cutoff=cutoff, pages=pages)]
+                     if more and pages < FUNDING_GAP_PAGES else [])
+    store.save_cursor(address, state, eligible)
+    if more and pages >= FUNDING_GAP_PAGES:
+        notices.emit('funding gap page limit reached', {'address': address, 'seconds': max_age,
+                     'pages': pages}, key='funding-gap-limit', interval=60)
 
 
 class Discovery:
@@ -60,14 +61,18 @@ class Discovery:
         self.received = self.added = 0
         self.addresses = []
         self.locks = {}
+        self.funding_sources = set(config.cex) | set(config.privacy_pools)
 
     def request_history(self,address):
-        self.store.request_history(address)
+        if address in self.funding_sources:
+            self.store.request_history(address)
 
     async def page(self,address):
+        if address not in self.funding_sources:
+            return
         lock=self.locks.setdefault(address,asyncio.Lock())
         async with lock:
-            await history_page(self.rpc,self.store,address,self.config.backfill_age,self.notices)
+            await history_page(self.rpc,self.store,address,min(self.config.backfill_age,FUNDING_GAP_SECONDS),self.notices)
 
     async def urgent_history(self):
         while True:
@@ -77,6 +82,10 @@ class Discovery:
                 await asyncio.sleep(0.5)
                 continue
             row=rows[0]
+            if row['address'] not in self.funding_sources:
+                self.store.finish_history(row)
+                await asyncio.sleep(0)
+                continue
             try:
                 await self.page(row['address'])
                 self.store.finish_history(row,retry=bool(self.store.cursor(row['address']).get('gaps')))
@@ -105,7 +114,7 @@ class Discovery:
                         connected_at = time.monotonic()
                         self.connected = True
                         # Legacy WSS has no replay: catch up once per connection.
-                        history_requested=set(self.addresses)
+                        history_requested=set(self.addresses) & self.funding_sources
                         self.store.request_histories(history_requested)
                         refreshed = 0
                         while True:
@@ -152,7 +161,7 @@ class Discovery:
                             value = body.get('params',{}).get('result',{}).get('value',{})
                             if value.get('signature') and value.get('err') is None:
                                 self.received += 1
-                                self.added += self.store.enqueue([value['signature']])
+                                self.added += self.store.enqueue([value['signature']], live=True)
                             if backoff>1 and time.monotonic()-connected_at>=30:
                                 self.notices.emit('feed recovered; history catch-up remains active', {}, alert=True)
                                 backoff = 1

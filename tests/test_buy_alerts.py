@@ -39,7 +39,7 @@ async def test_non_sol_skipped_buy_alert(config,store,reject,monkeypatch):
     class Public:
         async def transaction(self,sig):return raw
     store.enqueue([route.trade.signature])
-    await service.process({'signature':route.trade.signature},Public())
+    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},Public())
     rows=alerts(service.notices,'target buy skipped' if reject=='cache-miss' else 'non-SOL buy skipped')
     assert len(rows)==1
     assert rows[0]['mint']==route.trade.mint and rows[0]['quote_mint']==route.quote_mint

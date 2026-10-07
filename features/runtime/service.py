@@ -13,7 +13,7 @@ from features.notifications.buy_failures import context as buy_context, unrecogn
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
 from features.strategy.market_cap import MarketCapGate
-from features.funding.discovery import Discovery
+from features.funding.discovery import Discovery, FUNDING_GAP_SECONDS
 from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
@@ -83,8 +83,6 @@ class Service:
         if added:
             decision('admitted','qualified')
             self.notices.emit('hotlist-add',item.dict(),alert=True)
-            if hasattr(self,'discovery'):
-                self.discovery.request_history(item.wallet)
         else:
             removal=self.store.rows('funding','SELECT slot FROM hotlist_removals WHERE wallet=?',(item.wallet,))
             reason=('funding-expired' if item.time+self.config.hotlist_ttl<=time.time() else
@@ -144,7 +142,8 @@ class Service:
         if self.config.remaining:
             self.signals.observe_holdings(tx)
         routes=decode_buy_routes(tx)
-        if (self.config.hotlist_commitment!='processed' or processed) and tx.time>=max(self.signals.started,time.time()-self.config.signal_age):
+        live=self.store.is_live(tx.signature,self.config.signal_age)
+        if live and (self.config.hotlist_commitment!='processed' or processed) and tx.time>=max(self.signals.started,time.time()-self.config.signal_age):
             for detail in unrecognized_non_sol(tx,routes):
                 if (self.store.eligible(detail['source_wallet'],tx.slot,tx.time,time.time())
                         and self.proofs.usable(tx.signature,slot=tx.slot)):
@@ -156,11 +155,11 @@ class Service:
         # cause another buyer in this same signature to trigger a second buy.
         pending=[]
         for route in routes:
-            self.quote_builder.observe(route)
             # Confirmed recovery may refresh identities/funding, never initiate a late buy.
-            if self.config.hotlist_commitment=='processed' and not processed:
-                trade_record(self.store,route.trade,'signal','skipped','confirmed-recovery-not-live')
+            if not live or (self.config.hotlist_commitment=='processed' and not processed):
+                trade_record(self.store,route.trade,'signal','skipped','recovery-not-live')
                 continue
+            self.quote_builder.observe(route)
             trade=route.trade
             if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
@@ -260,6 +259,9 @@ class Service:
         turn=0
         while True:
             turn+=1
+            # Expiry and cached results can finish without any async I/O.
+            # Let feeds, health, and cancellation run even with a full backlog.
+            await asyncio.sleep(0)
             try:
                 rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed)
             except Exception as exc:
@@ -271,11 +273,17 @@ class Service:
                 continue
             row=rows[0]
             try:
-                if time.time()-row['first_seen']>self.config.backfill_age:
+                # Drop untouched old recovery work before paying for a transaction
+                # fetch. Admission retries and order/proof reconciliation retain
+                # their existing lifetime and independent checks.
+                max_age=self.config.backfill_age
+                if not row.get('reason') and not self.store.is_live(row['signature'],self.config.signal_age):
+                    max_age=min(max_age,FUNDING_GAP_SECONDS)
+                if time.time()-row['first_seen']>max_age:
                     self.store.job_result(row['signature'],'expired','qualification-window-expired')
                     self.expired+=1
                     self.notices.emit('qualification expired; possible coverage loss',{'signature':row['signature']},
-                                      alert=True,key='qualification-expired',interval=60)
+                                      key='qualification-expired',interval=60)
                 else:
                     await self.process(row,rpc)
             except asyncio.CancelledError:
@@ -285,7 +293,7 @@ class Service:
                 expired=self.store.retry(row,reason,time.time(),self.config.backfill_age)
                 if expired:
                     self.expired+=1
-                    self.notices.emit('qualification stopped',{'signature':row['signature'],'reason':reason},alert=True,key='qualification-expired')
+                    self.notices.emit('qualification stopped',{'signature':row['signature'],'reason':reason},key='qualification-expired')
 
     async def finalized(self,rpc):
         while True:

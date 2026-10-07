@@ -86,8 +86,8 @@ async def test_processed_three_bands(config,store,monkeypatch,fixture,band,remov
         async def buy(self,oid,r):orders.append(oid)
     service.executor=Engine();store.stream_transaction(raw)
     if band=='cancel-min':
-        with pytest.raises(asyncio.CancelledError):await service.process({'signature':route.trade.signature},NoRpc())
-    else:await service.process({'signature':route.trade.signature},NoRpc())
+        with pytest.raises(asyncio.CancelledError):service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
+    else:service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
     assert bool(orders)==follow
     restarted=Store(config.data)
     assert (route.trade.wallet not in restarted.hotlist(now))==removed

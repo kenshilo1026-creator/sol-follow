@@ -1,7 +1,7 @@
 """Alchemy hotlist-only executed transaction stream; no paid HTTP calls.
 
-The durable inbox is committed before advancing the replay checkpoint. Changes
-to the watch set trigger bounded public catch-up, not permanent address polling.
+The durable inbox is committed before advancing the checkpoint. Hotlist changes
+subscribe to live traffic only; they never queue public history scans.
 """
 import asyncio
 import time
@@ -63,20 +63,10 @@ class HotlistFeed:
     async def resume_slot(self, addresses):
         commitment=self.config.hotlist_commitment
         self.anchor=None
-        if not self.last_slot and commitment!='processed':
-            return None
         head = await self.rpc.call('getSlot',[{'commitment':commitment}])
         self.live_floor=max(head,self.last_slot)+1
-        if not self.last_slot:
-            return None
-        # Inclusive overlap also recovers unfinished slots and duplicate delivery.
-        start = max(0,self.last_slot-128)
-        if head-start >= 5800 or start > head:
-            self.store.request_histories(addresses)
-            self.notices.emit('hotlist stream replay window exceeded; public catch-up queued',
-                {'addresses':len(addresses),'last_slot':self.last_slot,'head':head},alert=True,key='grpc-gap')
-            return None
-        return start
+        # Live-only buying deliberately skips trades during disconnection.
+        return None
 
     def accept(self, update):
         self.bytes_received += update.ByteSize()
@@ -108,11 +98,10 @@ class HotlistFeed:
                 self.notices.emit('stream transaction requires public RPC decoding',
                     {'slot':slot,'type':type(exc).__name__},key='grpc-normalize')
             else:
-                if self.config.hotlist_commitment=='processed':
-                    now=time.time(); a=self.anchor
-                    live=bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
-                              and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
-                    raw['_stream']={'commitment':'processed','live':live}
+                now=time.time(); a=self.anchor
+                live=bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
+                          and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
+                raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live}
                 self.added += self.store.stream_transaction(raw)
         if slot > self.last_slot:
             # Only reached once the incoming transaction (if any) is durable.
@@ -123,8 +112,6 @@ class HotlistFeed:
         call = stream_call(channel,self.config)
         try:
             await call.write(subscription(addresses,start,commitment=self.config.hotlist_commitment))
-            previous = set(self.store.stream_state('grpc_watch',[]))
-            self.store.request_histories(addresses-previous)
             self.store.set_stream_state('grpc_watch',sorted(addresses))
             self.subscribed = set(addresses)
             last_update = time.monotonic()
@@ -154,9 +141,6 @@ class HotlistFeed:
                             return
                         if desired != addresses:
                             await call.write(subscription(desired,commitment=self.config.hotlist_commitment))
-                            # Catch up newcomers once after the filter update;
-                            # background requests are durable and rate-budgeted.
-                            self.store.request_histories(desired-addresses)
                             addresses = desired
                             self.subscribed = set(desired)
                             self.store.set_stream_state('grpc_watch',sorted(desired))
@@ -187,7 +171,7 @@ class HotlistFeed:
                 # gRPC details/debug strings can contain credentials. Emit only
                 # a status enum; permission/filter rejection is never hidden.
                 status = exc.code().name if isinstance(exc,grpc.RpcError) else type(exc).__name__
-                self.notices.emit('hotlist Alchemy stream unavailable; retrying with replay',
+                self.notices.emit('hotlist Alchemy stream unavailable; retrying live subscription',
                     {'status':status,'retry_s':backoff},alert=True,key='grpc-error')
                 self.reconnects += 1
             finally:

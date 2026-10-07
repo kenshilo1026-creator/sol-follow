@@ -78,7 +78,7 @@ async def test_multi_buyer_hotlist_threshold_and_no_retry_within_signature(confi
     class RPC:
         async def transaction(self,sig):return raw
     service.executor=Engine();row={'signature':routes[0].trade.signature}
-    store.enqueue([row['signature']])
+    store.enqueue([row['signature']],live=True)
     await service.process(row,RPC());await service.process(row,RPC())
     assert len(calls)==expected
     assert len(store.rows('trading','SELECT * FROM votes'))==eligible
