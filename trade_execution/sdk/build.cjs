@@ -1,4 +1,5 @@
 'use strict';
+const publicRpc=require('./public-rpc.cjs');
 // Pinned SDKs build fresh unsigned instructions. No key loading or broadcast.
 const BN = require('bn.js');
 const risk=require('./risk.cjs');
@@ -90,10 +91,11 @@ function compile(user, blockhash, instructions, tables) {
 function connectionFor(input) {
   if (!Number.isSafeInteger(input.minSlot) || input.minSlot < 0) throw Error('invalid-slot');
   if (!Array.isArray(input.lookupTables) || input.lookupTables.length > 8) throw Error('invalid-tables');
-  return new web3.Connection(input.rpc, {
+  const report=publicRpc.reporter();
+  const connection=new web3.Connection(input.rpc, {
     commitment:input.commitment||'confirmed', disableRetryOnRateLimit:true,
     ...(input.ws?{wsEndpoint:input.ws}:{}),
-    fetch:(url,options)=>fetch(url,{...options,signal:AbortSignal.timeout(8000)}),
+    fetch:publicRpc.rpcFetch(report),
     // Apply the signal slot to SDK account reads as well as our own reads.
     fetchMiddleware: (url, options, next) => {
       const body = JSON.parse(options.body);
@@ -106,6 +108,8 @@ function connectionFor(input) {
       next(url, options);
     }
   });
+  publicRpc.watchWebsocket(connection._rpcWebSocket,report);
+  return connection;
 }
 
 async function finish(connection,input,user,ixs,check) {
@@ -254,7 +258,8 @@ if (require.main === module) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data',chunk=>{input+=chunk;if(input.length>100000)process.exit(1);});
   process.stdin.on('end',async()=>{
-    try {process.stdout.write(JSON.stringify(await build(JSON.parse(input))));}
+    try {process.stdout.write(JSON.stringify(await publicRpc.withReporter(
+      event=>process.stderr.write(JSON.stringify(event)+'\n'),()=>build(JSON.parse(input)))));}
     catch (error) {process.stdout.write(JSON.stringify({error:REASONS.has(error.message)
       ? error.message : 'sdk-or-rpc-failed',
       ...(error.message==='jupiter-rate-limited'?{retryAfter:error.retryAfter}:{})}));process.exitCode=1;}

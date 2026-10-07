@@ -2,6 +2,7 @@
 import asyncio
 import time
 import aiohttp
+from chain_common.public_rpc import report_429
 
 
 class RpcError(RuntimeError):
@@ -15,9 +16,10 @@ class Priority:
 
 
 class Rpc:
-    def __init__(self, session, url, priority, timeout=8):
+    def __init__(self, session, url, priority, timeout=8, source="python"):
         self.session, self.url, self.priority = session, url, priority
         self.timeout = timeout
+        self.source = source
         self.calls = self.errors = self.limited = 0
 
     async def call(self, method, params):
@@ -29,6 +31,7 @@ class Rpc:
                                          timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
                 if response.status == 429:
                     self.limited += 1
+                    report_429(self.source,method,"HTTP")
                     try:
                         delay = max(1, min(120, float(response.headers.get('Retry-After', '10'))))
                     except ValueError:
@@ -41,7 +44,10 @@ class Rpc:
                 body = await response.json()
                 if 'error' in body:
                     code = body['error'].get('code', 'unknown')
-                    if code in (-32005, 429):
+                    if code in (429, '429'):
+                        self.limited += 1
+                        report_429(self.source,method,'JSON-RPC')
+                    if code in (-32005, 429, '429'):
                         self.priority.cooldown[self.url] = time.monotonic()+10
                     raise RpcError(f'{method}:RPC-{code}')
                 if 'result' not in body:

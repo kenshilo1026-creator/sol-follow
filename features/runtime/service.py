@@ -235,6 +235,10 @@ class Service:
             self.signals.prune()
 
     async def run(self):
+        async with self.notices.running():
+            await self._run()
+
+    async def _run(self):
         timeout=aiohttp.ClientTimeout(total=8)
         # Separate connection pools keep background pagination from occupying
         # execution sockets. Both clients still share the PUBLIC endpoint and
@@ -242,7 +246,7 @@ class Service:
         async with aiohttp.ClientSession(timeout=timeout) as session, aiohttp.ClientSession() as background_session:
             rpc=Rpc(session,self.config.rpc,self.priority)
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
-                timeout=self.config.public_timeout),self.priority,self.config.history_rps)
+                timeout=self.config.public_timeout,source="background"),self.priority,self.config.history_rps)
             genesis=await rpc.call('getGenesisHash',[])
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
@@ -269,7 +273,7 @@ class Service:
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
-                    coroutines=[self.quote_builder.warm(),self.notices.run(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
+                    coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
                                       self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
                     if grpc_mode:

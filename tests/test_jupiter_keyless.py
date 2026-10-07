@@ -80,9 +80,17 @@ def test_keyless_ipc_preserves_cooldown_and_excludes_credentials(config,monkeypa
     captured={}
     class Process:
         returncode=1
-        async def communicate(self,payload):
-            captured['payload']=json.loads(payload)
-            return json.dumps({'error':'jupiter-rate-limited','retryAfter':retry}).encode(),b''
+        def __init__(self):
+            class Input:
+                def write(self,payload):captured['payload']=json.loads(payload)
+                async def drain(self):pass
+                def close(self):pass
+            self.stdin=Input()
+            self.stdout=asyncio.StreamReader()
+            self.stdout.feed_data(json.dumps({'error':'jupiter-rate-limited','retryAfter':retry}).encode())
+            self.stdout.feed_eof()
+            self.stderr=asyncio.StreamReader();self.stderr.feed_eof()
+        async def wait(self):return self.returncode
     async def spawn(*args,**kwargs):
         captured['env']=kwargs['env']
         return Process()

@@ -8,6 +8,7 @@ from chain_common.transaction import Tx
 from chain_common.primitives import pubkey
 from features.funding.decoder import decode as funding
 from share_common.config import load
+from share_common.notify import Notices
 from launchpads import LaunchpadScope, pump_fun
 from launchpads.create import inspect as inspect_creates
 from trade_execution.route import decode_all as decode_buy_routes
@@ -16,6 +17,11 @@ from trade_execution.builder import build, BuildError
 
 async def probe(args):
     config=load()
+    async with Notices(config,None).running():
+        await _probe(args,config)
+
+
+async def _probe(args,config):
     async with aiohttp.ClientSession() as session:
         rpc=Rpc(session,config.rpc,Priority())
         scope=LaunchpadScope()

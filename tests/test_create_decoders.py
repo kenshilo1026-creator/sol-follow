@@ -281,6 +281,7 @@ def test_multiple_creates_in_one_signature_are_distinct(store):
 async def test_probe_outputs_real_creates(row,config,monkeypatch,capsys):
     import features.probe as module
     class Session:
+        def __init__(self,**kwargs):pass
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
     class RPC:

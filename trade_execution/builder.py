@@ -1,5 +1,6 @@
 """JSON IPC to the pinned unsigned SDK builder; private keys stay in Python."""
 import asyncio
+from chain_common.public_rpc import sdk_event
 from contextlib import asynccontextmanager
 import json
 import math
@@ -61,8 +62,20 @@ async def _build(config, route, wallet):
         'node', str(Path(__file__).parent/'sdk'/'build.cjs'),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         cwd=config.root, env=child_environment())
+    async def stderr_events():
+        while line:=await process.stderr.readline():
+            try:
+                sdk_event(json.loads(line))
+            except (ValueError,UnicodeError):
+                pass  # SDK diagnostic text can contain endpoint credentials.
+    async def collect():
+        process.stdin.write(json.dumps(payload).encode())
+        await process.stdin.drain()
+        process.stdin.close()
+        stdout,_,_=await asyncio.gather(process.stdout.read(),stderr_events(),process.wait())
+        return stdout
     try:
-        stdout,_=await asyncio.wait_for(process.communicate(json.dumps(payload).encode()),timeout=30)
+        stdout=await asyncio.wait_for(collect(),timeout=30)
     except BaseException:
         if process.returncode is None:
             process.kill()

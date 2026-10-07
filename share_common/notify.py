@@ -1,5 +1,7 @@
 """Non-blocking, bounded notification/audit sink with fault deduplication."""
 import asyncio
+from contextlib import asynccontextmanager, suppress
+from chain_common.public_rpc import rpc_notices
 import logging
 import time
 import aiohttp
@@ -16,6 +18,9 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='public RPC 429':
+        return (f"⚠️ [SOL] 公共 RPC 429 限流\n來源: {detail['source']}"
+                f"\n方法: {detail['method']}\n通道: {detail['transport']}")
     if kind not in BUY_TITLES:
         return f'[SOL] {kind}\n{detail}'[:3900]
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
@@ -57,12 +62,30 @@ class Notices:
             self.dropped += 1
             log.error('[SOL] audit/notification queue full dropped=%s', self.dropped)
 
+    @asynccontextmanager
+    async def running(self):
+        # Start before startup RPCs; allow queued alerts to drain on failure.
+        with rpc_notices(self):
+            task=asyncio.create_task(self.run())
+            try:
+                yield
+            finally:
+                try:
+                    await asyncio.wait_for(self.queue.join(),timeout=10)
+                except asyncio.TimeoutError:
+                    log.error('[SOL] notification drain timed out pending=%s',self.queue.qsize())
+                finally:
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+
     async def run(self):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
             while True:
                 kind, detail, alert = await self.queue.get()
                 try:
-                    self.store.audit(kind, detail)
+                    if self.store is not None:
+                        self.store.audit(kind, detail)
                 except Exception as exc:
                     log.error('[SOL] audit unavailable type=%s; runtime evidence is separate', type(exc).__name__)
                 if alert and self.config.telegram_token and self.config.telegram_chat:

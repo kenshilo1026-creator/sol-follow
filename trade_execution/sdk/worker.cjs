@@ -6,6 +6,7 @@ const {AccountCache}=require('./account-cache.cjs');
 const {BlockhashCache}=require('./blockhash-cache.cjs');
 const {BackgroundGate}=require('./background-gate.cjs');
 const {quoteLimit}=require('./observed-buy.cjs');
+const {withReporter}=require('./public-rpc.cjs');
 const gate=new BackgroundGate();
 let cache,blocks,rpcUrl,cacheGeneration;
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
@@ -53,6 +54,6 @@ async function handle(message){
 const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
 lines.on('line',line=>{
   if(line.length>100000){process.exitCode=1;lines.close();return;}
-  try{void handle(JSON.parse(line));}catch{process.exitCode=1;lines.close();}
+  try{void withReporter(send,()=>handle(JSON.parse(line)));}catch{process.exitCode=1;lines.close();}
 });
 lines.on('close',()=>{blocks?.close();cache?.close();process.exit();});

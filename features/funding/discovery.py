@@ -3,6 +3,7 @@ import asyncio
 import json
 import time
 import aiohttp
+from chain_common.public_rpc import report_429
 
 
 async def history_page(rpc, store, address, max_age, notices):
@@ -135,6 +136,8 @@ class Discovery:
                             if msg.type != aiohttp.WSMsgType.TEXT:
                                 continue
                             body = json.loads(msg.data)
+                            if (body.get('error') or {}).get('code') in (429,'429'):
+                                report_429('public-websocket','subscription','WS-RPC')
                             if 'id' in body:
                                 addr = ids.pop(body['id'],None)
                                 if addr:
@@ -156,6 +159,8 @@ class Discovery:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if isinstance(exc,aiohttp.WSServerHandshakeError) and exc.status==429:
+                    report_429('public-websocket','connect','WS-handshake')
                 self.notices.emit('feed unavailable; history fallback active', {'type':type(exc).__name__, 'retry_s':backoff},
                                   alert=True,key='feed-error')
             finally:

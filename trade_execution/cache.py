@@ -1,5 +1,6 @@
 """A bounded active cache backed by permanent seen-mint and route records."""
 import asyncio
+from chain_common.public_rpc import sdk_event
 from collections import OrderedDict
 import json
 import time
@@ -97,6 +98,8 @@ class CachedBuilder:
         try:
             while line := await process.stdout.readline():
                 row = json.loads(line)
+                if sdk_event(row):
+                    continue
                 if row.get('recipe'):
                     try:
                         self.seen.save_recipe(row['quoteMint'], row['recipe'])
