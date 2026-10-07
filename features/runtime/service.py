@@ -1,5 +1,6 @@
 """Independent service orchestration; no imports from RH or BSC."""
 import asyncio
+import logging
 import time
 from solders.pubkey import Pubkey
 import aiohttp
@@ -236,7 +237,9 @@ class Service:
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
                 timeout=self.config.public_timeout),self.priority,self.config.history_rps)
             genesis=await rpc.call('getGenesisHash',[])
-            if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d1':
+            # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
+            if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
+                logging.error('[SOL] startup rejected: RPC genesis hash does not match Solana mainnet-beta')
                 raise ValueError('only-solana-mainnet-beta-is-supported')
             grpc_mode=self.config.feed_mode=='alchemy_grpc'
             discovery=Discovery(self.config,self.store,self.background_rpc,self.notices,sources_only=grpc_mode)

@@ -25,7 +25,8 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store):
     calls=[]
     async def http(request):
         body=await request.json();method=body['method'];calls.append(method)
-        if method=='getGenesisHash':result='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d1'
+        # Solana's published mainnet genesis hash, independent of the service constant.
+        if method=='getGenesisHash':result='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
         elif method=='getSignaturesForAddress':result=[]
         else:raise AssertionError(method)
         return web.json_response({'jsonrpc':'2.0','id':body['id'],'result':result})
@@ -55,6 +56,32 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store):
         assert not any(method in calls for method in ('sendTransaction','simulateTransaction','getLatestBlockhash','getBalance'))
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('genesis', [
+    'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',  # devnet
+    '4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY',  # testnet
+    '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2d1',  # former typo
+    None,
+])
+async def test_service_rejects_non_mainnet_before_starting(config, store, monkeypatch, caplog, genesis):
+    from chain_common.rpc import Rpc
+    calls = []
+
+    async def call(self, method, params):
+        calls.append(method)
+        assert method == 'getGenesisHash'
+        return genesis
+
+    monkeypatch.setattr(Rpc, 'call', call)
+    service = Service(config, store)
+    with pytest.raises(ValueError, match='only-solana-mainnet-beta-is-supported'):
+        await service.run()
+    assert calls == ['getGenesisHash']
+    assert not hasattr(service, 'discovery')
+    assert not hasattr(service, 'executor')
+    assert 'RPC genesis hash does not match Solana mainnet-beta' in caplog.text
 
 
 @pytest.mark.asyncio

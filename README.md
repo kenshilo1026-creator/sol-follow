@@ -48,11 +48,12 @@ PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍
 
 ## 啟動 DRY_RUN
 
-Python 3.11+、Node 20.18+；在 **sol-follow 目錄** 執行，不能在上層 token_alert 執行同名 package。
+Python 3.11／3.12（建議 3.12）、Node.js 22 LTS；在 **sol-follow 目錄** 執行，不能在上層 token_alert 執行同名 package。
+目前固定的 aiohttp／grpcio 版本沒有 Python 3.14 對應 wheel，會退回原始碼編譯；部署不要使用 3.14。
 
 ```bash
 cd /home/ubuntu/sol-follow
-python3 -m venv .venv
+python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 npm ci --ignore-scripts
 cp .env.example .env  # 僅全新部署；不要覆蓋已有 .env
@@ -186,9 +187,10 @@ VPS 新部署使用 [`deploy/sol-follow.service`](deploy/sol-follow.service)：
 5 分鐘內連續失敗 5 次便停止重試。安裝後的 service 名稱為 `sol-follow`；
 同一部署只啟動一個實盤實例。
 
-以下以 Ubuntu 24.04 LTS／Debian 12+、有 sudo 權限的 SSH 帳戶 `ubuntu` 為例；
+以下以 Ubuntu 24.04／26.04 LTS／Debian 12、有 sudo 權限的 SSH 帳戶 `ubuntu` 為例；
 把 `VPS_IP` 換成實際 IP；若 SSH 使用者不是 `ubuntu`，同步修改 unit 的 User／Group 及所有 `/home/ubuntu` 路徑。
-systemd 的路徑使用絕對路徑，不填 `~`。Python 需 3.11+，以下安裝 Node.js 22 LTS。
+systemd 的路徑使用絕對路徑，不填 `~`。Ubuntu 24.04 使用 Python 3.12，Debian 12 使用 3.11；
+Ubuntu 26.04 使用 uv 安裝獨立 Python 3.12，不更改系統 Python。以下安裝 Node.js 22 LTS。
 Node 安裝方式依 [NodeSource 文件](https://github.com/nodesource/distributions/blob/master/DEV_README.md)，
 版本生命週期見 [Node.js Releases](https://nodejs.org/en/about/previous-releases)。
 程式不提供 HTTP 服務，無須新增應用程式入站 port；需能出站存取 RPC、WebSocket、gRPC、Jupiter 及 Telegram。
@@ -226,9 +228,43 @@ install -d -m 750 /home/ubuntu/sol-follow
 tar -xzf "$HOME/sol-follow-vps.tar.gz" -C /home/ubuntu/sol-follow --no-same-owner
 install -d -m 700 /home/ubuntu/sol-follow/data /home/ubuntu/sol-follow/wallets
 cd /home/ubuntu/sol-follow
+```
 
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+接著依系統選擇一種方式建立 Python 環境。若服務已在運行，先執行 `sudo systemctl stop sol-follow`。
+
+**Ubuntu 24.04／Debian 12，新建環境：**
+
+```bash
+# Ubuntu 24.04；Debian 12 改用 python3.11。
+python3.12 -m venv .venv
+```
+
+**Ubuntu 26.04，或先前誤用 Python 3.14：**
+
+先以 `Ctrl+C` 結束仍在編譯的 pip，再以 `ubuntu` 使用者執行以下指令（uv 不加 sudo）。
+依 [uv 官方文件](https://docs.astral.sh/uv/guides/install-python/) 安裝獨立 Python 3.12；
+舊 `.venv` 改名保留，`.env` 及專案資料不受影響。
+
+```bash
+curl -fsSL https://astral.sh/uv/install.sh -o /tmp/sol-follow-uv-install.sh
+UV_INSTALL_DIR="$HOME/.local/bin" UV_NO_MODIFY_PATH=1 sh /tmp/sol-follow-uv-install.sh
+"$HOME/.local/bin/uv" python install 3.12
+
+if [ -d .venv ]; then
+  mv .venv ".venv-backup-$(date +%Y%m%d-%H%M%S)"
+fi
+"$HOME/.local/bin/uv" venv --managed-python --python 3.12 --seed .venv
+.venv/bin/python --version
+```
+
+應顯示 `Python 3.12.x`。uv 管理的 Python 也是 service 執行時需要的檔案，請保留其安裝目錄。
+service 仍使用 `/home/ubuntu/sol-follow/.venv/bin/python`，無須修改路徑或啟用虛擬環境。
+
+**環境建立成功後，安裝依賴：**
+
+```bash
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install --only-binary=:all: -r requirements.txt
 npm ci --omit=dev
 ```
 
@@ -236,6 +272,9 @@ npm ci --omit=dev
 若專案已位於 `~/sol-follow`，跳過解壓；曾用 root／其他帳戶建立的專案需先修正擁有者：
 `sudo chown -R ubuntu:ubuntu /home/ubuntu/sol-follow`。
 不要沿用從 Windows 搬來的 `.venv` 或 `node_modules`。
+`--only-binary=:all:` 要求預編譯套件；若 Python／平台不相容，會直接報錯，避免長時間編譯。
+若日誌出現 `cp314` 或 `Building wheel for grpcio`，先取消安裝，確認 `cat /etc/os-release`
+及 `.venv/bin/python --version`，再以 3.11／3.12 重建虛擬環境。保留舊環境備份，不改系統 Python。
 
 ### 3. 設定環境變數
 
