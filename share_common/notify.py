@@ -18,6 +18,18 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='market cap entry check':
+        state='超過市值上限，已持續排除' if detail['state']=='blocked' else '首次市值未能判定，暫不放行'
+        return (f"⚠️ [SOL] {state}\n代幣: {detail['mint']}"
+                f"\n首次市值（USD）: {detail.get('market_cap_usd') or '未知'}"
+                f"\n上限（USD）: {detail['limit_usd']}\n原因: {detail.get('reason',detail['state'])}"
+                "\n紀錄跨重啟保留；手動 reset 後才重新檢查。")
+    if kind=='qualification backlog':
+        reason='隊列連續 3 分鐘增加，處理速度追不上新增速度' if detail['reason']=='growing' else '最舊工作等待超過 5 分鐘'
+        return (f"⚠️ [SOL] 入場／交易資格處理隊列積壓\n{reason}"
+                f"\n待處理: {detail['pending']} 筆（包括尚未解碼的工作）"
+                f"\n本分鐘淨增加: {detail['pending_delta']} 筆\n最舊等待: {detail['oldest_s']} 秒"
+                "\n本輪積壓只通知一次，恢復後再次積壓才重新通知。")
     if kind=='public RPC 429':
         return (f"⚠️ [SOL] 公共 RPC 429 限流\n來源: {detail['source']}"
                 f"\n方法: {detail['method']}\n通道: {detail['transport']}")

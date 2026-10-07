@@ -125,6 +125,7 @@ class CachedBuilder:
         await self.start()
         payload = payload_for(self.config, request, wallet)
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
+                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros),
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
@@ -166,6 +167,9 @@ class CachedBuilder:
             raise BuildError('route-builder-timeout') from exc
         finally:
             self.pending.pop(identifier, None)
+
+    async def market_cap(self,route):
+        return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation='market_cap')
 
     async def quote_limit(self, route):
         return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation="quote_limit")

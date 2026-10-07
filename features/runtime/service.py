@@ -11,8 +11,10 @@ from chain_common.primitives import SYSTEM, WSOL
 from features.notifications.buy_failures import context as buy_context, unrecognized_non_sol
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
+from features.strategy.market_cap import MarketCapGate
 from features.funding.discovery import Discovery
 from features.funding.activity_filter import qualify_activity, HistoryPending
+from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
 from trade_execution.observed_buy import check as check_observed_buy
 from features.database.maintenance import Maintenance
@@ -36,10 +38,10 @@ class Service:
         self.signals=Signals(self.store,config)
         self.proofs=Processed(self.store)
         self.completed=self.expired=self.received=0
-        self.last_pending=0
-        self.growing=0
+        self.backlog=BacklogMonitor(self.store,self.notices)
         self.metrics=Metrics()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
+        self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
 
     async def qualify(self,item,rpc):
         if not Pubkey.from_string(item.wallet).is_on_curve():
@@ -129,6 +131,13 @@ class Service:
             trade=route.trade
             if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
+                if trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age):
+                    if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
+                        self.signals.reject_mint(trade.mint)
+                    if not await self.market_cap.check(route):
+                        self.signals.reject_mint(trade.mint)
+                        self.signals.reject(trade)
+                        continue
                 allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 if not allowed:
                     self.signals.reject(trade)
@@ -211,8 +220,7 @@ class Service:
             await asyncio.sleep(60)
             rows=self.store.rows('funding',"SELECT count(*) n,min(first_seen) oldest FROM jobs WHERE state='pending'")[0]
             pending=rows['n']
-            delta=pending-self.last_pending
-            self.growing=self.growing+1 if delta>0 else 0
+            delta=self.backlog.observe(pending,rows["oldest"],time.time())
             detail={'pending':pending,'pending_delta':delta,'completed':self.completed,'expired':self.expired,
                     'new_jobs':self.store.new_jobs,'revisited_jobs':self.store.revisited_jobs,
                     'ws_received':discovery.received,'ws_new_jobs':discovery.added,'ws_connected':discovery.connected,
@@ -227,9 +235,6 @@ class Service:
             if hasattr(self,'background_rpc'):
                 detail['background_public_rpc']=self.background_rpc.snapshot()
             self.notices.emit('health',detail)
-            if self.growing>=3 or detail['oldest_s']>300:
-                self.notices.emit('funding/transaction backlog; new signals may be late',detail,alert=True,key='backlog')
-            self.last_pending=pending
             self.completed=self.expired=discovery.received=discovery.added=0
             self.store.new_jobs=self.store.revisited_jobs=0
             self.signals.prune()

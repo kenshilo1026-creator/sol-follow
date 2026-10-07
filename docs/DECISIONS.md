@@ -111,3 +111,63 @@ https://github.com/raydium-io/raydium-idl/blob/master/raydium_launchpad/raydium_
 The actual sample and read-only account snapshot are fixtures. Its pool is now graduated;
 tests reconstruct historical pre-trade reserves and mock first-hop routing/simulation explicitly.
 No live order or mainnet atomic simulation has been claimed from those offline tests.
+
+
+## 2026-10-07: first-observation USD market-cap admission
+
+`SOL_FOLLOW_MAX_MARKET_CAP_USD_K=20` means USD 20,000. Zero disables
+checks for new mints; it does not clear existing exclusions. After changing the
+setting, restart the service. Existing trading, slippage and fee guards remain.
+
+The first fresh, eligible hotlist buy obtains a pool snapshot before counting
+wallet votes, including when N is one. FDV is the pool spot price multiplied by
+the mint's current total supply, following the price-times-supply approach in
+RH's entry valuation. Pump uses virtual quote/base reserves; Stonk LaunchLab
+uses (virtual quote + real quote)/(virtual base - real base). Non-SOL quotes use
+the existing validated SOL-to-quote Whirlpool/DLMM route in reverse for valuation.
+This is a spot valuation, not proceeds from selling the entire supply.
+
+SOL/USD comes from the Pyth on-chain SOL/USD push feed. Its owner, feed ID,
+full verification, publication age (at most 90 seconds), and confidence (at most
+1% of price) are checked. The new and legacy receiver deployments are accepted.
+The existing public RPC/WebSocket account cache is used, with a cold public RPC
+batch when necessary. No extra API key or periodic HTTP price refresh is added.
+The snapshot must be at or after the triggering slot; it may be later than the
+triggering transaction and is not a historical reconstruction of that exact
+transaction. The first observation can therefore incur a public RPC wait.
+
+The first result is saved in `trading.sqlite3`'s `token_entry_caps` table with its
+trigger signature/slot and valuation details. Above the cap is permanently
+blocked; exactly equal is allowed. Subsequent wallets reuse that first result,
+including across restarts. Lowering the limit also checks the saved first cap;
+raising/disabling it never releases an already blocked mint. Missing/invalid
+price, supply, route or an interrupted first check stays closed until manual
+reset: a later buyer must not silently supply a different first price. Blocked
+or unavailable results notify Telegram once when recorded. These rows do not
+expire with hotlist entries or rolling wallet votes.
+
+Inspect without sending transactions:
+
+```sh
+python -m features.strategy.market_cap list
+python -m features.strategy.market_cap list --mint MINT_ADDRESS
+```
+
+Stop the service before manually clearing one mint, then restart it:
+
+```sh
+python -m features.strategy.market_cap reset --mint MINT_ADDRESS
+```
+
+Reset also clears that mint's pending votes; the next fresh eligible buy gets a
+new valuation. It does not replay previously consumed events or remove the
+existing order deduplication. Reset refuses a mint with an active order.
+
+## 2026-10-07: qualification backlog notification
+
+The existing 60-second health check reports one incident when the pending
+qualification/transaction queue grows for three consecutive checks, or its
+oldest item exceeds five minutes. The alert latch is persisted across restarts.
+Three healthy checks (queue not growing and oldest below one minute) rearm it;
+recovery is recorded locally without an extra Telegram message. Undecoded
+funding candidates are included so a bottleneck before qualification is visible.

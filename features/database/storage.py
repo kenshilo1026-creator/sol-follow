@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS token_entry_caps(mint TEXT PRIMARY KEY, signature TEXT NOT NULL,
+ wallet TEXT NOT NULL, slot INTEGER NOT NULL, observed REAL NOT NULL, state TEXT NOT NULL,
+ cap_usd_micros TEXT NOT NULL, threshold TEXT NOT NULL, detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS order_sources(order_id TEXT, signature TEXT, slot INTEGER,
  PRIMARY KEY(order_id,signature));
 CREATE TABLE IF NOT EXISTS events(event TEXT PRIMARY KEY, time INTEGER, signature TEXT);
@@ -302,6 +305,11 @@ class Store:
         with self.db('trading') as c:
             c.execute('BEGIN IMMEDIATE')
             if side == 'buy':
+                cap=c.execute('SELECT state,cap_usd_micros FROM token_entry_caps WHERE mint=?',(mint,)).fetchone()
+                limit=config.max_market_cap_usd_micros
+                if (cap and (cap['state']!='allowed' or (limit and int(cap['cap_usd_micros'])>limit))) or (not cap and limit):
+                    c.commit()
+                    return None
                 if not c.execute("INSERT OR IGNORE INTO signals VALUES (?,?,'reserved')", (key, oid)).rowcount:
                     c.commit()
                     return None

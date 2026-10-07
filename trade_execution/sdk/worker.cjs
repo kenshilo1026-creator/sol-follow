@@ -6,6 +6,7 @@ const {AccountCache}=require('./account-cache.cjs');
 const {BlockhashCache}=require('./blockhash-cache.cjs');
 const {BackgroundGate}=require('./background-gate.cjs');
 const {quoteLimit}=require('./observed-buy.cjs');
+const {marketCap,ORACLES}=require('./market-cap.cjs');
 const {withReporter}=require('./public-rpc.cjs');
 const gate=new BackgroundGate();
 let cache,blocks,rpcUrl,cacheGeneration;
@@ -37,7 +38,11 @@ async function handle(message){
     input.onRecipe=(quoteMint,recipe)=>send({id,recipe,quoteMint});
     let result;
     if(input.operation==='bootstrap'){
-      await wait();await blocks.refresh();result={warmed:!!blocks.row};
+      await wait();await blocks.refresh();
+      if(input.marketCapEnabled)await connection.getMultipleAccountsInfo(ORACLES.map(x=>x.address));
+      result={warmed:!!blocks.row};
+    }else if(input.operation==='market_cap'){
+      result=await marketCap(input,connection);
     }else if(['quote_limit','warm_limit'].includes(input.operation)){
       result=await quoteLimit(input,connection);
     }else if(input.route==='prime'){

@@ -27,6 +27,16 @@ def lamports(v):
         raise ValueError('invalid-sol-amount') from exc
 
 
+def market_cap_micros(value):
+    try:
+        n=Decimal(str(value))*10**9
+        if not n.is_finite() or n!=n.to_integral_value() or not 0<=n<10**24:
+            raise ValueError('invalid-market-cap-usd-k')
+        return int(n)
+    except InvalidOperation as exc:
+        raise ValueError('invalid-market-cap-usd-k') from exc
+
+
 def hours_to_seconds(value, minimum=60):
     try:
         seconds = Decimal(str(value)) * 3600
@@ -116,6 +126,7 @@ class Config:
     max_observed_buy: int = 5_000_000_000
     blockhash_cache_ttl_ms: int = 5000
     blockhash_refresh_ms: int = 1000
+    max_market_cap_usd_micros: int = 0
 
     @property
     def mode(self):
@@ -207,6 +218,7 @@ def load(root=ROOT, env=None):
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
         hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy,
+        max_market_cap_usd_micros=market_cap_micros(get('SOL_FOLLOW_MAX_MARKET_CAP_USD_K','0')),
         blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
         blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),
     )

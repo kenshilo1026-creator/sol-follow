@@ -22,7 +22,7 @@ const REASONS = new Set(['invalid-integer','invalid-u64','invalid-percent','dust
   'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
   'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
   'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit',
-  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority','pump-fill-rejected']);
+  'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority','pump-fill-rejected','market-cap-price-unavailable','market-cap-supply-unavailable','market-cap-route-unavailable']);
 
 function integer(v) {
   if (!/^[0-9]+$/.test(String(v))) throw Error('invalid-integer');

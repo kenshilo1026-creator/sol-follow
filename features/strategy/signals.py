@@ -2,6 +2,7 @@
 import time
 from chain_common.primitives import ata, TOKEN, TOKEN_2022
 from features.funding.processed import Processed
+from features.strategy.market_cap import permitted
 
 
 class Signals:
@@ -24,6 +25,8 @@ class Signals:
             return None
         if not self.proofs.usable(trade.signature, now, trade.slot,require_processed=processed):
             return None
+        if not permitted(self.store,trade.mint,cfg.max_market_cap_usd_micros):
+            return None
         fresh = self.store.vote(trade)
         current=self.store.rows('trading','SELECT * FROM votes WHERE mint=? AND wallet=?',(trade.mint,trade.wallet))
         if current:
@@ -42,6 +45,10 @@ class Signals:
                 if len(selected)>=cfg.n:
                     return self.store.reserve(cfg, trade.mint, trade.pool, cfg.buy_amount,sources=selected)
         return None
+
+    def reject_mint(self,mint):
+        with self.store.db('trading') as c:c.execute('DELETE FROM votes WHERE mint=?',(mint,))
+        self.votes.pop(mint,None)
 
     def reject(self, trade):
         self.store.reject_vote(trade)

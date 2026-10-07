@@ -26,7 +26,8 @@ def main():
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
                           'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,
-                          'max_target_buy_lamports':config.max_observed_buy,'alchemy_key_configured':bool(config.alchemy_key),
+                          'max_target_buy_lamports':config.max_observed_buy,
+                          'max_market_cap_usd_k':str(config.max_market_cap_usd_micros/10**9),'alchemy_key_configured':bool(config.alchemy_key),
                           'http_policy':'configured-public-only','background_rpc_rps':config.history_rps,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return
