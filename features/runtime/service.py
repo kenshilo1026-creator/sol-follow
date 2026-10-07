@@ -12,6 +12,7 @@ from features.notifications.buy_failures import context as buy_context, unrecogn
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
 from features.funding.discovery import Discovery
+from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.processed import Processed
 from trade_execution.observed_buy import check as check_observed_buy
 from features.database.maintenance import Maintenance
@@ -50,6 +51,12 @@ class Service:
             return False
         if row['owner']!=SYSTEM or row.get('executable') or row['data']!=['','base64']:
             return False
+        if item.provider.startswith('cex:'):
+            allowed,reason=await qualify_activity(item,rpc,self.store)
+            if not allowed:
+                logging.getLogger(__name__).info('CEX admission rejected wallet=%s signature=%s reason=%s',
+                                                 item.wallet,item.signature,reason)
+                return False
         added=self.store.admit(item,self.config.hotlist_ttl,time.time())
         if added:
             self.notices.emit('hotlist-add',item.dict(),alert=True)
@@ -170,7 +177,7 @@ class Service:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                reason=str(exc) if isinstance(exc,Unsupported) else type(exc).__name__
+                reason=str(exc) if isinstance(exc,(Unsupported,HistoryPending)) else type(exc).__name__
                 expired=self.store.retry(row,reason,time.time(),self.config.backfill_age)
                 if expired:
                     self.expired+=1

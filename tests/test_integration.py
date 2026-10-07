@@ -129,6 +129,9 @@ async def test_funding_still_admitted_without_trading(config,store):
     class RPC:
         async def transaction(self,sig):return raw
         async def call(self,method,params):
+            if method=='getSignaturesForAddress':
+                assert params[0]==wallet
+                return [{'signature':'funding','slot':raw['slot'],'blockTime':now}]
             assert method=='getAccountInfo' and params[0]==wallet
             return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
     store.enqueue(['funding'])

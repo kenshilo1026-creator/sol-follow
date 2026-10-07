@@ -7,6 +7,9 @@ import time
 import uuid
 
 FUNDING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS funding_activity_checks(event TEXT PRIMARY KEY, updated REAL NOT NULL,
+ expires INTEGER NOT NULL, detail TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS funding_activity_expiry ON funding_activity_checks(expires);
 CREATE TABLE IF NOT EXISTS processed_signals(signature TEXT PRIMARY KEY, slot INTEGER NOT NULL,
  seen REAL NOT NULL, live INTEGER NOT NULL, state TEXT NOT NULL, due REAL NOT NULL, reason TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS processed_due ON processed_signals(state,due);

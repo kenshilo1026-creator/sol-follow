@@ -71,7 +71,10 @@ async def test_maintenance_yields_to_buying(config,store):
 async def test_wallet_qualification_checks_owner(config,store):
     now=int(time.time());w=address();f=Funding('event','sig',w,address(),'cex:test',1,1,now)
     class RPC:
-        async def call(self,*args):return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
+        async def call(self,method,params):
+            if method=='getSignaturesForAddress':
+                return [{'signature':f.signature,'slot':f.slot,'blockTime':f.time}]
+            return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
     service=Service(config,store)
     assert await service.qualify(f,RPC())
     class WrongOwner:

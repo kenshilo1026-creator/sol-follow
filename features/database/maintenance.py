@@ -9,7 +9,7 @@ def usage(store):
 
 
 def batch(store, name, table, where, params, limit=128):
-    allowed={'audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots'}
+    allowed={'audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
     start=time.monotonic()
@@ -35,7 +35,8 @@ class Maintenance:
         free=shutil.disk_usage(self.store.directory).free
         pressured=size>=cfg.db_max*0.9 or free<cfg.min_disk_free or (self.pressured and size>=cfg.db_target)
         deleted=0
-        tasks=[('audit','audit','time<?',(now-cfg.audit_retention,)),
+        tasks=[('funding','funding_activity_checks','expires<?',(now,)),
+               ('audit','audit','time<?',(now-cfg.audit_retention,)),
                ('funding','block_times','time<?',(now-cfg.backfill_age*2,)),
                ('funding','processed_signals','seen<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','dead_slots','time<?',(now-max(cfg.backfill_age*2,86400),)),
