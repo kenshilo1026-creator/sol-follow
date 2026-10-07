@@ -20,6 +20,18 @@ def test_config_safety():
     with pytest.raises(ValueError):load(env={'DRY_RUN':'maybe'})
 
 
+def test_token_tax_limit_defaults_and_units(tmp_path):
+    from trade_execution.builder import payload_for
+    (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}',encoding='utf-8')
+    assert load(root=tmp_path,env={}).max_token_tax_bps==200
+    for percent,bps in [('0',0),('2',200),('1.25',125),('20',2000)]:
+        cfg=load(root=tmp_path,env={'SOL_MAX_TOKEN_TAX_PERCENT':percent})
+        assert cfg.max_token_tax_bps==bps
+        assert payload_for(cfg,{},'public-wallet')['risk']['tokenTaxBps']==bps
+    for invalid in ['-1','NaN','Infinity','2.001','21','']:
+        with pytest.raises(ValueError):load(root=tmp_path,env={'SOL_MAX_TOKEN_TAX_PERCENT':invalid})
+
+
 def test_hours_and_percent_units():
     cfg=load(env={'SOL_HOTLIST_TTL_HOUR':'24','SOL_AUDIT_RETENTION_HOUR':'72','SOL_SLIPPAGE_PERCENT':'2'})
     assert cfg.hotlist_ttl==86400 and cfg.audit_retention==259200

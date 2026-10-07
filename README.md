@@ -151,10 +151,19 @@ Pump 非 SOL Create／買入共用 quote 路徑快取並預熱換幣帳戶；已
 
 - `SOL_MAX_POOL_FEE_PERCENT=2`：任何單池超過 2% 拒絕。
 - `SOL_MAX_TOTAL_FEE_PERCENT=3`：整條路徑池費／Stonk 轉帳稅合計超過 3% 拒絕。
+- `SOL_MAX_TOKEN_TAX_PERCENT=2`：Stonk 目標幣 Token-2022 的當前或已排定轉帳稅率超過 2% 拒絕；相等通過。
 - `SOL_MAX_PRICE_IMPACT_PERCENT=2`：扣除費用後，相對各池當下邊際價格的合計價格影響超過 2% 拒絕。
 - `SOL_SLIPPAGE_PERCENT=2`：保留原有最終實收 minOut，至少為完整即時預估淨輸出的 98%。
 
-前三項是建單前的成本上限，與鏈上的 minOut 各自生效；不把高費用藏在滑點內。
+池費及總費上限適用於所有已支援買入、Pump／Stonk dev 超標緊急賣出及背景換回 SOL；
+包含 Pump 原生 SOL 直接買入。總費包含池費、creator 費及支援的轉帳稅，不含網路費或 ATA 租金。
+價格影響上限仍只用於非 SOL 路由買入、Stonk 買入及背景換幣，未新增至 Pump SOL 直接買入或緊急賣出。
+這些是建單前的成本上限，與鏈上的 minOut 各自生效；不把高費用藏在滑點內。
+轉帳稅上限預設 2%，可設 0–20%，精度 0.01%；檢查 mint 設定的名義稅率，
+即使 maximumFee 封頂令本次實際扣稅較低，名義稅率超標仍拒絕。總費則用本次實際扣稅比例計算。
+稅率檢查重用組單已取得的 mint／epoch，不增加 RPC，套用 Stonk 買入及 dev 緊急賣出；
+Pump、報價幣及中間換幣路由仍拒絕 TransferFeeConfig，未知／啟用中的 hook 亦不放行。
+本地檢查不是鏈上 buy guard：快照之後的設定變更仍由原有 minOut 限制實收，不能保證執行時稅率上限。
 Stonk 依 [官方 LaunchLab SDK](https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/launchpad.ts#L628-L695)
 以扣除轉帳稅的數量計算 minOut，模擬亦核對淨收幣及既有中間資產未被花用。
 價格影響基準是當下池價，不是獨立公允價格；minOut 限制可接受的惡化，不能保證完全免受夾單。
@@ -442,6 +451,9 @@ Pump／Stonk 畢業前曲線支援直接賣回原報價幣，共用 `SOL_SLIPPAG
 簽名交易在送出前持久化，送單逾時／重啟只核對及重送同一簽名，未知結果不另簽賣單，避免重複賣出。
 只有已確認 finalized 失敗才重新建單。買賣確認順序不同時亦會正確更新持倉。
 `DRY_RUN=true` 不送出買賣交易，超標退出只記錄通知。
+
+緊急賣出亦遵守單池費、總費及轉帳稅上限；超標不簽名、不送單，保留退出任務並通知暫緩，
+之後重新報價重試。因此費率一直超標時不保證能立即退出；不會為緊急賣出自動繞過上限。
 
 資料不符、RPC 失敗／429、30 秒檢查逾時或重啟中斷會停止該 mint 新增跟買，之後不重查。
 這些情況不能證實超標，所以**不會自動賣出已持有的代幣**，會發出無法判定通知。

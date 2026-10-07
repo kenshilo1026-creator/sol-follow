@@ -21,7 +21,7 @@ const REASONS = new Set(['sweep-quote-expired','sell-balance-unavailable','sell-
   'curve-graduated-or-quote-mismatch','dlmm-quote-mismatch','dlmm-token-program',
   'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
   'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
-  'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit',
+  'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit','token-tax-limit',
   'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority','pump-fill-rejected','market-cap-price-unavailable','market-cap-supply-unavailable','market-cap-route-unavailable']);
 
 function integer(v) {
@@ -156,13 +156,15 @@ async function buildNative(input,injectedConnection) {
   const feeConfig=pump.PUMP_SDK.decodeFeeConfig(accounts[3]);
   const expected=pump.getBuyTokenAmountFromSolAmount({global,feeConfig,
     mintSupply:new BN(baseMint.supply.toString()),bondingCurve:curve,amount});
+  const metrics=require('./pump-risk.cjs').checkFees(input,{global,feeConfig,
+    mintSupply:new BN(baseMint.supply.toString()),curve,amount,expected});
   const {minOut}=minimums(amount,expected,input.slippagePercent);
   const ixs=await pump.PUMP_SDK.buyInstructions({global,bondingCurveAccountInfo:accounts[1],bondingCurve:curve,
     associatedUserAccountInfo:accounts[4],mint,user,amount:minOut,solAmount:amount,slippage:0,tokenProgram});
   const exactIxs=ixs.map(ix=>ix.programId.equals(pump.PUMP_PROGRAM_ID)?exactNativeInstruction(ix,amount,minOut):ix);
   return {...await finish(connection,input,user,exactIxs),wallet:user.toBase58(),mint:mint.toBase58(),
     targetAta:targetAta.toBase58(),amount:amount.toString(),quotedOut:expected.toString(),minOut:minOut.toString(),
-    quoteIn:amount.toString(),quoteOut:amount.toString()};
+    quoteIn:amount.toString(),quoteOut:amount.toString(),risk:metrics};
 }
 
 async function build(input, injectedConnection) {

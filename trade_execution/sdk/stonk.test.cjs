@@ -15,6 +15,31 @@ const a=ref.transaction.message.instructions[4].accounts;
 const pk=s=>new web3.PublicKey(s);
 function values(){return Object.fromEntries(Object.entries(snapshot.accounts).filter(([,r])=>r).map(([k,r])=>
   [k,{...r,owner:pk(r.owner),data:Buffer.from(r.data[0],'base64')}]));}
+
+test('token tax cap checks active and scheduled nominal rates, including maximumFee-capped taxes',()=>{
+  const risk=require('./risk.cjs');
+  const input={risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:200}};
+  const mint=(older,newer,starts=20)=>{
+    const data=Buffer.alloc(spl.TRANSFER_FEE_CONFIG_SIZE+4);
+    data.writeUInt16LE(spl.ExtensionType.TransferFeeConfig,0);data.writeUInt16LE(spl.TRANSFER_FEE_CONFIG_SIZE,2);
+    spl.TransferFeeConfigLayout.encode({transferFeeConfigAuthority:web3.PublicKey.default,
+      withdrawWithheldAuthority:web3.PublicKey.default,withheldAmount:0n,
+      olderTransferFee:{epoch:0n,maximumFee:1n,transferFeeBasisPoints:older},
+      newerTransferFee:{epoch:BigInt(starts),maximumFee:1n,transferFeeBasisPoints:newer}},data.subarray(4));
+    return {tlvData:data};
+  };
+  risk.checkTokenTax(input,mint(200,200),10); // equality
+  assert.throws(()=>risk.checkTokenTax(input,mint(201,200),10),/token-tax-limit/);
+  assert.throws(()=>risk.checkTokenTax(input,mint(100,201),10),/token-tax-limit/); // future increase
+  risk.checkTokenTax(input,mint(900,200),20); // older rate no longer active
+  assert.throws(()=>risk.checkTokenTax(input,mint(100,201),20),/token-tax-limit/);
+  risk.checkTokenTax({...input,risk:{...input.risk,tokenTaxBps:0}},mint(0,0),10);
+  risk.checkTokenTax(input,{tlvData:Buffer.alloc(0)},10);
+  const taxed=mint(900,900);
+  assert.equal(spl.calculateEpochFee(spl.getTransferFeeConfig(taxed),10n,1000000n),1n);
+  assert.throws(()=>risk.checkTokenTax(input,taxed,10),/token-tax-limit/);
+  assert.throws(()=>risk.checkTokenTax(input,mint(0,0),NaN),/invalid-risk-data/);
+});
 function active(rows){
   // Restore the pre-buy reserves recorded in the historical trade event. This
   // is an offline historical reconstruction, NOT the current graduated pool.
@@ -99,6 +124,8 @@ test('native Stonk build uses SOL budget, shared slippage and no Jupiter; preser
   await assert.rejects(build({...input,quoteMint:a[10]},connection),/native-only/);
   await assert.rejects(build({...input,quoteProgram:spl.TOKEN_2022_PROGRAM_ID.toBase58()},connection),/native-only/);
   await assert.rejects(build({...input,risk:{poolFeeBps:100,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
+  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:99}},connection),/token-tax-limit/);
+  await build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:100}},connection);
   r[na[4]].data[17]=2;await assert.rejects(build(input,connection),/stonk-pool-rejected/);
 });
 test('historical LaunchLab quote reproduces exact transfer-tax net receipt',()=>{
@@ -191,6 +218,7 @@ test('full SOL-to-Stonk build composes atomic swap, net minimum and public RPC s
     amount:'10000000',slippagePercent:'2',minLiquidity:'0'};
   const result=await build(input,connection);
   assert.equal(result.amount,'10000000');assert.equal(result.quoteIn,'990000');
+  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:0}},connection),/token-tax-limit/);
   assert(BigInt(result.minOut)<BigInt(result.quotedOut));
   const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
   assert(tx.signatures[0].every(x=>x===0));assert.equal(tx.message.header.numRequiredSignatures,1);

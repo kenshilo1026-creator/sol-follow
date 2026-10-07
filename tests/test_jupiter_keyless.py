@@ -101,5 +101,5 @@ def test_keyless_ipc_preserves_cooldown_and_excludes_credentials(config,monkeypa
     assert captured['payload']=={'route':'sol_to_stonk_curve','rpc':config.rpc,'ws':config.ws,'wallet':'public-wallet',
         'amount':str(config.buy_amount),'slippagePercent':format(config.slippage_percent,'f'),
         'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
-        'risk':{'poolFeeBps':200,'totalFeeBps':300,'impactBps':200}}
+        'risk':{'poolFeeBps':200,'totalFeeBps':300,'impactBps':200,'tokenTaxBps':200}}
     assert not any(name.startswith('JUPITER_') for name in captured['env'])

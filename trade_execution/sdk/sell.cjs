@@ -3,14 +3,18 @@
 const web3=require('@solana/web3.js'),spl=require('@solana/spl-token');
 const pump=require('@pump-fun/pump-sdk'),BN=require('bn.js'),crypto=require('node:crypto');
 const stonk=require('./stonk.cjs');
-function sellQuote(state,amount,rate,mint,epoch){
+const risk=require('./risk.cjs');
+function sellDetails(state,amount,rate,mint,epoch){
   const transfer=spl.getTransferFeeConfig(mint);
   const net=amount-(transfer?spl.calculateEpochFee(transfer,BigInt(epoch),amount):0n);
   const x=state.virtualA-state.realA,y=state.virtualB+state.realB;
   if(net<=0n||x<=0n||y<=0n||net>state.realA)throw Error('stonk-curve-rejected');
   const gross=net*y/(x+net),fee=(gross*rate+999999n)/1000000n;
   if(gross>state.realB||gross<=fee)throw Error('stonk-curve-rejected');
-  return gross-fee;
+  return {net:gross-fee,fees:[risk.ppm(amount-net,amount),risk.ppm(fee,gross)]};
+}
+function sellQuote(...args){
+  return sellDetails(...args).net;
 }
 function sellInstruction(args){
   // Official LaunchLab sell_exact_in uses the same account metas as buy_exact_in.
@@ -40,12 +44,15 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
   if(!before.owner.equals(user)||!before.mint.equals(mint)||before.amount<BigInt(amount.toString())||before.isFrozen)throw Error('sell-balance-unavailable');
   const outBefore=rows[4]?spl.unpackAccount(out,rows[4],quoteProgram):null;
   if(outBefore&&(!outBefore.owner.equals(user)||!outBefore.mint.equals(quote)||outBefore.isFrozen))throw Error('account-owner');
-  let expected,minOut,ixs;
+  let expected,minOut,ixs,metrics;
   if(isStonk){
     const state=stonk.poolState(rows[2],pool,mint,quote);
     const configs=await connection.getMultipleAccountsInfo([state.config,stonk.PLATFORM]);
     const epoch=await connection.getEpochInfo();
-    expected=new BN(sellQuote(state,BigInt(amount.toString()),stonk.feeSchedule(...configs,quote),base,epoch.epoch).toString());
+    risk.checkTokenTax(input,base,epoch.epoch);
+    const rate=stonk.feeSchedule(...configs,quote),details=sellDetails(state,BigInt(amount.toString()),rate,base,epoch.epoch);
+    metrics=risk.checkFees(input,details.fees,[rate]);
+    expected=new BN(details.net.toString());
     ({minOut}=minimums(amount,expected,input.slippagePercent));
     ixs=[spl.createAssociatedTokenAccountIdempotentInstruction(user,out,user,quote,quoteProgram),
       sellInstruction({user,pool,mint,quote,baseProgram,quoteProgram,state,targetAta:target,quoteAta:out,
@@ -60,6 +67,8 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
     });
     const global=pump.PUMP_SDK.decodeGlobal(configs[0]),feeConfig=pump.PUMP_SDK.decodeFeeConfig(configs[1]);
     expected=pump.getSellSolAmountFromTokenAmount({global,feeConfig,mintSupply:new BN(base.supply.toString()),bondingCurve:curve,amount});
+    metrics=require('./pump-risk.cjs').checkFees(input,{global,feeConfig,mintSupply:new BN(base.supply.toString()),
+      curve,amount,expected,sell:true});
     ({minOut}=minimums(amount,expected,input.slippagePercent));
     const args={global,bondingCurveAccountInfo:rows[2],bondingCurve:curve,mint,user,amount,slippage:0,tokenProgram:baseProgram};
     if(native)ixs=await pump.PUMP_SDK.sellInstructions({...args,solAmount:minOut,
@@ -81,6 +90,6 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
     }
   }};
   return {...await finish(connection,input,user,ixs,check),side:'sell',wallet:user.toBase58(),mint:mint.toBase58(),
-    amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),minOut:minOut.toString()};
+    amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),minOut:minOut.toString(),risk:metrics};
 }
 module.exports={buildSell,sellInstruction,sellQuote};

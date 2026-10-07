@@ -142,6 +142,7 @@ class Config:
     history_rps: int = 2
     max_pool_fee_bps: int = 200
     max_total_fee_bps: int = 300
+    max_token_tax_bps: int = 200
     max_price_impact_bps: int = 200
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
@@ -255,6 +256,7 @@ def load(root=ROOT, env=None):
         history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
         max_pool_fee_bps=risk_bps(get('SOL_MAX_POOL_FEE_PERCENT', '2')),
         max_total_fee_bps=risk_bps(get('SOL_MAX_TOTAL_FEE_PERCENT', '3')),
+        max_token_tax_bps=risk_bps(get('SOL_MAX_TOKEN_TAX_PERCENT', '2')),
         max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),

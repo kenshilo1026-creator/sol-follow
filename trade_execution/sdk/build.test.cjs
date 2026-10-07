@@ -152,6 +152,10 @@ test('native SOL builder spends the configured budget with common min-out and no
   const input={commitment:'processed',route:'pump_native_curve',wallet:user.toBase58(),mint:a[2],quoteMint:spl.NATIVE_MINT.toBase58(),
     tokenProgram:spl.TOKEN_PROGRAM_ID.toBase58(),lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2'};
   const result=await build(input,connection);assert.equal(blockCalls,1);
+  assert(BigInt(result.risk.feePpm)>0n);
+  await assert.rejects(build({...input,risk:{poolFeeBps:0,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
+  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:0,impactBps:200}},connection),/total-fee-limit/);
+  assert.equal(blockCalls,1); // Rejected before blockhash/simulation, hence before signing.
   const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
   const ixs=web3.TransactionMessage.decompile(tx.message).instructions;
   assert.equal(ixs.length,3); // Compute budget, base ATA, Pump buy.

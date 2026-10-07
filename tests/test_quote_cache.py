@@ -123,7 +123,7 @@ def test_worker_payload_restores_recipe_and_preserves_slot_amount_risk(config, s
         assert payload['minSlot'] == r.trade.slot
         assert payload['amount'] == str(config.buy_amount)
         assert payload['prewarm'] is True
-        assert payload['risk'] == {'poolFeeBps': 200, 'totalFeeBps': 300, 'impactBps': 200}
+        assert payload['risk'] == {'poolFeeBps': 200, 'totalFeeBps': 300, 'impactBps': 200, 'tokenTaxBps': 200}
         assert payload['rpc'] == config.rpc
         assert builder.pending == {}
     asyncio.run(scenario())

@@ -140,6 +140,26 @@ async def test_simulation_failure_never_signs_or_sends(config,store):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('reason',['pool-fee-limit','total-fee-limit','token-tax-limit'])
+async def test_fee_rejection_keeps_exit_unsigned_and_retries(config,store,reason):
+    from trade_execution.builder import BuildError
+    engine,rpc,oid,route,builds=await setup(config,store)
+    allowed_builder=engine.builder
+    async def rejected(*args):raise BuildError(reason)
+    engine.builder=rejected
+    await engine.once()
+    job=store.rows('trading','SELECT * FROM dev_exits')[0]
+    assert job['state']=='waiting' and job['signature'] is None and job['raw'] is None
+    assert not any(x[0] in ('simulateTransaction','sendTransaction') for x in rpc.calls)
+    assert any(args[0]=='dev exit deferred' and args[1]['reason']==reason and kwargs['alert']
+               for args,kwargs in engine.notices.items)
+    engine.builder=allowed_builder
+    engine.next.clear()
+    await engine.once()
+    assert store.rows('trading','SELECT state FROM dev_exits')[0]['state']=='submitted'
+
+
+@pytest.mark.asyncio
 async def test_dry_exit_and_unavailable_do_not_sell(config,store):
     engine,rpc,oid,route,builds=await setup(config,store)
     with store.db('trading') as c:c.execute("UPDATE token_dev_holdings SET state='unavailable'")
