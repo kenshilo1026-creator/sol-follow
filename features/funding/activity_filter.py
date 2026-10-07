@@ -95,6 +95,7 @@ async def qualify_activity(item,rpc,store):
                 if slot==item.slot:
                     # RPC history does not establish execution order within a slot.
                     raise HistoryPending('same-slot-signed-activity-order-unknown')
+                state['signed_activity']={'signature':sig,'slot':slot,'time':stamp}
                 return finish(False,'signed-activity-within-30d')
         state['pending'].pop(0);save()
     raise HistoryPending('wallet-history-check-incomplete')

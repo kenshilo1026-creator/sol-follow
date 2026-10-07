@@ -9,7 +9,7 @@ def usage(store):
 
 
 def batch(store, name, table, where, params, limit=128):
-    allowed={'audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks'}
+    allowed={'decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
     start=time.monotonic()
@@ -37,6 +37,7 @@ class Maintenance:
         deleted=0
         tasks=[('funding','funding_activity_checks','expires<?',(now,)),
                ('audit','audit','time<?',(now-cfg.audit_retention,)),
+               ('audit','decisions','time<?',(now-cfg.audit_retention,)),
                ('funding','block_times','time<?',(now-cfg.backfill_age*2,)),
                ('funding','processed_signals','seen<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','dead_slots','time<?',(now-max(cfg.backfill_age*2,86400),)),
@@ -48,6 +49,7 @@ class Maintenance:
                ('trading','events','time<?',(now-max(cfg.backfill_age*2,cfg.window*2),))]
         if pressured:
             tasks.insert(0,('audit','audit','1=1',()))
+            tasks.insert(1,('audit','decisions','1=1',()))
         for name,table,where,params in tasks:
             if self.priority.active:
                 break

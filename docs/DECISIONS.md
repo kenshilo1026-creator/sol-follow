@@ -221,3 +221,51 @@ fallback. Missing/stale USD or route prices skip following without asserting
 a below-minimum buy or removing the wallet. Known below-minimum buys retain
 the persistent hotlist-removal behavior above. The existing 5 SOL maximum and
 market-cap checks still apply independently.
+
+
+## 2026-10-07: local wallet and copy-buy developer audit
+
+Inspired by RH dev_audit, the Solana implementation lives in `features/audit/`.
+Run from the sol-follow project directory (activate its venv first):
+
+```sh
+python -m features.audit.dev_audit wallet WALLET_ADDRESS --hours 24
+python -m features.audit.dev_audit dev WALLET_ADDRESS --hours 168 --json
+python -m features.audit.dev_audit followed --hours 6
+python -m features.audit.dev_audit followed --hours 6 --all --json
+```
+
+`--data /path/to/sol-follow/data` selects a local database directory. `--limit`
+(default 200, maximum 10,000) bounds each report section; the report explicitly
+marks sections that reach the limit. Times are displayed in Hong Kong time.
+Queries use SQLite read-only/query-only mode, bounded execution time, no RPC,
+no transaction submission and no Telegram messages. They do not create missing
+databases or require loading bot keys or the full runtime configuration.
+
+Wallet reports show current hotlist/removal state separately from past recorded
+decisions, funding candidates, qualification checks, jobs, processed proofs,
+market-cap decisions, source-linked orders and execution notices. Reasons cover
+configured-CEX amount/balance checks, wallet type, recent signed activity,
+history pending, expiry, min/max buy, price unavailable, market cap, source
+proof, old/replayed signals, N-wallet count, reservation dedupe and build/send
+failures. Signed-activity denials now retain the offending signature/time.
+Unsupported launchpad transactions are labelled as unparsed or possibly not a
+buy; no report guesses a rejection from absence of evidence.
+
+`followed` defaults to live confirmed/finalized buys (confirmed may still roll
+back), grouped per order with all wallets selected by the N-wallet rule and the
+full token mint. The hours window uses order creation time. `--all` additionally
+shows pending/unknown submissions, failures and dry runs as distinct categories.
+Order-source wallets are saved atomically with reservation and survive rolling
+vote cleanup. Old orders lacking this mapping are shown with unavailable
+sources, never guessed from the fee payer or all accounts in a transaction.
+
+Restart the service once after updating to start detailed decision recording;
+no extra .env setting is needed. Historical rejection reasons that were never
+recorded cannot be reconstructed retroactively. Detailed decisions share
+`SOL_AUDIT_RETENTION_HOUR` (default 72 hours); disk pressure can prune them sooner.
+SQLite write failures are logged and do not stop trading, so audit coverage is
+best effort and reports state that missing evidence is inconclusive. Decisions
+are indexed by wallet/time/signature and repeated identical outcomes are
+coalesced. These records are local and independent of Telegram. Reservation
+source mappings remain with orders, without changing admission/trading rules.

@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import time
 import uuid
+from features.audit.writer import SCHEMA as DECISION_SCHEMA
 
 FUNDING_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS hotlist_removals(wallet TEXT PRIMARY KEY, slot INTEGER NOT NULL,
@@ -46,6 +47,9 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS order_wallets(order_id TEXT NOT NULL, wallet TEXT NOT NULL,
+ signature TEXT NOT NULL, slot INTEGER NOT NULL, PRIMARY KEY(order_id,wallet,signature));
+CREATE INDEX IF NOT EXISTS order_wallets_wallet ON order_wallets(wallet,order_id);
 CREATE TABLE IF NOT EXISTS token_entry_caps(mint TEXT PRIMARY KEY, signature TEXT NOT NULL,
  wallet TEXT NOT NULL, slot INTEGER NOT NULL, observed REAL NOT NULL, state TEXT NOT NULL,
  cap_usd_micros TEXT NOT NULL, threshold TEXT NOT NULL, detail TEXT NOT NULL);
@@ -62,6 +66,7 @@ CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY, signal_key TEXT, mode TEX
  signature TEXT UNIQUE, raw TEXT, last_height INTEGER, created REAL, updated REAL,
  reason TEXT DEFAULT '', rule_id TEXT DEFAULT '', quoted_out TEXT DEFAULT '0');
 CREATE INDEX IF NOT EXISTS orders_state ON orders(state);
+CREATE INDEX IF NOT EXISTS orders_created ON orders(created);
 CREATE TABLE IF NOT EXISTS positions(mint TEXT, mode TEXT, pool TEXT, amount TEXT,
  entry_quote TEXT, entry_tokens TEXT, peak TEXT DEFAULT '0', rules TEXT DEFAULT '{}',
  updated REAL, PRIMARY KEY(mint,mode));
@@ -76,7 +81,7 @@ class Store:
         self.new_jobs = 0
         self.revisited_jobs = 0
         self.directory.mkdir(parents=True, exist_ok=True)
-        for name, schema in [('funding', FUNDING_SCHEMA), ('trading', TRADING_SCHEMA), ('audit', AUDIT_SCHEMA)]:
+        for name, schema in [('funding', FUNDING_SCHEMA), ('trading', TRADING_SCHEMA), ('audit', AUDIT_SCHEMA+DECISION_SCHEMA)]:
             with self.db(name) as c:
                 # Must be selected before first table creation; incremental
                 # reclamation avoids a full-size VACUUM temporary copy.
@@ -343,6 +348,8 @@ class Store:
             c.execute('INSERT INTO orders(id,signal_key,mode,mint,pool,side,state,amount,created,updated,rule_id) '
                       "VALUES (?,?,?,?,?,?,'reserved',?,?,?,?)",
                       (oid, key, config.mode, mint, pool, side, str(amount), now, now, rule_id))
+            c.executemany('INSERT OR IGNORE INTO order_wallets VALUES (?,?,?,?)',
+                          [(oid,r['wallet'],r['signature'],r['slot']) for r in sources])
             c.executemany('INSERT OR IGNORE INTO order_sources VALUES (?,?,?)',
                           [(oid,r['signature'],r['slot']) for r in sources])
             c.commit()

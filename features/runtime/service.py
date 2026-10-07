@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+from features.audit.writer import record, trade_record, funding_candidates, skipped_transaction
 from solders.pubkey import Pubkey
 import aiohttp
 from chain_common.rpc import Priority, Rpc
@@ -44,26 +45,51 @@ class Service:
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
 
     async def qualify(self,item,rpc):
+        record(self.store,'funding','observed','candidate',wallet=item.wallet,signature=item.signature,
+               event=item.event,detail=item.dict())
+        try:
+            return await self._qualify(item,rpc)
+        except Exception as exc:
+            reason=str(exc) if isinstance(exc,HistoryPending) else type(exc).__name__
+            record(self.store,'qualification','pending',reason,wallet=item.wallet,
+                   signature=item.signature,event=item.event)
+            raise
+
+    async def _qualify(self,item,rpc):
+        def decision(outcome,reason):
+            record(self.store,'qualification',outcome,reason,wallet=item.wallet,
+                   signature=item.signature,event=item.event,detail={'funding_slot':item.slot,'funding_time':item.time,
+                   'hotlist_ttl_s':self.config.hotlist_ttl})
         if not Pubkey.from_string(item.wallet).is_on_curve():
+            decision('blocked','wallet-off-curve')
             return False
         result=await rpc.call('getAccountInfo',[item.wallet,{'encoding':'base64','commitment':'confirmed','minContextSlot':item.slot}])
         row=result['value']
         if row is None:
+            decision('blocked','wallet-account-missing')
             # A closed/empty wallet cannot be certified as an active trading owner.
             return False
         if row['owner']!=SYSTEM or row.get('executable') or row['data']!=['','base64']:
+            decision('blocked','wallet-not-system-account')
             return False
         if item.provider.startswith('cex:'):
             allowed,reason=await qualify_activity(item,rpc,self.store)
             if not allowed:
+                decision('blocked',reason)
                 logging.getLogger(__name__).info('CEX admission rejected wallet=%s signature=%s reason=%s',
                                                  item.wallet,item.signature,reason)
                 return False
         added=self.store.admit(item,self.config.hotlist_ttl,time.time())
         if added:
+            decision('admitted','qualified')
             self.notices.emit('hotlist-add',item.dict(),alert=True)
             if hasattr(self,'discovery'):
                 self.discovery.request_history(item.wallet)
+        else:
+            removal=self.store.rows('funding','SELECT slot FROM hotlist_removals WHERE wallet=?',(item.wallet,))
+            reason=('funding-expired' if item.time+self.config.hotlist_ttl<=time.time() else
+                    'hotlist-consumed' if removal and item.slot<=removal[0]['slot'] else 'funding-already-recorded')
+            decision('skipped',reason)
         return added
 
     async def process(self,row,rpc):
@@ -80,6 +106,7 @@ class Service:
         if raw is None:
             raise RuntimeError('transaction-not-indexed')
         if raw.get('meta') and raw['meta'].get('err') is not None:
+            skipped_transaction(self.store,raw,self.config,'failed-transaction')
             self.store.job_result(row['signature'],'done','failed-transaction')
             self.completed+=1
             return
@@ -87,6 +114,7 @@ class Service:
         processed=raw.get('_stream',{}).get('commitment')=='processed'
         proof=self.proofs.row(row['signature']) if processed else None
         if processed and (not proof or proof['state']!='pending' or not self.proofs.usable(row['signature'],slot=raw['slot'])):
+            skipped_transaction(self.store,raw,self.config,'processed-not-live-or-invalid')
             self.store.finish_processed(row['signature'],'processed-not-live-or-invalid',raw['slot'])
             self.completed+=1
             return
@@ -96,10 +124,12 @@ class Service:
         if tx.time>time.time()+30:
             raise Unsupported('rpc-chain-time-ahead-of-local-clock')
         if tx.time < time.time()-self.config.backfill_age:
+            skipped_transaction(self.store,raw,self.config,'chain-time-outside-coverage')
             self.store.job_result(row['signature'],'expired','chain-time-outside-coverage',tx.slot)
             self.expired+=1
             return
         funding_items=[] if processed else funding_decode(tx,self.config)
+        if not processed:funding_candidates(self.store,tx,self.config,funding_items)
         creation=inspect_creates(tx)
         self.metrics.add('decode',time.monotonic()-parse_started)
         for item in funding_items:
@@ -118,6 +148,8 @@ class Service:
             for detail in unrecognized_non_sol(tx,routes):
                 if (self.store.eligible(detail['source_wallet'],tx.slot,tx.time,time.time())
                         and self.proofs.usable(tx.signature,slot=tx.slot)):
+                    record(self.store,'buy','blocked','unsupported-non-sol-route',wallet=detail['source_wallet'],
+                           mint=detail.get('mint',''),signature=tx.signature,event=detail['event'],detail=detail)
                     self.notices.emit('non-SOL buy skipped',{'mode':self.config.mode,**detail},alert=True,
                         key='unsupported-buy:'+detail['event'],interval=300)
         # Reserve before awaiting execution, so a failed first attempt cannot
@@ -127,6 +159,7 @@ class Service:
             self.quote_builder.observe(route)
             # Confirmed recovery may refresh identities/funding, never initiate a late buy.
             if self.config.hotlist_commitment=='processed' and not processed:
+                trade_record(self.store,route.trade,'signal','skipped','confirmed-recovery-not-live')
                 continue
             trade=route.trade
             if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
@@ -143,6 +176,8 @@ class Service:
                         self.signals.reject(trade)
                     cap_allowed=await self.market_cap.check(route)
                     if not minimum_allowed:
+                        trade_record(self.store,trade,'minimum','blocked' if below else 'unavailable',
+                                     minimum_detail['reason'],{**minimum_detail,'hotlist_removed':below})
                         if not below:self.signals.reject(trade)
                         self.notices.emit('target buy skipped',{'signature':trade.signature,
                             **buy_context(self.config,route),'stage':'target-minimum-check',
@@ -150,11 +185,14 @@ class Service:
                             key='target-min-skip:'+trade.event,interval=300)
                         continue
                     if not cap_allowed:
+                        trade_record(self.store,trade,'market-cap','blocked','market-cap-not-permitted',
+                                     self.market_cap.row(trade.mint))
                         self.signals.reject_mint(trade.mint)
                         self.signals.reject(trade)
                         continue
                 allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 if not allowed:
+                    trade_record(self.store,trade,'maximum','blocked',detail['reason'],detail)
                     self.signals.reject(trade)
                     self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
                         'stage':'target-amount-check',**detail},alert=route.quote_mint!=WSOL,
@@ -168,6 +206,10 @@ class Service:
             await executor.buy(oid,route)
         relevant_programs={pump_fun.PROGRAM,pump_fun.SWAP_PROGRAM,stonk.PROGRAM}
         if not routes and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
+            for wallet in tx.signers:
+                if self.store.eligible(wallet,tx.slot,tx.time,time.time()):
+                    record(self.store,'buy','unavailable','unsupported-route-or-not-a-buy',
+                           wallet=wallet,signature=tx.signature)
             self.notices.emit('unsupported buy route; no vote',{'signature':tx.signature},
                               key='unsupported-route',interval=60)
         if processed:

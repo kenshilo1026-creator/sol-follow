@@ -1,5 +1,6 @@
 """Distinct-wallet rolling votes, persistent dedupe and atomic order reservation."""
 import time
+from features.audit.writer import trade_record
 from chain_common.primitives import ata, TOKEN, TOKEN_2022
 from features.funding.processed import Processed
 from features.strategy.market_cap import permitted
@@ -17,23 +18,32 @@ class Signals:
     def observe(self, trade, now=None):
         now = time.time() if now is None else now
         cfg = self.config
+        def decision(outcome,reason,**detail):
+            trade_record(self.store,trade,'signal',outcome,reason,
+                         {'n':cfg.n,'window_s':cfg.window,'signal_age_s':cfg.signal_age,**detail})
         if not self.store.eligible(trade.wallet, trade.slot, trade.time, now):
+            decision('blocked','not-eligible-hotlist')
             return None
         processed=cfg.hotlist_commitment=='processed'
         proof=self.proofs.row(trade.signature) if processed else None
         if processed and (not proof or proof['state']!='pending'):
+            decision('blocked','processed-proof-not-pending')
             return None
         if not self.proofs.usable(trade.signature, now, trade.slot,require_processed=processed):
+            decision('blocked','source-proof-unusable')
             return None
         if not permitted(self.store,trade.mint,cfg.max_market_cap_usd_micros):
+            decision('blocked','market-cap-not-permitted')
             return None
         fresh = self.store.vote(trade)
         current=self.store.rows('trading','SELECT * FROM votes WHERE mint=? AND wallet=?',(trade.mint,trade.wallet))
         if current:
             self.votes.setdefault(trade.mint,{})[trade.wallet]=current[0]
         if not fresh or trade.side != 'buy' or trade.time < max(self.started, now-cfg.signal_age):
+            decision('skipped','duplicate-event' if not fresh else 'not-buy' if trade.side!='buy' else 'signal-too-old-or-before-start')
             return None
         if not current or current[0]['signature']!=trade.signature or current[0]['slot']!=trade.slot:
+            decision('blocked','vote-not-current-or-same-slot-ambiguous')
             return None
         rows = [r for r in self.votes.get(trade.mint,{}).values() if r['time']>=now-cfg.window]
         selected=[]
@@ -43,7 +53,12 @@ class Signals:
             if self.proofs.usable(r['signature'],now,r['slot'],require_processed=processed) and self.store.eligible(r['wallet'],r['slot'],r['time'],now):
                 selected.append(r)
                 if len(selected)>=cfg.n:
-                    return self.store.reserve(cfg, trade.mint, trade.pool, cfg.buy_amount,sources=selected)
+                    oid=self.store.reserve(cfg, trade.mint, trade.pool, cfg.buy_amount,sources=selected)
+                    decision('reserved' if oid else 'blocked','order-reserved' if oid else 'order-dedup-or-cap-changed',
+                             order=oid,count=len(selected))
+                    return oid
+        decision('waiting','wallet-threshold-not-reached',count=len(selected),
+                 remaining_required=cfg.remaining)
         return None
 
     def reject_mint(self,mint):

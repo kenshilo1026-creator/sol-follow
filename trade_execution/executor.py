@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import time
+from features.audit.writer import trade_record
 from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
@@ -73,6 +74,7 @@ class Executor:
                     c.execute("UPDATE orders SET state='dry-simulated',updated=? WHERE id=?",(time.time(),oid))
                     c.execute("UPDATE signals SET state='dry-simulated' WHERE order_id=?",(oid,))
                     c.commit()
+                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid})
                 self.notices.emit('buy dry simulation passed',{'order':oid,'mint':row['mint'],
                     'min_out':result['minOut'],'quote_spend':result['quoteIn'],'simulation_wallet':wallet},alert=True)
                 return
@@ -105,6 +107,7 @@ class Executor:
             if response!=signature:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
+            trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']},alert=True)
         except asyncio.CancelledError:
             raise
@@ -113,6 +116,8 @@ class Executor:
                 self.store.update_order(oid,state='unknown')
             else:
                 self.store.fail_order(oid,'build-or-simulation-rejected:'+type(exc).__name__)
+            trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
+                         {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature})
             self.notices.emit('buy deferred' if signed else 'buy rejected',
                 {'order':oid,**buy_context(self.config,route),'stage':stage,'reason':failure_reason(exc),
                  'type':type(exc).__name__,'signed':signed,'signature':signature,
