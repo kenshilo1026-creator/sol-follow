@@ -46,7 +46,11 @@ class Notices:
             return
         if key:
             self.last[key] = now
-        log.log(logging.WARNING if alert else logging.INFO, '[SOL] %s %s', kind, detail)
+        log_detail = detail
+        if kind == 'hotlist-add':
+            log_detail = {'wallet': detail.get('wallet'), 'tx': detail.get('signature'),
+                          'source': detail.get('provider') or detail.get('source')}
+        log.log(logging.WARNING if alert else logging.INFO, '[SOL] %s %s', kind, log_detail)
         try:
             self.queue.put_nowait((kind, detail, alert))
         except asyncio.QueueFull:
