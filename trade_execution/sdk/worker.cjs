@@ -5,7 +5,7 @@ const {build,connectionFor,REASONS}=require('./build.cjs');
 const {AccountCache}=require('./account-cache.cjs');
 const {BlockhashCache}=require('./blockhash-cache.cjs');
 const {BackgroundGate}=require('./background-gate.cjs');
-const {quoteLimit}=require('./observed-buy.cjs');
+const {quoteLimit,quoteMinimumUsd}=require('./observed-buy.cjs');
 const {marketCap,ORACLES}=require('./market-cap.cjs');
 const {withReporter}=require('./public-rpc.cjs');
 const gate=new BackgroundGate();
@@ -32,7 +32,8 @@ async function handle(message){
     if(cacheGeneration!==input.cacheGeneration){cache.invalidate();cacheGeneration=input.cacheGeneration;}
     const generation=cache.generation;
     const wait=background?()=>gate.wait():async()=>{};
-    const connection=cache.view(input.operation==='quote_limit'?0:input.minSlot,input.operation==='quote_limit',
+    const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);
+    const connection=cache.view(cacheOnly?0:input.minSlot,cacheOnly,
       {wait,blockhashCache:blocks});
     input.waitForBackground=wait;input.background=!!background;
     input.onRecipe=(quoteMint,recipe)=>send({id,recipe,quoteMint});
@@ -43,6 +44,8 @@ async function handle(message){
       result={warmed:!!blocks.row};
     }else if(input.operation==='market_cap'){
       result=await marketCap(input,connection);
+    }else if(input.operation==='quote_minimum'){
+      result=await quoteMinimumUsd(input,connection);
     }else if(['quote_limit','warm_limit'].includes(input.operation)){
       result=await quoteLimit(input,connection);
     }else if(input.route==='prime'){

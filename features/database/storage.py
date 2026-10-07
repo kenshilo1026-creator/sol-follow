@@ -7,6 +7,8 @@ import time
 import uuid
 
 FUNDING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS hotlist_removals(wallet TEXT PRIMARY KEY, slot INTEGER NOT NULL,
+ signature TEXT NOT NULL, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS funding_activity_checks(event TEXT PRIMARY KEY, updated REAL NOT NULL,
  expires INTEGER NOT NULL, detail TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS funding_activity_expiry ON funding_activity_checks(expires);
@@ -116,6 +118,12 @@ class Store:
             if not cur.rowcount:
                 c.commit()
                 return False
+            # A delayed/replayed deposit before a consumed buy cannot re-admit it.
+            removed=c.execute('SELECT slot FROM hotlist_removals WHERE wallet=?',(item.wallet,)).fetchone()
+            if removed and item.slot<=removed['slot']:
+                c.execute('INSERT OR IGNORE INTO chain_checks VALUES (?,?,?)',(item.signature,item.slot,item.time))
+                c.commit()
+                return False
             # Revision is an append-only event rowid; hotlist is derived state.
             c.execute('INSERT INTO hotlist VALUES (?,?,?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
                 'event=excluded.event,slot=excluded.slot,time=excluded.time,expires=excluded.expires,revision=excluded.revision '
@@ -150,7 +158,21 @@ class Store:
         # Retain historical funding events across renewal. Same-slot ordering
         # is conservatively excluded instead of guessed from receive order.
         return bool(self.rows('funding', 'SELECT 1 FROM funding WHERE wallet=? AND slot<? AND time<=? '
-                              'AND expires>? LIMIT 1', (wallet, slot, when, now)))
+                              'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) LIMIT 1',
+                              (wallet, slot, when, now, wallet)))
+
+    def remove_hotlist(self, trade, reason):
+        """Persist consumption without deleting funding evidence or a newer deposit."""
+        with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
+            c.execute('INSERT INTO hotlist_removals VALUES (?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
+                      'slot=excluded.slot,signature=excluded.signature,reason=excluded.reason '
+                      'WHERE excluded.slot>hotlist_removals.slot',
+                      (trade.wallet,trade.slot,trade.signature,reason))
+            c.execute('DELETE FROM hotlist WHERE wallet=? AND slot<=?',(trade.wallet,trade.slot))
+            c.execute('DELETE FROM history_requests WHERE address=? AND NOT EXISTS '
+                      '(SELECT 1 FROM hotlist WHERE wallet=?)',(trade.wallet,trade.wallet))
+            c.commit()
 
     def enqueue(self, signatures, now=None):
         now = time.time() if now is None else now
@@ -383,7 +405,8 @@ class Store:
             c.execute("UPDATE launch_creates SET status='invalid' WHERE signature=?",(signature,))
             for wallet in affected:
                 c.execute('DELETE FROM hotlist WHERE wallet=?', (wallet,))
-                latest = c.execute('SELECT rowid,* FROM funding WHERE wallet=? ORDER BY slot DESC LIMIT 1', (wallet,)).fetchone()
+                latest = c.execute('SELECT rowid,* FROM funding WHERE wallet=? AND slot>COALESCE('
+                                   '(SELECT slot FROM hotlist_removals WHERE wallet=?),-1) ORDER BY slot DESC LIMIT 1', (wallet,wallet)).fetchone()
                 if latest:
                     c.execute('INSERT INTO hotlist VALUES (?,?,?,?,?,?)', (wallet, latest['event'],latest['slot'],latest['time'],latest['expires'],latest['rowid']))
             c.execute('DELETE FROM chain_checks WHERE signature=?', (signature,))

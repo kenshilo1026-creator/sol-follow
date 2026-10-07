@@ -16,7 +16,7 @@ from features.funding.discovery import Discovery
 from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
-from trade_execution.observed_buy import check as check_observed_buy
+from trade_execution.observed_buy import check as check_observed_buy, check_minimum
 from features.database.maintenance import Maintenance
 from features.database.storage import Store
 from launchpads import ENABLED, pump_fun, stonk
@@ -134,7 +134,22 @@ class Service:
                 if trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age):
                     if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
                         self.signals.reject_mint(trade.mint)
-                    if not await self.market_cap.check(route):
+                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
+                    below=not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum'
+                    if below:
+                        # Persist removal before an unrelated market-cap RPC can
+                        # block or be cancelled during shutdown.
+                        self.store.remove_hotlist(trade,'buy-below-minimum')
+                        self.signals.reject(trade)
+                    cap_allowed=await self.market_cap.check(route)
+                    if not minimum_allowed:
+                        if not below:self.signals.reject(trade)
+                        self.notices.emit('target buy skipped',{'signature':trade.signature,
+                            **buy_context(self.config,route),'stage':'target-minimum-check',
+                            **minimum_detail,'hotlist_removed':below},alert=route.quote_mint!=WSOL,
+                            key='target-min-skip:'+trade.event,interval=300)
+                        continue
+                    if not cap_allowed:
                         self.signals.reject_mint(trade.mint)
                         self.signals.reject(trade)
                         continue

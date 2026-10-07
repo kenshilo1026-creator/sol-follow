@@ -8,7 +8,8 @@ from features.database.storage import Store
 
 @pytest.fixture
 def config(tmp_path):
-    return replace(load(env={}),data=tmp_path/'data')
+    # Individual amount-gate tests enable their own minimum explicitly.
+    return replace(load(env={}),data=tmp_path/'data',min_observed_buy_usd_micros=0)
 
 
 @pytest.fixture

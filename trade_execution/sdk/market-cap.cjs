@@ -25,6 +25,16 @@ function usdPrice(row,owner,now){
      ||BigInt(now)-published>90n||published>BigInt(now+5))throw Error('market-cap-price-unavailable');
   return {value:D(price).mul(D(10).pow(expo)),published:Number(published)};
 }
+function selectUsd(rows,now){
+  let oracle;
+  for(let i=0;i<ORACLES.length;i++){
+    try{const value=usdPrice(rows[i],ORACLES[i].owner,now);
+      if(!oracle||value.published>oracle.published)oracle=value;
+    }catch{}
+  }
+  if(!oracle)throw Error('market-cap-price-unavailable');
+  return oracle;
+}
 function spot(step,row,connection){
   const input=pk(step.inputMint),output=pk(step.outputMint),pool=pk(step.pool);
   if(!row||row.executable)throw Error('market-cap-price-unavailable');
@@ -71,13 +81,7 @@ async function marketCap(input,connection,now=Math.floor(Date.now()/1000)){
     const state=poolState(rows[1],curve,mint,quote);
     quotePerBase=D(state.virtualB+state.realB).div(D(state.virtualA-state.realA));
   }
-  let oracle;
-  for(let i=0;i<ORACLES.length;i++){
-    try{const value=usdPrice(rows[2+i],ORACLES[i].owner,now);
-      if(!oracle||value.published>oracle.published)oracle=value;
-    }catch{}
-  }
-  if(!oracle)throw Error('market-cap-price-unavailable');
+  const oracle=selectUsd(rows.slice(2,2+ORACLES.length),now);
   let quotePerLamport=D(1);
   steps.forEach((step,i)=>{quotePerLamport=quotePerLamport.mul(spot(step,rows[2+ORACLES.length+i],connection));});
   const lamports=D(supply.supply).mul(quotePerBase).div(quotePerLamport);
@@ -88,4 +92,4 @@ async function marketCap(input,connection,now=Math.floor(Date.now()/1000)){
     supplyRaw:supply.supply.toString(),quoteMint:input.quoteMint,solUsd:oracle.value.toFixed(8),
     oraclePublished:oracle.published,snapshotSlot:snapshot.context.slot,source:'pool-spot-times-supply'};
 }
-module.exports={marketCap,usdPrice,spot,ORACLES,FEED,PYTH_DISC};
+module.exports={marketCap,usdPrice,selectUsd,spot,ORACLES,FEED,PYTH_DISC};

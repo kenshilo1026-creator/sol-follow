@@ -37,6 +37,16 @@ def market_cap_micros(value):
         raise ValueError('invalid-market-cap-usd-k') from exc
 
 
+def usd_micros(value):
+    try:
+        n=Decimal(str(value))*10**6
+        if not n.is_finite() or n!=n.to_integral_value() or not 0<=n<10**24:
+            raise ValueError('invalid-minimum-buy-usd')
+        return int(n)
+    except InvalidOperation as exc:
+        raise ValueError('invalid-minimum-buy-usd') from exc
+
+
 def hours_to_seconds(value, minimum=60):
     try:
         seconds = Decimal(str(value)) * 3600
@@ -123,6 +133,8 @@ class Config:
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
     hotlist_commitment: str = 'confirmed'
+    min_observed_buy_usd_micros: int = 50_000_000
+    min_observed_buy: int = 0
     max_observed_buy: int = 5_000_000_000
     blockhash_cache_ttl_ms: int = 5000
     blockhash_refresh_ms: int = 1000
@@ -162,6 +174,9 @@ def load(root=ROOT, env=None):
     if hotlist_commitment not in ('processed', 'confirmed') or (hotlist_commitment == 'processed' and feed_mode != 'alchemy_grpc'):
         raise ValueError('processed-hotlist-requires-alchemy-grpc')
     maximum_buy = lamports(get('SOL_FOLLOW_MAX_TARGET_BUY_SOL', '5'))
+    minimum_buy = lamports(get('SOL_FOLLOW_MIN_TARGET_BUY_SOL', '0'))
+    if minimum_buy > maximum_buy:
+        raise ValueError('minimum-target-buy-exceeds-maximum')
     if maximum_buy <= 0:
         raise ValueError('invalid-target-buy-limit')
     endpoint = get('SOL_ALCHEMY_GRPC_ENDPOINT', 'https://solana-mainnet.streaming.alchemy.com')
@@ -217,7 +232,8 @@ def load(root=ROOT, env=None):
         max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
-        hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy,
+        hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy, min_observed_buy=minimum_buy,
+        min_observed_buy_usd_micros=usd_micros(get('SOL_FOLLOW_MIN_TARGET_BUY_USD','50')),
         max_market_cap_usd_micros=market_cap_micros(get('SOL_FOLLOW_MAX_MARKET_CAP_USD_K','0')),
         blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
         blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),

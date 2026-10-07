@@ -28,3 +28,32 @@ async def check(config, route, builder):
         return False, {**detail, 'reason': reason}
     return amount <= quote_limit, {**detail, 'quote_limit_raw': str(quote_limit),
         'reason': 'buy-budget-allowed' if amount <= quote_limit else 'source-token-budget-over-sol-limit'}
+
+
+async def check_minimum(config, route, builder):
+    """Use attributed executed payment, never a potentially loose input cap."""
+    amount, mint = route.trade.quote, route.quote_mint
+    minimum = config.min_observed_buy if mint == WSOL else config.min_observed_buy_usd_micros
+    detail = {'wallet': route.trade.wallet, 'mint': route.trade.mint,
+              'input_mint': mint, 'paid_raw': str(amount),
+              ('min_sol_lamports' if mint == WSOL else 'min_usd_micros'): str(minimum),
+              'amount_kind': 'executed-payment'}
+    if not minimum:
+        return True, {**detail, 'reason': 'minimum-disabled'}
+    if amount <= 0 or not mint:
+        return False, {**detail, 'reason': 'buy-payment-unavailable'}
+    if mint == WSOL:
+        return amount >= minimum, {**detail, 'sol_lamports': str(amount),
+            'reason': 'minimum-allowed' if amount >= minimum else 'source-buy-below-minimum'}
+    try:
+        # USD floor -> SOL budget using cached Pyth price -> cached quote output.
+        # This independent USD floor replaces the SOL floor for non-SOL pairs.
+        result = await builder.quote_minimum(route)
+        threshold = int(result['quoteLimit'])
+        if threshold <= 0 or int(result['minimumUsdMicros']) != minimum:
+            raise BuildError('price-cache-miss')
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, BuildError) else 'price-cache-unavailable'
+        return False, {**detail, 'reason': reason}
+    return amount >= threshold, {**detail, 'quote_minimum_raw': str(threshold),
+        'reason': 'minimum-allowed' if amount >= threshold else 'source-buy-below-minimum'}

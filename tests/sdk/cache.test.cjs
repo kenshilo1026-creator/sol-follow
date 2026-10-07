@@ -58,10 +58,15 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
   const pending=new Map();lines.on('line',line=>{const r=JSON.parse(line);pending.get(r.id)?.(r);});
   const input={route:'prime',rpc:`http://127.0.0.1:${server.address().port}`,ws:`ws://127.0.0.1:${server.address().port}`,minSlot:100,lookupTables:[],
     primeAccounts:[key().toBase58()],cache:{ttlMs:2000,refreshMs:999999,maxAccounts:32}};
-  async function request(id,minSlot){const response=new Promise(r=>pending.set(id,r));child.stdin.write(JSON.stringify({id,input:{...input,minSlot}})+'\n');return response;}
+  async function request(id,minSlot,extra={}){const response=new Promise(r=>pending.set(id,r));child.stdin.write(JSON.stringify({id,input:{...input,minSlot,...extra}})+'\n');return response;}
   assert.equal((await request(1,100)).result.warmed,true);assert.equal(calls,1);
   assert.equal((await request(2,100)).stats.hits,1);assert.equal(calls,1);
   assert.equal((await request(3,101)).result.warmed,true);assert.equal(calls,2);
+  const fixture=require('../fixtures/local_quote_accounts.json');
+  const result=await request(4,101,{operation:'quote_minimum',minimumUsdMicros:'50000000',
+    route:'sol_to_stonk_curve',quoteMint:fixture.recipe.steps.at(-1).outputMint,
+    wallet:key().toBase58(),swapRecipe:fixture.recipe,minLiquidity:'0'});
+  assert.equal(result.error,'price-cache-miss');assert.equal(calls,2); // no HTTP on minimum decisions
 });
 
 

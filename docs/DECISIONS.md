@@ -171,3 +171,53 @@ oldest item exceeds five minutes. The alert latch is persisted across restarts.
 Three healthy checks (queue not growing and oldest below one minute) rearm it;
 recovery is recorded locally without an extra Telegram message. Undecoded
 funding candidates are included so a bottleneck before qualification is visible.
+
+
+## 2026-10-07: minimum hotlist-wallet buy
+
+`SOL_FOLLOW_MIN_TARGET_BUY_SOL=0.1` requires at least 0.1 SOL of attributed
+executed payment; equality passes. Zero disables this minimum. The minimum
+cannot exceed `SOL_FOLLOW_MAX_TARGET_BUY_SOL`. It is the observed hotlist wallet's
+buy size, not the bot's order size. The maximum still checks calldata input
+budgets; a large maximum-input/slippage budget cannot satisfy the new minimum.
+
+Native SOL uses decoded payment CPIs, excluding transaction fees and rent.
+Non-SOL uses the existing cached SOL-to-quote replacement-cost calculation at
+the minimum size, including conversion fees/impact. Minimum decisions never
+fetch fresh accounts or call a quote API. Missing/invalid cached pricing skips
+that signal but cannot establish that the wallet bought below the threshold.
+The first market-cap decision is still recorded even when that first buy is
+below the minimum, preserving the first-observation valuation rule.
+
+A known below-minimum buy creates no vote/order and removes the wallet from
+hotlist and the derived gRPC watch set on its next refresh. A durable removal
+slot also invalidates eligibility from older funding, so restarts, queued buys,
+old deposit backfill and funding rollback cannot resurrect the wallet. Funding
+evidence is retained. A new qualified deposit after the removal slot may admit
+it again. A removal observed at processed commitment remains conservative even
+if that buy later rolls back; it is not automatically rearmed by confirmation.
+This new removal rule applies to below-minimum buys; other gates keep their
+existing behavior. Unknown conversion prices do not remove the wallet.
+
+
+## 2026-10-07: independent USD minimum for non-SOL pairs
+
+`SOL_FOLLOW_MIN_TARGET_BUY_USD=50` now controls the non-SOL pair minimum,
+with a default of USD 50 even when omitted. This is dollars, not thousands of
+dollars. `SOL_FOLLOW_MIN_TARGET_BUY_SOL=0.1` applies only to SOL pairs.
+Setting either value to zero disables only that pair category's minimum.
+The earlier SOL-denominated minimum rule for non-SOL pairs is superseded.
+
+For non-SOL pairs, cached Pyth SOL/USD converts the USD threshold to a SOL
+budget (rounded up to lamports); the existing cached Whirlpool/DLMM conversion
+quote supplies its equivalent quote-token amount, including conversion fees
+and impact. Actual attributed quote-token payment is compared against that
+threshold, with equality allowed. Calldata input ceilings do not satisfy it.
+Pyth account ownership, feed identity, full verification, freshness and
+confidence checks are shared with market-cap valuation. Oracle accounts are
+prewarmed even if market-cap filtering is disabled, then updated over public
+WebSocket. The decision itself uses a cache-only view: no HTTP or quote API
+fallback. Missing/stale USD or route prices skip following without asserting
+a below-minimum buy or removing the wallet. Known below-minimum buys retain
+the persistent hotlist-removal behavior above. The existing 5 SOL maximum and
+market-cap checks still apply independently.
