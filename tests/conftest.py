@@ -10,7 +10,8 @@ from features.database.storage import Store
 def config(tmp_path):
     # Individual amount-gate tests enable their own minimum explicitly.
     return replace(load(env={'SOL_WALLET_ADDRESS':'','DRY_RUN':'true'}),data=tmp_path/'data',min_observed_buy=0,min_observed_buy_usd_micros=0,
-                   ignore_observed_buy=0,ignore_observed_buy_usd_micros=0,max_market_cap_usd_micros=0)
+                   ignore_observed_buy=0,ignore_observed_buy_usd_micros=0,max_market_cap_usd_micros=0,
+                   max_dev_holding_tokens=None)
 
 
 @pytest.fixture

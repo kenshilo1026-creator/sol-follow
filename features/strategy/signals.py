@@ -4,6 +4,7 @@ from features.audit.writer import trade_record
 from chain_common.primitives import ata, TOKEN, TOKEN_2022
 from features.funding.processed import Processed
 from features.strategy.market_cap import permitted
+from features.strategy.dev_holdings import permitted as dev_permitted
 
 
 class Signals:
@@ -31,6 +32,10 @@ class Signals:
             return None
         if not self.proofs.usable(trade.signature, now, trade.slot,require_processed=processed):
             decision('blocked','source-proof-unusable')
+            return None
+        if not dev_permitted(self.store,trade.mint,cfg.max_dev_holding_tokens):
+            self.reject_mint(trade.mint)
+            decision('blocked','dev-holdings-not-permitted')
             return None
         if not permitted(self.store,trade.mint,cfg.max_market_cap_usd_micros):
             decision('blocked','market-cap-not-permitted')

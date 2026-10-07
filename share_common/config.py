@@ -79,6 +79,18 @@ def risk_bps(value):
         raise ValueError('invalid-risk-percent') from exc
 
 
+def optional_dev_limit(value):
+    if value is None or str(value).strip() == '':
+        return None
+    try:
+        result = Decimal(str(value))
+        if not result.is_finite() or result < 0 or result > 10**30:
+            raise ValueError('invalid-dev-holding-limit')
+        return result
+    except InvalidOperation:
+        raise ValueError('invalid-dev-holding-limit') from None
+
+
 def cex_load(path):
     groups = json.loads(Path(path).read_text(encoding='utf-8'))['exchanges']
     result = {}
@@ -143,6 +155,7 @@ class Config:
     blockhash_cache_ttl_ms: int = 5000
     blockhash_refresh_ms: int = 1000
     max_market_cap_usd_micros: int = 0
+    max_dev_holding_tokens: Decimal | None = Decimal('60000000')
 
     @property
     def mode(self):
@@ -249,6 +262,7 @@ def load(root=ROOT, env=None):
         min_observed_buy_usd_micros=minimum_usd, max_observed_buy_usd_micros=maximum_usd,
         ignore_observed_buy=ignore_buy, ignore_observed_buy_usd_micros=ignore_usd,
         max_market_cap_usd_micros=market_cap_micros(get('SOL_FOLLOW_MAX_MARKET_CAP_USD_K','0')),
+        max_dev_holding_tokens=optional_dev_limit(get('SOL_DEV_MAX_HOLDING_TOKENS','60000000')),
         blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
         blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),
     )

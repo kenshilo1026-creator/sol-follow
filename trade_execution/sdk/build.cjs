@@ -15,7 +15,7 @@ const buyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_v2');
 const exactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_quote_in_v2');
 const nativeBuyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy');
 const nativeExactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_sol_in');
-const REASONS = new Set(['invalid-integer','invalid-u64','invalid-percent','dust-route',
+const REASONS = new Set(['sell-balance-unavailable','sell-fill-rejected','invalid-integer','invalid-u64','invalid-percent','dust-route',
   'unsupported-mint-extension','uninitialized-mint','unexpected-signer','transaction-too-large',
   'non-native-only','invalid-slot','invalid-tables','account-owner','token-program',
   'curve-graduated-or-quote-mismatch','dlmm-quote-mismatch','dlmm-token-program',
@@ -166,6 +166,8 @@ async function buildNative(input,injectedConnection) {
 }
 
 async function build(input, injectedConnection) {
+  if(input.side==='sell')return require('./sell.cjs').buildSell(input,
+    {connection:injectedConnection||connectionFor(input),safeMint,finish,minimums,integer,fraction});
   if (input.route==='sol_to_pump_curve') return require('./pump-quote.cjs').buildPumpQuote(input,
     {connection:injectedConnection || connectionFor(input),safeMint,finish,minimums,integer,fraction,exactQuoteInstruction});
   if (['sol_to_stonk_curve','stonk_native_curve'].includes(input.route)) return require('./stonk.cjs').buildStonk(input,

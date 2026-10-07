@@ -1,12 +1,14 @@
 """Simulate, durably sign, submit once, then reconcile by signature."""
 import asyncio
 import base64
+import json
 import time
 from features.audit.writer import trade_record
 from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from trade_execution.builder import build
 from features.funding.processed import Processed
+from features.strategy.dev_holdings import permitted as dev_permitted
 from trade_execution.native import decode_native
 from features.notifications.buy_failures import context as buy_context, reason as failure_reason
 
@@ -20,6 +22,8 @@ class Executor:
         self.reconcile_rpc=reconcile_rpc or rpc
 
     def fresh(self, route, oid=None):
+        if not dev_permitted(self.store,route.trade.mint,self.config.max_dev_holding_tokens):
+            return False
         proofs=Processed(self.store)
         processed=self.config.hotlist_commitment=='processed'
         trigger=proofs.row(route.trade.signature) if processed else None
@@ -32,6 +36,8 @@ class Executor:
         row=self.store.order(oid)
         if row['state']!='reserved' or row['mode']!=self.config.mode:
             return
+        with self.store.db('trading') as c:
+            c.execute('INSERT OR IGNORE INTO order_routes VALUES (?,?)',(oid,json.dumps(route.request())))
         self.store.update_order(oid,reason=MARKER)
         signed=False
         stage='precheck'
@@ -108,6 +114,7 @@ class Executor:
             self.store.update_order(oid,state='submitted')
             trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']},alert=True)
+            if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
             raise
         except Exception as exc:

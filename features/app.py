@@ -22,7 +22,8 @@ def main():
         print(json.dumps({'mode':config.mode,'cex_sources':len(config.cex),'privacy_cash':bool(config.privacy_pools),
                           'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not config.dry_run,
                           'create_decoders':CREATE_DECODERS,'create_quote_assets':['SOL','SPL Token','Token-2022'],
-                          'pending_routes':['pump_swap_buy_sell','all_sell_routes','other_quote_swap_venues'],
+                          'emergency_sell_routes':['pump_curve_to_quote','stonk_curve_to_quote'],
+                          'pending_routes':['pump_swap_buy_sell','take_profit_sell_routes','other_quote_swap_venues'],
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'threshold':config.n,'window_s':config.window,'buy_lamports':config.buy_amount,
                           'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,
@@ -32,6 +33,7 @@ def main():
                           'ignore_target_buy_usd_micros':config.ignore_observed_buy_usd_micros,
                           'min_target_buy_lamports':config.min_observed_buy,
                           'min_target_buy_usd_micros':config.min_observed_buy_usd_micros,
+                          'max_dev_holding_tokens':str(config.max_dev_holding_tokens) if config.max_dev_holding_tokens is not None else None,
                           'max_market_cap_usd_k':str(config.max_market_cap_usd_micros/10**9),'alchemy_key_configured':bool(config.alchemy_key),
                           'http_policy':'configured-public-only','background_rpc_rps':config.history_rps,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))

@@ -367,7 +367,7 @@ tar -C /home/ubuntu/sol-follow -czf "$HOME/sol-follow-backups/data-$(date -u +%Y
 本機 Windows 無 systemd，範本未在本機實際啟動；VPS 上的 verify、check 及日誌檢查是部署驗收步驟。
 
 舊訂單與持倉保留在資料庫。新路由的已簽名訂單會恢復成交核對；未簽名的中斷訂單取消。
-舊路由訂單及所有持倉退出仍需人工處理。
+舊路由訂單及一般止盈／止損仍需人工處理；新跟買支援下述 dev 超標緊急退出。
 
 ## 容量與保障邊界
 
@@ -416,6 +416,40 @@ processed 不保證同 slot 成交；`minContextSlot` 是 RPC 最低讀取 slot�
 建單、模擬、公共 RPC 排隊及區塊收錄仍有延遲。本程式沒有鏈上同-slot 限制指令。
 部署時明確設定 `SOL_FEED_MODE=alchemy_grpc`、`SOL_HOTLIST_COMMITMENT=processed`，
 並配置 `ALCHEMY_API_KEY`，可讓缺少 key 時直接報配置錯誤，避免 auto 模式選用 confirmed websocket。
+
+## dev 持倉檢查與超標退出
+
+`SOL_DEV_MAX_HOLDING_TOKENS=60000000`：每個 mint 首次合資格 hotlist 即時買入時，
+背景最多發出兩次 RPC：`getMultipleAccounts` 讀 mint decimals 及曲線／池的 creator，
+再用 `getTokenAccountsByOwner`（mint 篩選）合計該 creator 名下該代幣的全部 token 帳戶。
+按 decimals 換算完整 token 數量，嚴格超過 6,000 萬才排除；等於上限可通過。不查供應量。
+這是當次 RPC 節點快照（slot 不早於觸發交易），並非還原觸發交易當刻的歷史持倉；
+也不包括 creator 已轉到其他錢包的代幣。檢查在買額及票數門檻之前進行。
+
+不需要本地建立紀錄。dev 指鏈上曲線／池的當前 creator；Pump 此地址可能已變更為費用分配帳戶，
+不保證是最初建立者，不能以買家或 mint authority 替代。兩次 RPC 不自動重試，其他建單／成交核對 RPC 另計。
+
+檢查進行中不阻塞即時訊號；若達到 `SOL_FOLLOW_MIN_WALLETS`（例如 3 個不同錢包），照常跟買。
+查到超標後永久封鎖該 mint、清除票數，尚未送出的買單在建單／模擬／簽名及送出前重新檢查並取消。
+已送出的買單保留核對，確認實收後立刻安排賣出該張跟買的全部實收數量，不賣掉買入前已有的代幣。
+緊急退出使用 confirmed 成交證據，不等待買單 finalized；也不受原跟買訊號過期或錢包票數撤銷影響。
+背景事件即時喚醒退出工作，等待鏈上買入入帳／賣出確認時每 2 秒核對。
+
+Pump／Stonk 畢業前曲線支援直接賣回原報價幣，共用 `SOL_SLIPPAGE_PERCENT` 計算 minOut。
+非 SOL 報價幣不額外換回 SOL；Stonk 已有 WSOL 帳戶會保留 WSOL，避免關閉原有帳戶。
+不能保證即時成交：若已畢業、流動性不足、滑點或 RPC／模擬失敗，會通知並延後重試；暫無畢業後池的賣出路由。
+簽名交易在送出前持久化，送單逾時／重啟只核對及重送同一簽名，未知結果不另簽賣單，避免重複賣出。
+只有已確認 finalized 失敗才重新建單。買賣確認順序不同時亦會正確更新持倉。
+`DRY_RUN=true` 不送出買賣交易，超標退出只記錄通知。
+
+資料不符、RPC 失敗／429、30 秒檢查逾時或重啟中斷會停止該 mint 新增跟買，之後不重查。
+這些情況不能證實超標，所以**不會自動賣出已持有的代幣**，會發出無法判定通知。
+
+結果保存在 `trading.sqlite3` 的 `token_dev_holdings`，跨重啟保留且不隨審計清理刪除。
+後續錢包不重查；已排除的 mint 不再跟買，hotlist 錢包本身不因此移除。
+省略參數預設 6,000 萬；留空僅停用新檢查，`0` 表示不容許任何正數持倉。
+提高上限或停用檢查不會解除已存的排除結果；降低上限以首次快照重新比較，不另發 RPC。
+首次超標或無法判定會記錄日誌，Telegram 已配置時亦會排入通知。
 
 ## 非 SOL 跟買失敗通知
 

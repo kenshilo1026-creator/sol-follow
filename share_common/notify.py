@@ -10,6 +10,9 @@ log = logging.getLogger('sol-follow')
 
 
 BUY_TITLES = {
+    'dev exit submitted':'dev 超標：賣單已送出', 'dev exit finalized':'dev 超標：賣出已完成',
+    'dev exit deferred':'dev 超標：賣出失敗，稍後重試', 'dev exit unknown':'dev 超標：賣單結果未知，保留原交易核對',
+    'dev exit retry':'dev 超標：鏈上賣出失敗，準備重試', 'dev exit dry run':'dev 超標：dry 模式，沒有實際賣出',
     'target buy skipped':'跟買已跳過', 'non-SOL buy skipped':'非 SOL 跟買已跳過',
     'buy rejected':'跟買失敗（未送出）', 'buy deferred':'跟買送單結果未知',
     'buy failed on chain':'跟買鏈上失敗', 'buy fill requires review':'跟買實收異常',
@@ -18,6 +21,13 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='dev holding entry check':
+        state='dev 持倉超標，代幣已排除' if detail['state']=='blocked' else 'dev 持倉無法判定，代幣已排除'
+        return (f"⚠️ [SOL] {state}\n代幣: {detail['mint']}\ndev: {detail.get('creator','未知')}"
+                f"\n持倉（token）: {detail.get('holding_tokens','未知')}\n上限（token）: {detail['limit_tokens']}"
+                f"\n原因: {detail['reason']}\n排除紀錄跨重啟保留，不再重查。"
+                + ('\n已成交跟買將觸發全數賣回報價幣。' if detail['state']=='blocked'
+                   else '\n未能證實超標：停止新增跟買，已有持倉不因此自動賣出。'))
     if kind=='market cap entry check':
         state='超過市值上限，已持續排除' if detail['state']=='blocked' else '首次市值未能判定，暫不放行'
         return (f"⚠️ [SOL] {state}\n代幣: {detail['mint']}"
@@ -37,7 +47,7 @@ def message(kind, detail):
         return f'[SOL] {kind}\n{detail}'[:3900]
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
     fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
-            ('reason','原因'),('outcome','結果'),('route','路徑'),('source_wallet','目標錢包'),
+            ('reason','原因'),('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
             ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單')]
     for field,label in fields:
         if field=='wallet' and detail.get('source_wallet'):

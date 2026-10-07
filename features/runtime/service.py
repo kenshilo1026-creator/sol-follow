@@ -13,6 +13,7 @@ from features.notifications.buy_failures import context as buy_context, unrecogn
 from features.funding.decoder import decode as funding_decode
 from features.strategy.signals import Signals
 from features.strategy.market_cap import MarketCapGate
+from features.strategy.dev_holdings import DevHoldingsGate
 from features.funding.discovery import Discovery, FUNDING_GAP_SECONDS
 from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.backlog import BacklogMonitor
@@ -28,6 +29,7 @@ from trade_execution.cache import CachedBuilder
 from trade_execution import VENUES
 from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.executor import Executor, MARKER
+from trade_execution.dev_exit import DevExit
 
 
 class Service:
@@ -43,6 +45,7 @@ class Service:
         self.metrics=Metrics()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
+        self.dev_holdings=DevHoldingsGate(config,self.store,self.notices)
 
     async def qualify(self,item,rpc):
         record(self.store,'funding','observed','candidate',wallet=item.wallet,signature=item.signature,
@@ -165,6 +168,11 @@ class Service:
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
                 fresh_buy=trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)
                 if fresh_buy:
+                    if not self.dev_holdings.start(route,rpc):
+                        self.signals.reject_mint(trade.mint)
+                        trade_record(self.store,trade,'dev-holdings','blocked','dev-holdings-not-permitted',
+                                     self.dev_holdings.row(trade.mint))
+                        continue
                     ignore_allowed,ignore_detail=await check_ignore(self.config,route,self.quote_builder)
                     if not ignore_allowed:
                         # Tiny executed payments keep their subscription, even with a loose input budget.
@@ -367,11 +375,15 @@ class Service:
                 from features.funding.grpc_feed import HotlistFeed
                 self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
+            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority)
+            self.executor.dev_exit=self.dev_exit
+            self.dev_holdings.changed=self.dev_exit.wake.set
+            self.dev_holdings.recover()
             self.executor.recover_unsigned()
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
             if outstanding or positions:
-                self.notices.emit('legacy orders/positions require manual management; sell routes unavailable',
+                self.notices.emit('positions retained; only dev-limit emergency curve exits are automated',
                     {'orders':outstanding,'position_mints':[p['mint'] for p in positions]},alert=True)
             self.notices.emit('service started',{'mode':self.config.mode,'cex_sources':len(self.config.cex),
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
@@ -383,11 +395,12 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile()]
+                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run()]
                     if grpc_mode:
                         coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
                             self.proofs.run(self.background_rpc,self.signals,self.notices,self.config.backfill_age)])
                     for coroutine in coroutines:
                         group.create_task(coroutine)
             finally:
+                await self.dev_holdings.close()
                 await self.quote_builder.close()

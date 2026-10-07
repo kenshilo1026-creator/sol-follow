@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 from features.audit.writer import SCHEMA as DECISION_SCHEMA
+from features.strategy.dev_holdings import row_permitted as dev_row_permitted
 
 FUNDING_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS hotlist_removals(wallet TEXT PRIMARY KEY, slot INTEGER NOT NULL,
@@ -48,6 +49,13 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS order_routes(order_id TEXT PRIMARY KEY, request TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dev_exits(buy_id TEXT PRIMARY KEY, state TEXT NOT NULL,
+ amount TEXT NOT NULL DEFAULT '0', raw TEXT, signature TEXT, last_height INTEGER,
+ min_out TEXT NOT NULL DEFAULT '0', updated REAL NOT NULL, reason TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS token_dev_holdings(mint TEXT PRIMARY KEY, signature TEXT NOT NULL,
+ wallet TEXT NOT NULL, slot INTEGER NOT NULL, observed REAL NOT NULL, state TEXT NOT NULL,
+ detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS order_wallets(order_id TEXT NOT NULL, wallet TEXT NOT NULL,
  signature TEXT NOT NULL, slot INTEGER NOT NULL, PRIMARY KEY(order_id,wallet,signature));
 CREATE INDEX IF NOT EXISTS order_wallets_wallet ON order_wallets(wallet,order_id);
@@ -358,6 +366,10 @@ class Store:
         with self.db('trading') as c:
             c.execute('BEGIN IMMEDIATE')
             if side == 'buy':
+                dev=c.execute('SELECT * FROM token_dev_holdings WHERE mint=?',(mint,)).fetchone()
+                if not dev_row_permitted(dev,config.max_dev_holding_tokens):
+                    c.commit()
+                    return None
                 cap=c.execute('SELECT state,cap_usd_micros FROM token_entry_caps WHERE mint=?',(mint,)).fetchone()
                 limit=config.max_market_cap_usd_micros
                 if (cap and (cap['state']!='allowed' or (limit and int(cap['cap_usd_micros'])>limit))) or (not cap and limit):
@@ -412,8 +424,10 @@ class Store:
             if row['side'] == 'buy':
                 if c.execute('SELECT 1 FROM positions WHERE mint=? AND mode=? AND amount!=\'0\'', (row['mint'],row['mode'])).fetchone():
                     raise ValueError('position-already-exists')
+                exited=c.execute("SELECT amount FROM dev_exits WHERE buy_id=? AND state='finalized'",(oid,)).fetchone()
+                remaining=max(0,tokens-int(exited['amount'])) if exited else tokens
                 c.execute('INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?,?)',
-                    (row['mint'], row['mode'], row['pool'], str(tokens), str(quote), str(tokens), '0', '{}', now))
+                    (row['mint'], row['mode'], row['pool'], str(remaining), str(quote), str(tokens), '0', '{}', now))
             else:
                 p = dict(c.execute('SELECT * FROM positions WHERE mint=? AND mode=?', (row['mint'],row['mode'])).fetchone())
                 if tokens > int(p['amount']):
