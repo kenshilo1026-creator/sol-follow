@@ -133,7 +133,7 @@ class Config:
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
     hotlist_commitment: str = 'confirmed'
-    min_observed_buy_usd_micros: int = 50_000_000
+    min_observed_buy_usd_micros: int = 10_000_000
     min_observed_buy: int = 0
     max_observed_buy: int = 5_000_000_000
     max_observed_buy_usd_micros: int = 500_000_000
@@ -175,11 +175,11 @@ def load(root=ROOT, env=None):
     if hotlist_commitment not in ('processed', 'confirmed') or (hotlist_commitment == 'processed' and feed_mode != 'alchemy_grpc'):
         raise ValueError('processed-hotlist-requires-alchemy-grpc')
     maximum_buy = lamports(get('SOL_FOLLOW_MAX_TARGET_BUY_SOL', '5'))
-    minimum_buy = lamports(get('SOL_FOLLOW_MIN_TARGET_BUY_SOL', '0'))
+    minimum_buy = lamports(get('sol_follow_ignore_sol', '0'))
     if minimum_buy > maximum_buy:
         raise ValueError('minimum-target-buy-exceeds-maximum')
     maximum_usd = usd_micros(get('SOL_FOLLOW_MAX_TARGET_BUY_USD','500'))
-    minimum_usd = usd_micros(get('SOL_FOLLOW_MIN_TARGET_BUY_USD','50'))
+    minimum_usd = usd_micros(get('sol_follow_ignore_usd','10'))
     if maximum_usd<=0 or minimum_usd>maximum_usd:
         raise ValueError('invalid-target-buy-usd-range')
     if maximum_buy <= 0:

@@ -218,6 +218,11 @@ class Store:
             c.execute('DELETE FROM stream_payloads WHERE signature=?',(signature,))
             c.commit()
 
+    def ignore_vote(self, trade):
+        """Dedupe this ignored buy without revoking an earlier qualifying vote."""
+        with self.db('trading') as c:
+            c.execute('INSERT OR IGNORE INTO events VALUES (?,?,?)',(trade.event,trade.time,trade.signature))
+
     def reject_vote(self, trade):
         with self.db('trading') as c:
             c.execute('BEGIN IMMEDIATE')

@@ -175,7 +175,7 @@ funding candidates are included so a bottleneck before qualification is visible.
 
 ## 2026-10-07: minimum hotlist-wallet buy
 
-`SOL_FOLLOW_MIN_TARGET_BUY_SOL=0.1` requires at least 0.1 SOL of attributed
+`sol_follow_ignore_sol=0.1` requires at least 0.1 SOL of attributed
 executed payment; equality passes. Zero disables this minimum. The minimum
 cannot exceed `SOL_FOLLOW_MAX_TARGET_BUY_SOL`. It is the observed hotlist wallet's
 buy size, not the bot's order size. The maximum still checks calldata input
@@ -202,9 +202,9 @@ existing behavior. Unknown conversion prices do not remove the wallet.
 
 ## 2026-10-07: independent USD minimum for non-SOL pairs
 
-`SOL_FOLLOW_MIN_TARGET_BUY_USD=50` now controls the non-SOL pair minimum,
+`sol_follow_ignore_usd=50` now controls the non-SOL pair minimum,
 with a default of USD 50 even when omitted. This is dollars, not thousands of
-dollars. `SOL_FOLLOW_MIN_TARGET_BUY_SOL=0.1` applies only to SOL pairs.
+dollars. `sol_follow_ignore_sol=0.1` applies only to SOL pairs.
 Setting either value to zero disables only that pair category's minimum.
 The earlier SOL-denominated minimum rule for non-SOL pairs is superseded.
 
@@ -292,3 +292,21 @@ reason are persisted before market-cap work. The first-observation market-cap
 rule is retained. Removal survives restart/old-deposit replay; a newer qualified
 deposit can admit the wallet again. Existing public-WS oracle prewarming now
 also runs when only the USD maximum is enabled. No Telegram formatting change.
+
+
+## 2026-10-07: small buys are ignored without consuming hotlist admission
+
+The current minimums are `sol_follow_ignore_sol=0.1` for SOL pairs and
+`sol_follow_ignore_usd=10` for non-SOL pairs (USD default is now 10).
+A below-minimum buy is ignored, produces no new vote/order, and leaves the
+wallet in hotlist and its subscriptions. It does not revoke an earlier valid
+vote; the ignored event is deduplicated. A later eligible buy can still count.
+Actual below-minimum payments are ignored before checking a potentially loose
+calldata upper budget. Developer audit records `minimum / ignored` with
+`hotlist_removed=false`.
+Equality passes. This supersedes the earlier below-minimum removal behavior.
+
+Upper-limit removal (above 5 SOL / USD 500), first-observation market-cap checks
+and unavailable-price handling keep their existing rules. This update does not
+automatically restore wallets removed by older versions or by upper-limit buys.
+Restart the service after updating the two minimum settings.

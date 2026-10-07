@@ -164,10 +164,25 @@ class Service:
             trade=route.trade
             if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
+                fresh_buy=trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)
+                if fresh_buy:
+                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
+                    if not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum':
+                        # Actual small payments are ignored even with a loose calldata budget.
+                        self.store.ignore_vote(trade)
+                        trade_record(self.store,trade,'minimum','ignored',minimum_detail['reason'],
+                                     {**minimum_detail,'hotlist_removed':False})
+                        if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
+                            self.signals.reject_mint(trade.mint)
+                        await self.market_cap.check(route)
+                        self.notices.emit('target buy skipped',{'signature':trade.signature,
+                            **buy_context(self.config,route),'stage':'target-minimum-check',
+                            **minimum_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
+                            key='target-min-skip:'+trade.event,interval=300)
+                        continue
                 allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 over_limit=not allowed and detail['reason'] in ('source-sol-budget-over-limit','source-token-budget-over-usd-limit')
-                if (over_limit and trade.side=='buy'
-                        and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)):
+                if over_limit and fresh_buy:
                     # Persist removal before any slower market-cap lookup.
                     self.store.remove_hotlist(trade,'buy-above-maximum')
                     self.signals.reject(trade)
@@ -179,24 +194,17 @@ class Service:
                         self.signals.reject_mint(trade.mint)
                     await self.market_cap.check(route)  # Preserve first-observation valuation.
                     continue
-                if trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age):
+                if fresh_buy:
                     if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
                         self.signals.reject_mint(trade.mint)
-                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
-                    below=not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum'
-                    if below:
-                        # Persist removal before an unrelated market-cap RPC can
-                        # block or be cancelled during shutdown.
-                        self.store.remove_hotlist(trade,'buy-below-minimum')
-                        self.signals.reject(trade)
                     cap_allowed=await self.market_cap.check(route)
                     if not minimum_allowed:
-                        trade_record(self.store,trade,'minimum','blocked' if below else 'unavailable',
-                                     minimum_detail['reason'],{**minimum_detail,'hotlist_removed':below})
-                        if not below:self.signals.reject(trade)
+                        trade_record(self.store,trade,'minimum','unavailable',minimum_detail['reason'],
+                                     {**minimum_detail,'hotlist_removed':False})
+                        self.signals.reject(trade)
                         self.notices.emit('target buy skipped',{'signature':trade.signature,
                             **buy_context(self.config,route),'stage':'target-minimum-check',
-                            **minimum_detail,'hotlist_removed':below},alert=route.quote_mint!=WSOL,
+                            **minimum_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
                             key='target-min-skip:'+trade.event,interval=300)
                         continue
                     if not cap_allowed:
