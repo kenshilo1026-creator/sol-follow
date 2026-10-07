@@ -51,7 +51,7 @@ PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍
 Python 3.11+、Node 20.18+；在 **sol-follow 目錄** 執行，不能在上層 token_alert 執行同名 package。
 
 ```bash
-cd /sol-follow
+cd /home/ubuntu/sol-follow
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 npm ci --ignore-scripts
@@ -182,12 +182,13 @@ probe 不開資料庫、不讀私鑰，最多抽 10 筆；`--tx` 列出交易版
 ## systemd
 
 VPS 新部署使用 [`deploy/sol-follow.service`](deploy/sol-follow.service)：
-固定 `/sol-follow`，獨立 `sol-follow` 使用者，開機啟動、失敗後 10 秒重啟，
+固定 `/home/ubuntu/sol-follow`（ubuntu 登入後的 `~/sol-follow`），以 `ubuntu` 使用者執行，開機啟動、失敗後 10 秒重啟，
 5 分鐘內連續失敗 5 次便停止重試。安裝後的 service 名稱為 `sol-follow`；
 同一部署只啟動一個實盤實例。
 
 以下以 Ubuntu 24.04 LTS／Debian 12+、有 sudo 權限的 SSH 帳戶 `ubuntu` 為例；
-把 `VPS_IP` 和 `ubuntu` 換成實際 IP／SSH 使用者。Python 需 3.11+，以下安裝 Node.js 22 LTS。
+把 `VPS_IP` 換成實際 IP；若 SSH 使用者不是 `ubuntu`，同步修改 unit 的 User／Group 及所有 `/home/ubuntu` 路徑。
+systemd 的路徑使用絕對路徑，不填 `~`。Python 需 3.11+，以下安裝 Node.js 22 LTS。
 Node 安裝方式依 [NodeSource 文件](https://github.com/nodesource/distributions/blob/master/DEV_README.md)，
 版本生命週期見 [Node.js Releases](https://nodejs.org/en/about/previous-releases)。
 程式不提供 HTTP 服務，無須新增應用程式入站 port；需能出站存取 RPC、WebSocket、gRPC、Jupiter 及 Telegram。
@@ -221,19 +222,19 @@ python3 --version
 node --version
 npm --version
 
-sudo useradd --system --user-group --create-home --home-dir /var/lib/sol-follow --shell /usr/sbin/nologin sol-follow
-sudo install -d -o sol-follow -g sol-follow -m 750 /sol-follow
-sudo tar -xzf "$HOME/sol-follow-vps.tar.gz" -C /sol-follow --no-same-owner
-sudo chown -R sol-follow:sol-follow /sol-follow
-sudo install -d -o sol-follow -g sol-follow -m 700 /sol-follow/data /sol-follow/wallets
-cd /sol-follow
+install -d -m 750 /home/ubuntu/sol-follow
+tar -xzf "$HOME/sol-follow-vps.tar.gz" -C /home/ubuntu/sol-follow --no-same-owner
+install -d -m 700 /home/ubuntu/sol-follow/data /home/ubuntu/sol-follow/wallets
+cd /home/ubuntu/sol-follow
 
-sudo -u sol-follow -H python3 -m venv .venv
-sudo -u sol-follow -H .venv/bin/python -m pip install -r requirements.txt
-sudo -u sol-follow -H npm ci --omit=dev
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+npm ci --omit=dev
 ```
 
-已有 `sol-follow` 帳戶時跳過 `useradd`；若依賴安裝失敗，先處理錯誤再繼續。
+以上以 `ubuntu` 登入執行，無需另建 `sol-follow` 帳戶；若依賴安裝失敗，先處理錯誤再繼續。
+若專案已位於 `~/sol-follow`，跳過解壓；曾用 root／其他帳戶建立的專案需先修正擁有者：
+`sudo chown -R ubuntu:ubuntu /home/ubuntu/sol-follow`。
 不要沿用從 Windows 搬來的 `.venv` 或 `node_modules`。
 
 ### 3. 設定環境變數
@@ -241,9 +242,9 @@ sudo -u sol-follow -H npm ci --omit=dev
 只在首次部署複製範例；更新時保留現有 `.env`。
 
 ```bash
-sudo -u sol-follow cp -n .env.example .env
-sudo chmod 600 .env
-sudo -u sol-follow nano .env
+cp -n .env.example .env
+chmod 600 .env
+nano .env
 ```
 
 第一輪保持 `DRY_RUN=true`。範例明確選擇 `alchemy_grpc`／`processed`，必須填入自己的
@@ -256,7 +257,7 @@ RPC 可用程式預設值，或自行加入 `SOL_RPC_HTTP_URL` 與 `SOL_RPC_WS_U
 檢查 `SOL_BUY_AMOUNT_SOL`、`SOL_SLIPPAGE_PERCENT` 等交易設定；範例的明確值會覆蓋程式 default。
 
 ```bash
-sudo -u sol-follow -H .venv/bin/python -B -m features.app check
+.venv/bin/python -B -m features.app check
 ```
 
 先確認輸出有 `mode: dry`、`trading_enabled: false`、正確 feed、門檻及買入金額。
@@ -277,13 +278,13 @@ sudo journalctl -u sol-follow -f -o cat
 `active (running)` 只表示程序存活；在日誌核對啟動設定及後續 health 的連線／訂閱狀態。
 `Ctrl+C` 只退出 journal 追蹤，服務仍會繼續。systemd 啟動前亦會執行 `check`。
 `.env` 由 Python 自行讀取，不需要 `source .env` 或額外 `EnvironmentFile`。
-service 使用唯讀程式目錄，只有 `data/` 可寫；私鑰請放在 `/sol-follow/wallets/`，
-不要放在被 `ProtectHome=true` 隱藏的 `/home` 或 `/root`。
+service 使用 `ProtectHome=read-only`，可讀取 home 下的程式及設定，只有 `data/` 可寫；
+私鑰請放在 `/home/ubuntu/sol-follow/wallets/`，由 `ubuntu` 擁有、權限 `600`。
 
 ### 5. 切換 LIVE（準備實盤時才做）
 
 先停止服務，透過 SCP／SFTP 將自己的 Solana CLI JSON keypair 放到
-`/sol-follow/wallets/trader.json`，擁有者設為 `sol-follow`、權限 `600`。
+`/home/ubuntu/sol-follow/wallets/trader.json`，擁有者設為 `ubuntu`、權限 `600`。
 在 `.env` 設定匹配的公鑰與 Linux 路徑：
 
 ```dotenv
@@ -317,7 +318,7 @@ sudo journalctl -u sol-follow --since "30 minutes ago" --no-pager
 ```bash
 sudo systemctl stop sol-follow
 install -d -m 700 "$HOME/sol-follow-backups"
-sudo tar -C /sol-follow -czf "$HOME/sol-follow-backups/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" data
+tar -C /home/ubuntu/sol-follow -czf "$HOME/sol-follow-backups/data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" data
 ```
 
 上傳並解壓新版程式，保留 `.env`、`wallets/`、`data/`；重新執行 pip install、npm ci、check。
