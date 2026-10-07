@@ -85,6 +85,9 @@ async def test_late_result_sells_only_bought_amount_and_reconciles_either_order(
     await engine.once()
     if not buy_finalized_first:store.fill(oid,1000,100)
     assert store.rows('trading','SELECT amount FROM positions')[0]['amount']=='0'
+    sweep=store.rows('trading','SELECT * FROM quote_sweeps')[0]
+    assert sweep['amount']=='1000' and sweep['mint']==route.quote_mint
+    assert sweep['state']=='waiting'  # Only the exit receipt's gain, excluding old quote balance.
     await engine.once()
     assert builds==[1000] and sum(x[0]=='sendTransaction' for x in rpc.calls)==1
 

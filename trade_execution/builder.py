@@ -61,10 +61,15 @@ async def build_sell(config,request,wallet,amount):
     return await _build(config,SimpleNamespace(request=lambda:request),wallet,sell_amount=amount)
 
 
-async def _build(config, route, wallet, *, sell_amount=None):
+async def build_sweep(config,request,wallet,amount):
+    from types import SimpleNamespace
+    return await _build(config,SimpleNamespace(request=lambda:request),wallet,sell_amount=amount,side='sweep')
+
+
+async def _build(config, route, wallet, *, sell_amount=None,side='sell'):
     payload=payload_for(config,route.request(),wallet)
     if sell_amount is not None:
-        payload.update(side='sell',amount=str(sell_amount),commitment='confirmed')
+        payload.update(side=side,amount=str(sell_amount),commitment='confirmed')
     process=await asyncio.create_subprocess_exec(
         'node', str(Path(__file__).parent/'sdk'/'build.cjs'),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

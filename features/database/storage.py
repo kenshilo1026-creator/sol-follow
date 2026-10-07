@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS quote_sweeps(id TEXT PRIMARY KEY, wallet TEXT NOT NULL, mint TEXT NOT NULL,
+ program TEXT NOT NULL, amount TEXT NOT NULL, min_slot INTEGER NOT NULL, recipe TEXT,
+ state TEXT NOT NULL DEFAULT 'waiting', raw TEXT, signature TEXT, last_height INTEGER,
+ min_out TEXT NOT NULL DEFAULT '0', updated REAL NOT NULL, reason TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS order_routes(order_id TEXT PRIMARY KEY, request TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS dev_exits(buy_id TEXT PRIMARY KEY, state TEXT NOT NULL,
  amount TEXT NOT NULL DEFAULT '0', raw TEXT, signature TEXT, last_height INTEGER,

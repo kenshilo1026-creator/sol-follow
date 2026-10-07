@@ -54,10 +54,10 @@ async function adapter(step,args){
     if(!data||![data.tokenMintA,data.tokenMintB].some(m=>m.equals(inputMint))
       ||![data.tokenMintA,data.tokenMintB].some(m=>m.toBase58()===step.outputMint))throw Error('cached-route-rejected');
     const programs=await mints(connection,[data.tokenMintA,data.tokenMintB],safeMint);
-    const atas=[data.tokenMintA,data.tokenMintB].map((m,i)=>spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
-    const setup=[data.tokenMintA,data.tokenMintB].map((m,i)=>spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i]));
-    if(inputMint.equals(spl.NATIVE_MINT)){
-      const vault=inputMint.equals(data.tokenMintA)?data.tokenVaultA:data.tokenVaultB;
+    const atas=[data.tokenMintA,data.tokenMintB].map((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?args.nativeAccount:spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
+    const setup=[data.tokenMintA,data.tokenMintB].flatMap((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?[]:[spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i])]);
+    if([inputMint.toBase58(),step.outputMint].includes(spl.NATIVE_MINT.toBase58())){
+      const vault=data.tokenMintA.equals(spl.NATIVE_MINT)?data.tokenVaultA:data.tokenVaultB;
       const v=await connection.getAccountInfo(vault);
       if(!v||spl.unpackAccount(vault,v,spl.TOKEN_PROGRAM_ID).amount<BigInt(minLiquidity))throw Error('insufficient-sol-liquidity');
     }
@@ -83,9 +83,9 @@ async function adapter(step,args){
   if(!(swapForY?x:y).equals(inputMint)||(swapForY?y:x).toBase58()!==step.outputMint)throw Error('cached-route-rejected');
   const programs=await mints(connection,[x,y],safeMint);
   if(!programs[0].equals(pair.tokenX.owner)||!programs[1].equals(pair.tokenY.owner))throw Error('dlmm-token-program');
-  if(inputMint.equals(spl.NATIVE_MINT)&&(swapForY?pair.tokenX:pair.tokenY).amount<BigInt(minLiquidity))throw Error('insufficient-sol-liquidity');
-  const atas=[x,y].map((m,i)=>spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
-  const setup=[x,y].map((m,i)=>spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i]));
+  if([inputMint.toBase58(),step.outputMint].includes(spl.NATIVE_MINT.toBase58())&&(x.equals(spl.NATIVE_MINT)?pair.tokenX:pair.tokenY).amount<BigInt(minLiquidity))throw Error('insufficient-sol-liquidity');
+  const atas=[x,y].map((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?args.nativeAccount:spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
+  const setup=[x,y].flatMap((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?[]:[spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i])]);
   const bins=await pair.getBinArrayForSwap(swapForY);
   return {setup,async quote(amount){
     const q=pair.swapQuote(bn(amount),swapForY,new BN(0),bins,false);
@@ -101,6 +101,9 @@ async function adapter(step,args){
 }
 async function buildLocal(args,recipe,makeAdapter=adapter){
   validateRecipe(recipe,args.quoteMint);
+  return buildSteps(args,recipe,makeAdapter);
+}
+async function buildSteps(args,recipe,makeAdapter=adapter){
   let expected=big(args.amount),minimum=expected;
   const setup=[],swaps=[],fees=[],impacts=[];
   const bps=Math.floor(args.slippageBps/recipe.steps.length);
@@ -115,4 +118,9 @@ async function buildLocal(args,recipe,makeAdapter=adapter){
   }
   return {setup,swaps,tables:recipe.tables,expected,minimum,fees,impacts,swapRecipe:recipe};
 }
-module.exports={buildLocal,recipeFrom,validateRecipe,dlmmRisk};
+async function buildReverse(args,recipe,makeAdapter=adapter){
+  validateRecipe(recipe,args.quoteMint);
+  const reversed={...recipe,steps:[...recipe.steps].reverse().map(s=>({...s,inputMint:s.outputMint,outputMint:s.inputMint}))};
+  return buildSteps(args,reversed,makeAdapter);
+}
+module.exports={buildLocal,buildReverse,recipeFrom,validateRecipe,dlmmRisk};

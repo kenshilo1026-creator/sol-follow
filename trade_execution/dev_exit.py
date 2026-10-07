@@ -7,6 +7,7 @@ from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from chain_common.primitives import WSOL
 from trade_execution.builder import build_sell, BuildError
+from trade_execution.quote_sweep import enqueue as enqueue_sweep, recipe_for
 
 
 class DevExit:
@@ -111,9 +112,10 @@ class DevExit:
                 raise ValueError('exit-fill-proof-mismatch')
             sold=tx.owner_tokens('pre',wallet,buy['mint'])-tx.owner_tokens('post',wallet,buy['mint'])
             if sold!=int(job['amount']):raise ValueError('exit-fill-amount-mismatch')
+            received=tx.owner_tokens('post',wallet,request['quoteMint'])-tx.owner_tokens('pre',wallet,request['quoteMint'])
             if request['quoteMint']!=WSOL:
-                received=tx.owner_tokens('post',wallet,request['quoteMint'])-tx.owner_tokens('pre',wallet,request['quoteMint'])
                 if received<int(job['min_out']):raise ValueError('exit-fill-below-minimum')
+            recipe=recipe_for(self.store,request)
             with self.store.db('trading') as c:
                 c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
                 current=c.execute('SELECT state FROM dev_exits WHERE buy_id=?',(buy['id'],)).fetchone()
@@ -124,6 +126,7 @@ class DevExit:
                     c.execute('UPDATE positions SET amount=?,updated=? WHERE mint=? AND mode=?',
                               (str(int(position['amount'])-sold),time.time(),buy['mint'],buy['mode']))
                 c.execute("UPDATE dev_exits SET state='finalized',updated=? WHERE buy_id=?",(time.time(),buy['id']))
+                enqueue_sweep(c,'exit:'+buy['id'],wallet,request['quoteMint'],request['quoteProgram'],received,tx.slot,recipe)
                 c.commit()
             self.notice('dev exit finalized',buy,signature=signature,amount=str(sold),quote_mint=request['quoteMint'])
         elif not status:

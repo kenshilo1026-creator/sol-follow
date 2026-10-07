@@ -10,6 +10,9 @@ log = logging.getLogger('sol-follow')
 
 
 BUY_TITLES = {
+    'quote sweep submitted':'報價幣換 SOL：已送出', 'quote sweep finalized':'報價幣換 SOL：已完成',
+    'quote sweep deferred':'報價幣換 SOL：暫緩，保留餘額稍後重試',
+    'quote sweep unknown':'報價幣換 SOL：結果未知，保留原交易核對',
     'dev exit submitted':'dev 超標：賣單已送出', 'dev exit finalized':'dev 超標：賣出已完成',
     'dev exit deferred':'dev 超標：賣出失敗，稍後重試', 'dev exit unknown':'dev 超標：賣單結果未知，保留原交易核對',
     'dev exit retry':'dev 超標：鏈上賣出失敗，準備重試', 'dev exit dry run':'dev 超標：dry 模式，沒有實際賣出',
@@ -48,7 +51,8 @@ def message(kind, detail):
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
     fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
             ('reason','原因'),('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
-            ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單')]
+            ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單'),
+            ('sol_lamports','換回 SOL（lamports，未扣網路費／租金）')]
     for field,label in fields:
         if field=='wallet' and detail.get('source_wallet'):
             continue

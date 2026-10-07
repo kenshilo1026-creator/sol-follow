@@ -30,6 +30,7 @@ from trade_execution import VENUES
 from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.executor import Executor, MARKER
 from trade_execution.dev_exit import DevExit
+from trade_execution.quote_sweep import QuoteSweep
 
 
 class Service:
@@ -376,6 +377,7 @@ class Service:
                 self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
             self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority)
+            self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set
             self.dev_holdings.recover()
@@ -395,7 +397,7 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run()]
+                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
                     if grpc_mode:
                         coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
                             self.proofs.run(self.background_rpc,self.signals,self.notices,self.config.backfill_age)])
