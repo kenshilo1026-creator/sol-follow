@@ -93,13 +93,16 @@ def setup_order(config,store,keypair=None):
 
 
 @pytest.mark.asyncio
-async def test_dry_simulates_without_key_or_broadcast(config,store):
-    cfg,route,oid,builder=setup_order(config,store)
-    cfg=replace(cfg,wallet_file=Path('does-not-exist'))
+@pytest.mark.parametrize('with_key', [False, True])
+async def test_dry_simulates_without_key_or_broadcast(config,store,with_key):
+    key=Keypair() if with_key else None
+    cfg,route,oid,builder=setup_order(config,store,key)
+    cfg=replace(cfg,wallet_keypair=key)
     rpc=RPC();engine=Executor(cfg,store,rpc,Notices(),Priority(),builder)
     await engine.buy(oid,route)
     assert rpc.calls==['simulateTransaction']
     assert store.order(oid)['state']=='dry-simulated'
+    assert store.order(oid)['signature'] is None and store.order(oid)['raw'] is None
     assert not store.rows('trading','SELECT * FROM positions')
 
 
@@ -115,8 +118,8 @@ async def test_simulation_failure_never_signs_or_sends(config,store):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('ambiguous',[False,True])
 async def test_live_journals_before_send_and_retains_unknown(config,store,tmp_path,ambiguous):
-    key=Keypair();path=tmp_path/'test-key.json';path.write_text(json.dumps(list(bytes(key))))
-    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_file=path),store,key)
+    key=Keypair()
+    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
     rpc=RPC(store,oid,send_error=ambiguous);engine=Executor(cfg,store,rpc,Notices(),Priority(),builder)
     await engine.buy(oid,route)
     assert store.order(oid)['state']==('unknown' if ambiguous else 'submitted')
@@ -161,8 +164,8 @@ async def test_hotlist_buy_signal_reaches_executor(config,store,monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('failed',[False,True])
 async def test_finalized_result_updates_position_once(config,store,tmp_path,failed):
-    key=Keypair();path=tmp_path/'test-key.json';path.write_text(json.dumps(list(bytes(key))))
-    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_file=path),store,key)
+    key=Keypair()
+    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
     rpc=RPC(store,oid);engine=Executor(cfg,store,rpc,Notices(),Priority(),builder)
     await engine.buy(oid,route)
     signature=store.order(oid)['signature']
@@ -199,8 +202,8 @@ def test_restart_expires_own_unsigned_orders_only(config,store):
 
 @pytest.mark.asyncio
 async def test_wallet_mismatch_never_broadcasts(config,store,tmp_path):
-    path=tmp_path/'test-key.json';path.write_text(json.dumps(list(bytes(Keypair()))))
-    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_file=path),store,Keypair())
+    key=Keypair()
+    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,Keypair())
     rpc=RPC(store,oid)
     await Executor(cfg,store,rpc,Notices(),Priority(),builder).buy(oid,route)
     assert rpc.calls==['simulateTransaction']

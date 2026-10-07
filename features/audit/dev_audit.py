@@ -19,7 +19,7 @@ REASONS={
  'wallet-off-curve':'地址不是一般可簽署錢包','wallet-account-missing':'RPC 未取得錢包帳戶',
  'wallet-not-system-account':'帳戶不是一般 System 錢包','qualified':'已通過入場檢查',
  'funding-expired':'入金已超過有效期','hotlist-consumed':'錢包已移除，舊入金不能重新入場',
- 'funding-already-recorded':'同一入金已處理','source-buy-below-minimum':'買額低於門檻；是否移除見 hotlist_removed 紀錄',
+ 'funding-already-recorded':'同一入金已處理','source-buy-below-ignore':'買額低於忽略門檻，保留 hotlist','source-buy-below-minimum':'買額低於跟買下限；是否移除見 hotlist_removed 紀錄',
  'source-sol-budget-over-limit':'目標 SOL 買入預算超過上限',
  'source-token-budget-over-sol-limit':'非 SOL 買入預算換算後超過舊 SOL 上限',
  'source-token-budget-over-usd-limit':'非 SOL 買入預算換算後超過 USD 上限，移除 hotlist',

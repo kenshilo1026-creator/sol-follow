@@ -121,13 +121,13 @@ class CachedBuilder:
                 if not future.done():
                     future.set_exception(BuildError('route-builder-stopped'))
 
-    async def request(self, request, wallet, warm=False, operation="build"):
+    async def request(self, request, wallet, warm=False, operation="build", minimum_usd=None):
         await self.start()
         payload = payload_for(self.config, request, wallet)
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
-                       minimumUsdMicros=str(self.config.min_observed_buy_usd_micros),
+                       minimumUsdMicros=str(self.config.min_observed_buy_usd_micros if minimum_usd is None else minimum_usd),
                        maximumUsdMicros=str(self.config.max_observed_buy_usd_micros),
-                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros or self.config.min_observed_buy_usd_micros or self.config.max_observed_buy_usd_micros),
+                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros or self.config.min_observed_buy_usd_micros or self.config.ignore_observed_buy_usd_micros or self.config.max_observed_buy_usd_micros),
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
@@ -172,6 +172,11 @@ class CachedBuilder:
 
     async def market_cap(self,route):
         return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation='market_cap')
+
+    async def quote_ignore(self, route):
+        # Reuse the cache-only floor operation with the independent ignore threshold.
+        return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,
+                                  operation="quote_minimum",minimum_usd=self.config.ignore_observed_buy_usd_micros)
 
     async def quote_minimum(self, route):
         return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation='quote_minimum')

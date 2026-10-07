@@ -86,9 +86,9 @@ Telegram 填本專案 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，不
 原生 SOL 路由直接按 bonding curve 與當前費率報價，以 `buy_exact_sol_in` 花設定的 SOL 預算，
 `min_tokens_out` 使用同一個滑點百分比。DLMM reserve 門檻不套用到這條原生 SOL 路由。
 
-DRY_RUN 在達標時組未簽名交易及模擬，不讀私鑰、不送單，不建立虛假的已成交持倉。
-未設定公開錢包時，DRY_RUN 使用訊號錢包作模擬付款人；可設定 `SOL_WALLET_ADDRESS` 模擬自己的資金狀態。
-LIVE 需要 `SOL_WALLET_KEYPAIR_PATH`（Solana CLI JSON keypair）及相符的 `SOL_WALLET_ADDRESS`，
+DRY_RUN 在達標時組未簽名交易及模擬，不簽名、不送單，不建立虛假的已成交持倉。
+未設定買入錢包私鑰時，DRY_RUN 使用訊號錢包作模擬付款人；設定私鑰後使用推導出的公鑰模擬自己的資金狀態。
+LIVE 需要在 `.env` 的 `SOL_WALLET_ADDRESS` 填入 Base58 私鑰（64-byte keypair），程式自動推導公鑰，
 模擬通過且訊號未過期後才簽名、保存、送單。買額不包含交易費與新 ATA 租金。
 
 ## 買入路由範圍
@@ -175,9 +175,9 @@ Stonk 依 [官方 LaunchLab SDK](https://github.com/raydium-io/raydium-sdk-V2/bl
 npm test
 ```
 
-probe 不開資料庫、不讀私鑰，最多抽 10 筆；`--tx` 列出交易版本、入金與 Create 解碼，
+probe 不開資料庫、不簽名，最多抽 10 筆；`--tx` 列出交易版本、入金與 Create 解碼，
 `--raw` 可列出成功解析的公開原始交易。`--mint` 只驗來源。
-`--buy-route` 只重新報價及模擬未簽名原子買入，不讀私鑰、不送單、不寫資料庫。
+`--buy-route` 只重新報價及模擬未簽名原子買入，不簽名、不送單、不寫資料庫。
 歷史簽名只作路徑提示；若代幣現已畢業，會拒絕。不要用 probe 當高頻監控。
 
 ## systemd
@@ -318,18 +318,17 @@ sudo journalctl -u sol-follow -f -o cat
 `Ctrl+C` 只退出 journal 追蹤，服務仍會繼續。systemd 啟動前亦會執行 `check`。
 `.env` 由 Python 自行讀取，不需要 `source .env` 或額外 `EnvironmentFile`。
 service 使用 `ProtectHome=read-only`，可讀取 home 下的程式及設定，只有 `data/` 可寫；
-私鑰請放在 `/home/ubuntu/sol-follow/wallets/`，由 `ubuntu` 擁有、權限 `600`。
+私鑰存於 `/home/ubuntu/sol-follow/.env`，由 `ubuntu` 擁有、權限 `600`。
 
 ### 5. 切換 LIVE（準備實盤時才做）
 
-先停止服務，透過 SCP／SFTP 將自己的 Solana CLI JSON keypair 放到
-`/home/ubuntu/sol-follow/wallets/trader.json`，擁有者設為 `ubuntu`、權限 `600`。
-在 `.env` 設定匹配的公鑰與 Linux 路徑：
+先停止服務，在 VPS 用 `nano ~/sol-follow/.env` 填入買入錢包的 Base58 私鑰。
+`SOL_WALLET_ADDRESS` 雖然名稱含 ADDRESS，但內容是私鑰；不填公鑰、助記詞或 JSON 陣列。
+不需要另外建立 keypair 檔案；公鑰由程式推導。`.env` 由 `ubuntu` 擁有，執行 `chmod 600 ~/sol-follow/.env`。
 
 ```dotenv
 DRY_RUN=false
-SOL_WALLET_KEYPAIR_PATH=wallets/trader.json
-SOL_WALLET_ADDRESS=填入與該私鑰匹配的公鑰
+SOL_WALLET_ADDRESS=填入買入錢包的Base58私鑰
 ```
 
 再次執行 `check` 後 `sudo systemctl start sol-follow`。這一步才允許系統簽名及實際買入；

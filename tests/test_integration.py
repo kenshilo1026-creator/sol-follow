@@ -43,7 +43,7 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store):
     port=site._server.sockets[0].getsockname()[1]
     cfg=replace(config,rpc=f'http://127.0.0.1:{port}/',
                 ws=f'http://127.0.0.1:{port}/ws',cex={address():'test'},source_programs=(),privacy_pools=(),
-                dry_run=False,wallet_file=config.data/'missing-wallet.json',wallet_address=address())
+                dry_run=False,wallet_keypair=None,wallet_address=address())
     oid=store.reserve(cfg,address(),address(),10)
     store.update_order(oid,state='unknown',signature='existing-signature',raw='existing-signed-bytes')
     service=Service(cfg,store)

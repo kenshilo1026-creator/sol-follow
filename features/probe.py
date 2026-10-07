@@ -1,4 +1,4 @@
-"""Bounded, read-only mainnet compatibility probe. Never opens DB or wallet keys."""
+"""Bounded, read-only mainnet compatibility probe. Never opens DB or signs."""
 import argparse
 import asyncio
 import json

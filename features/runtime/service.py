@@ -17,7 +17,7 @@ from features.funding.discovery import Discovery
 from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
-from trade_execution.observed_buy import check as check_observed_buy, check_minimum
+from trade_execution.observed_buy import check as check_observed_buy, check_minimum, check_ignore
 from features.database.maintenance import Maintenance
 from features.database.storage import Store
 from launchpads import ENABLED, pump_fun, stonk
@@ -166,19 +166,35 @@ class Service:
                     and self.proofs.usable(trade.signature,slot=trade.slot)):
                 fresh_buy=trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)
                 if fresh_buy:
-                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
-                    if not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum':
-                        # Actual small payments are ignored even with a loose calldata budget.
+                    ignore_allowed,ignore_detail=await check_ignore(self.config,route,self.quote_builder)
+                    if not ignore_allowed:
+                        # Tiny executed payments keep their subscription, even with a loose input budget.
+                        # Missing valuations also keep the wallet: they cannot prove either band.
+                        ignored=ignore_detail['reason']=='source-buy-below-ignore'
                         self.store.ignore_vote(trade)
-                        trade_record(self.store,trade,'minimum','ignored',minimum_detail['reason'],
-                                     {**minimum_detail,'hotlist_removed':False})
+                        trade_record(self.store,trade,'ignore','ignored' if ignored else 'unavailable',
+                                     ignore_detail['reason'],{**ignore_detail,'hotlist_removed':False})
                         if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
                             self.signals.reject_mint(trade.mint)
                         await self.market_cap.check(route)
                         self.notices.emit('target buy skipped',{'signature':trade.signature,
+                            **buy_context(self.config,route),'stage':'target-ignore-check',
+                            **ignore_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
+                            key='target-ignore-skip:'+trade.event,interval=300)
+                        continue
+                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
+                    if not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum':
+                        self.store.remove_hotlist(trade,'buy-below-minimum')
+                        self.signals.reject(trade)
+                        trade_record(self.store,trade,'minimum','blocked',minimum_detail['reason'],
+                                     {**minimum_detail,'hotlist_removed':True})
+                        self.notices.emit('target buy skipped',{'signature':trade.signature,
                             **buy_context(self.config,route),'stage':'target-minimum-check',
-                            **minimum_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
+                            **minimum_detail,'hotlist_removed':True},alert=route.quote_mint!=WSOL,
                             key='target-min-skip:'+trade.event,interval=300)
+                        if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
+                            self.signals.reject_mint(trade.mint)
+                        await self.market_cap.check(route)
                         continue
                 allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
                 over_limit=not allowed and detail['reason'] in ('source-sol-budget-over-limit','source-token-budget-over-usd-limit')

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 from dotenv import dotenv_values
+from solders.keypair import Keypair
 from chain_common.primitives import pubkey, PRIVACY, pda
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,7 +118,7 @@ class Config:
     db_target: int
     min_disk_free: int
     audit_retention: int
-    wallet_file: Path | None
+    wallet_keypair: Keypair | None = field(repr=False)
     wallet_address: str
     telegram_token: str
     telegram_chat: str
@@ -133,8 +134,10 @@ class Config:
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
     hotlist_commitment: str = 'confirmed'
-    min_observed_buy_usd_micros: int = 10_000_000
-    min_observed_buy: int = 0
+    ignore_observed_buy: int = 100_000_000
+    ignore_observed_buy_usd_micros: int = 10_000_000
+    min_observed_buy_usd_micros: int = 50_000_000
+    min_observed_buy: int = 500_000_000
     max_observed_buy: int = 5_000_000_000
     max_observed_buy_usd_micros: int = 500_000_000
     blockhash_cache_ttl_ms: int = 5000
@@ -174,13 +177,15 @@ def load(root=ROOT, env=None):
     hotlist_commitment = get('SOL_HOTLIST_COMMITMENT', 'processed' if feed_mode == 'alchemy_grpc' else 'confirmed')
     if hotlist_commitment not in ('processed', 'confirmed') or (hotlist_commitment == 'processed' and feed_mode != 'alchemy_grpc'):
         raise ValueError('processed-hotlist-requires-alchemy-grpc')
-    maximum_buy = lamports(get('SOL_FOLLOW_MAX_TARGET_BUY_SOL', '5'))
-    minimum_buy = lamports(get('sol_follow_ignore_sol', '0'))
-    if minimum_buy > maximum_buy:
-        raise ValueError('minimum-target-buy-exceeds-maximum')
-    maximum_usd = usd_micros(get('SOL_FOLLOW_MAX_TARGET_BUY_USD','500'))
-    minimum_usd = usd_micros(get('sol_follow_ignore_usd','10'))
-    if maximum_usd<=0 or minimum_usd>maximum_usd:
+    maximum_buy = lamports(get('SOL_FOLLOW_MAX_SOL', '5'))
+    minimum_buy = lamports(get('SOL_FOLLOW_MIN_SOL', '0.5'))
+    ignore_buy = lamports(get('SOL_FOLLOW_IGNORE_SOL', '0.1'))
+    if not ignore_buy <= minimum_buy <= maximum_buy:
+        raise ValueError('invalid-target-buy-sol-range')
+    maximum_usd = usd_micros(get('SOL_FOLLOW_MAX_USD','500'))
+    minimum_usd = usd_micros(get('SOL_FOLLOW_MIN_USD','50'))
+    ignore_usd = usd_micros(get('SOL_FOLLOW_IGNORE_USD','10'))
+    if maximum_usd<=0 or not ignore_usd<=minimum_usd<=maximum_usd:
         raise ValueError('invalid-target-buy-usd-range')
     if maximum_buy <= 0:
         raise ValueError('invalid-target-buy-limit')
@@ -204,13 +209,16 @@ def load(root=ROOT, env=None):
     maximum = integer('SOL_DB_MAX_BYTES', 2*1024**3, 1024**2, 1024**4)
     target = integer('SOL_DB_TARGET_BYTES', 1536*1024**2, 512*1024, maximum-1)
     dry = boolean(get('DRY_RUN', 'true'))
-    wallet = get('SOL_WALLET_KEYPAIR_PATH', '')
-    wallet = (root/wallet).absolute() if wallet else None
-    address = get('SOL_WALLET_ADDRESS', '')
-    if address:
-        pubkey(address)
-    if not dry and (not wallet or not address):
-        raise ValueError('live-requires-keypair-path-and-explicit-wallet-address')
+    secret = get('SOL_WALLET_ADDRESS', '') or ''
+    wallet = None
+    if secret:
+        try:
+            wallet = Keypair.from_base58_string(secret)
+        except ValueError:
+            raise ValueError('SOL_WALLET_ADDRESS: invalid-base58-private-key') from None
+    address = str(wallet.pubkey()) if wallet is not None else ''
+    if not dry and wallet is None:
+        raise ValueError('live-requires-SOL_WALLET_ADDRESS-private-key')
     return Config(
         root=root, data=root/'data', dry_run=dry, rpc=rpc, ws=ws,
         cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
@@ -226,7 +234,7 @@ def load(root=ROOT, env=None):
         db_max=maximum, db_target=target,
         min_disk_free=integer('SOL_MIN_DISK_FREE_BYTES', 256*1024**2, 1024**2, 1024**4),
         audit_retention=hours_to_seconds(get('SOL_AUDIT_RETENTION_HOUR', '72'), minimum=3600),
-        wallet_file=wallet, wallet_address=address,
+        wallet_keypair=wallet, wallet_address=address,
         telegram_token=get('TELEGRAM_BOT_TOKEN', ''), telegram_chat=get('TELEGRAM_CHAT_ID', ''),
         alchemy_key=key, feed_mode=feed_mode,
         grpc_endpoint=endpoint,
@@ -239,6 +247,7 @@ def load(root=ROOT, env=None):
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),
         hotlist_commitment=hotlist_commitment, max_observed_buy=maximum_buy, min_observed_buy=minimum_buy,
         min_observed_buy_usd_micros=minimum_usd, max_observed_buy_usd_micros=maximum_usd,
+        ignore_observed_buy=ignore_buy, ignore_observed_buy_usd_micros=ignore_usd,
         max_market_cap_usd_micros=market_cap_micros(get('SOL_FOLLOW_MAX_MARKET_CAP_USD_K','0')),
         blockhash_cache_ttl_ms=integer('SOL_BLOCKHASH_CACHE_TTL_MS',5000,1000,10000),
         blockhash_refresh_ms=integer('SOL_BLOCKHASH_REFRESH_MS',1000,250,1000),

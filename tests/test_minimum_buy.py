@@ -19,10 +19,10 @@ from tests.test_processed import admit,NoRpc
 
 
 def test_minimum_config(config):
-    assert load(env={'sol_follow_ignore_sol':'0.1'}).min_observed_buy==100_000_000
+    assert load(env={'SOL_FOLLOW_MIN_SOL':'0.1'}).min_observed_buy==100_000_000
     for value in ['-1','NaN','0.0000000001','6']:
-        with pytest.raises(ValueError):load(env={'sol_follow_ignore_sol':value})
-    assert load(env={'sol_follow_ignore_sol':'0'}).min_observed_buy==0
+        with pytest.raises(ValueError):load(env={'SOL_FOLLOW_MIN_SOL':value})
+    assert load(env={'SOL_FOLLOW_MIN_SOL':'0','SOL_FOLLOW_IGNORE_SOL':'0'}).min_observed_buy==0
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_processed_minimum_skips_order_and_keeps_subscription(config,store
     route=replace(route,trade=replace(route.trade,quote=paid),observed_amount=6_000_000_000 if paid<100_000_000 else 500_000_000)
     admit(store,route,now)
     monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000)
+    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,ignore_observed_buy=100_000_000)
     service=Service(cfg,store);service.signals.started=now-1
     executed=[]
     class Engine:
@@ -124,7 +124,7 @@ async def test_small_buy_keeps_hotlist_even_if_market_cap_cancelled(config,store
     route=replace(route,trade=replace(route.trade,quote=1))
     admit(store,route,now)
     monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000)
+    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,ignore_observed_buy=100_000_000)
     service=Service(cfg,store);service.signals.started=now-1
     async def interrupted(r):raise asyncio.CancelledError
     service.market_cap.check=interrupted;store.stream_transaction(raw)
@@ -135,11 +135,11 @@ async def test_small_buy_keeps_hotlist_even_if_market_cap_cancelled(config,store
 
 
 def test_usd_minimum_default_and_validation():
-    assert load(env={}).min_observed_buy_usd_micros==10_000_000
-    assert load(env={'sol_follow_ignore_usd':'0'}).min_observed_buy_usd_micros==0
-    assert load(env={'sol_follow_ignore_usd':'50.25'}).min_observed_buy_usd_micros==50_250_000
+    assert load(env={}).min_observed_buy_usd_micros==50_000_000
+    assert load(env={'SOL_FOLLOW_MIN_USD':'0','SOL_FOLLOW_IGNORE_USD':'0'}).min_observed_buy_usd_micros==0
+    assert load(env={'SOL_FOLLOW_MIN_USD':'50.25'}).min_observed_buy_usd_micros==50_250_000
     for value in ['-1','NaN','Infinity','0.0000001','1e50']:
-        with pytest.raises(ValueError):load(env={'sol_follow_ignore_usd':value})
+        with pytest.raises(ValueError):load(env={'SOL_FOLLOW_MIN_USD':value})
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_usd_disable_does_not_fall_back_to_sol_minimum(config):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fixture',['stonk_non_sol_buy.json','pump_non_sol_buy.json'])
-@pytest.mark.parametrize('paid,allowed,removed',[(999,False,False),(1000,True,False),(None,False,False)])
+@pytest.mark.parametrize('paid,allowed,removed',[(999,False,True),(1000,True,False),(None,False,False)])
 async def test_usd_service_ignores_small_buy_and_missing_price(config,store,monkeypatch,fixture,paid,allowed,removed):
     import json
     from pathlib import Path
@@ -171,7 +171,7 @@ async def test_usd_service_ignores_small_buy_and_missing_price(config,store,monk
         if paid is None:raise BuildError('market-cap-price-unavailable')
         return {'quoteLimit':'1000','solLimit':'333333334','minimumUsdMicros':'50000000'}
     async def maximum(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
-    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_limit=maximum
+    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_ignore=minimum;service.quote_builder.quote_limit=maximum
     executed=[]
     class Engine:
         async def buy(self,oid,r):executed.append(oid)
@@ -211,18 +211,19 @@ async def test_wallet_can_follow_later_buy_after_small_buy(config,store,monkeypa
     current=replace(current,trade=replace(current.trade,quote=floor-1),observed_amount=500_000_000 if not non_sol else current.observed_amount)
     admit(store,current,now)
     monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[current])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,min_observed_buy_usd_micros=10_000_000)
+    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,min_observed_buy_usd_micros=10_000_000,
+                ignore_observed_buy=100_000_000,ignore_observed_buy_usd_micros=10_000_000)
     service=Service(cfg,store);service.signals.started=now-1
     async def minimum(r):return {'quoteLimit':'1000','minimumUsdMicros':'10000000'}
     async def maximum(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
-    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_limit=maximum
+    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_ignore=minimum;service.quote_builder.quote_limit=maximum
     executed=[]
     class Engine:
         async def buy(self,oid,r):executed.append(oid)
     service.executor=Engine();store.stream_transaction(raw)
     await service.process({'signature':current.trade.signature},NoRpc())
     assert not executed and current.trade.wallet in Store(config.data).hotlist(now)
-    decision=store.rows('audit',"SELECT outcome,detail FROM decisions WHERE stage='minimum'")[0]
+    decision=store.rows('audit',"SELECT outcome,detail FROM decisions WHERE stage='ignore'")[0]
     assert decision['outcome']=='ignored' and not json.loads(decision['detail'])['hotlist_removed']
     second=deepcopy(raw);sig=b58encode(bytes([19])*64);second['transaction']['signatures'][0]=sig;second['slot']+=1
     current=replace(current,trade=replace(current.trade,signature=sig,event=sig+':buy',slot=second['slot'],quote=floor))

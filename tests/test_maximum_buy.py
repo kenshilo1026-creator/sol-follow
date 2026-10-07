@@ -18,9 +18,9 @@ from tests.test_processed import admit,NoRpc
 
 def test_usd_maximum_config_and_range():
     assert load(env={}).max_observed_buy_usd_micros==500_000_000
-    assert load(env={'SOL_FOLLOW_MAX_TARGET_BUY_USD':'500.25'}).max_observed_buy_usd_micros==500_250_000
+    assert load(env={'SOL_FOLLOW_MAX_USD':'500.25'}).max_observed_buy_usd_micros==500_250_000
     for value in ['0','-1','NaN','Infinity','0.0000001','9']:
-        with pytest.raises(ValueError):load(env={'SOL_FOLLOW_MAX_TARGET_BUY_USD':value})
+        with pytest.raises(ValueError):load(env={'SOL_FOLLOW_MAX_USD':value})
 
 
 @pytest.mark.asyncio

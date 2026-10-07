@@ -72,8 +72,8 @@ async def test_simulation_failure_alert(config,store):
 
 @pytest.mark.asyncio
 async def test_ambiguous_send_keeps_reservation_and_alerts_unknown(config,store,tmp_path):
-    key=Keypair();path=tmp_path/'synthetic-test-key.json';path.write_text(json.dumps(list(bytes(key))))
-    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_file=path),store,key)
+    key=Keypair()
+    cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
     notices=Notices()
     await Executor(cfg,store,RPC(store,oid,send_error=True),notices,Priority(),builder).buy(oid,route)
     row=alerts(notices,'buy deferred')[0]

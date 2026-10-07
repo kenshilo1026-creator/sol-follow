@@ -310,3 +310,21 @@ Upper-limit removal (above 5 SOL / USD 500), first-observation market-cap checks
 and unavailable-price handling keep their existing rules. This update does not
 automatically restore wallets removed by older versions or by upper-limit buys.
 Restart the service after updating the two minimum settings.
+
+
+## 2026-10-07: independent ignore, minimum and maximum bands
+
+The active environment settings are `SOL_FOLLOW_IGNORE_SOL=0.1`,
+`SOL_FOLLOW_IGNORE_USD=10`, `SOL_FOLLOW_MIN_SOL=0.5`,
+`SOL_FOLLOW_MIN_USD=50`, `SOL_FOLLOW_MAX_SOL=5`, and
+`SOL_FOLLOW_MAX_USD=500`. These replace the earlier lowercase ignore keys
+and `SOL_FOLLOW_MAX_TARGET_BUY_*` names. SOL pairs use SOL; other pairs use USD.
+
+Executed payment below IGNORE is ignored without removing the wallet or counting
+a vote. Payment at/above IGNORE but below MIN removes the wallet persistently
+without following. Above MAX also removes without following; the existing
+conservative calldata budget check remains in use for MAX. MIN and MAX equality
+pass the amount gate, subject to all other signal, market-cap and execution gates.
+Ignore/minimum USD thresholds use the existing cache-only quote operation. Unknown
+ignore valuations skip without removing. Configuration requires IGNORE <= MIN <= MAX.
+`dev_audit` distinguishes ignored buys, below-minimum removals and above-maximum removals.

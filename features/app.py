@@ -28,6 +28,8 @@ def main():
                           'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,
                           'max_target_buy_lamports':config.max_observed_buy,
                           'max_target_buy_usd_micros':config.max_observed_buy_usd_micros,
+                          'ignore_target_buy_lamports':config.ignore_observed_buy,
+                          'ignore_target_buy_usd_micros':config.ignore_observed_buy_usd_micros,
                           'min_target_buy_lamports':config.min_observed_buy,
                           'min_target_buy_usd_micros':config.min_observed_buy_usd_micros,
                           'max_market_cap_usd_k':str(config.max_market_cap_usd_micros/10**9),'alchemy_key_configured':bool(config.alchemy_key),

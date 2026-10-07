@@ -7,7 +7,7 @@ from trade_execution.builder import BuildError
 INTERNAL_REASONS = frozenset({
     'position-already-exists', 'signal-expired', 'signal-expired-after-build',
     'invalid-built-transaction', 'simulation-rejected', 'signal-expired-after-simulation',
-    'wallet-keypair-mismatch', 'signal-expired-before-signing', 'signal-invalid-before-send',
+    'wallet-keypair-mismatch', 'wallet-private-key-required', 'signal-expired-before-signing', 'signal-invalid-before-send',
     'send-signature-mismatch', 'fill-transaction-mismatch',
 })
 

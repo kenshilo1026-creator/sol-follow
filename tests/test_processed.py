@@ -40,8 +40,8 @@ def test_config_defaults_and_invalid_limits(tmp_path):
     (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}')
     cfg=load(tmp_path,env={'ALCHEMY_API_KEY':'test-key'})
     assert cfg.hotlist_commitment=='processed' and cfg.max_observed_buy==5_000_000_000
-    assert load(tmp_path,env={'SOL_FOLLOW_MAX_TARGET_BUY_SOL':'2.5'}).max_observed_buy==2_500_000_000
-    for env in [{'SOL_FOLLOW_MAX_TARGET_BUY_SOL':'0'},{'SOL_FOLLOW_MAX_TARGET_BUY_SOL':'NaN'},
+    assert load(tmp_path,env={'SOL_FOLLOW_MAX_SOL':'2.5'}).max_observed_buy==2_500_000_000
+    for env in [{'SOL_FOLLOW_MAX_SOL':'0'},{'SOL_FOLLOW_MAX_SOL':'NaN'},
                 {'SOL_HOTLIST_COMMITMENT':'processed','SOL_FEED_MODE':'websocket'},
                 {'SOL_HOTLIST_COMMITMENT':'pending'}]:
         with pytest.raises(ValueError):load(tmp_path,env=env)

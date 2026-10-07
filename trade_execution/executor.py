@@ -1,10 +1,8 @@
 """Simulate, durably sign, submit once, then reconcile by signature."""
 import asyncio
 import base64
-import json
 import time
 from features.audit.writer import trade_record
-from solders.keypair import Keypair
 from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from trade_execution.builder import build
@@ -78,11 +76,12 @@ class Executor:
                 self.notices.emit('buy dry simulation passed',{'order':oid,'mint':row['mint'],
                     'min_out':result['minOut'],'quote_spend':result['quoteIn'],'simulation_wallet':wallet},alert=True)
                 return
-            # Local Solana CLI JSON keypair. No key material goes through Node,
+            # The dotenv keypair stays in Python. No key material goes through Node,
             # provider request bodies, logs or the database.
             stage='sign'
-            keydata=json.loads(self.config.wallet_file.read_text(encoding='utf-8'))
-            keypair=Keypair.from_bytes(bytes(keydata))
+            keypair=self.config.wallet_keypair
+            if keypair is None:
+                raise ValueError('wallet-private-key-required')
             if str(keypair.pubkey())!=wallet:
                 raise ValueError('wallet-keypair-mismatch')
             if not self.fresh(route,oid):
