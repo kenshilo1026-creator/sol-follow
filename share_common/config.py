@@ -59,6 +59,16 @@ def hours_to_seconds(value, minimum=60):
         raise ValueError('invalid-hour-duration') from exc
 
 
+def usdc_units(value):
+    try:
+        n = Decimal(str(value)) * 10**6
+        if not n.is_finite() or n != n.to_integral_value() or not 0 < n < 2**64:
+            raise ValueError('invalid-funding-usdc-amount')
+        return int(n)
+    except InvalidOperation:
+        raise ValueError('invalid-funding-usdc-amount') from None
+
+
 def percent(value):
     try:
         result = Decimal(str(value))
@@ -157,6 +167,8 @@ class Config:
     blockhash_refresh_ms: int = 1000
     max_market_cap_usd_micros: int = 0
     max_dev_holding_tokens: Decimal | None = Decimal('60000000')
+    min_funding_usdc: int = 50_000_000
+    max_funding_usdc: int = 800_000_000
 
     @property
     def mode(self):
@@ -220,6 +232,10 @@ def load(root=ROOT, env=None):
     low, high = lamports(get('SOL_HOTLIST_MIN_FUNDING_SOL', '0.01')), lamports(get('SOL_HOTLIST_MAX_FUNDING_SOL', '100'))
     if amount <= 0 or high < low:
         raise ValueError('invalid-amount-range')
+    usdc_low = usdc_units(get('SOL_HOTLIST_MIN_FUNDING_USDC', '50'))
+    usdc_high = usdc_units(get('SOL_HOTLIST_MAX_FUNDING_USDC', '800'))
+    if usdc_high < usdc_low:
+        raise ValueError('invalid-funding-usdc-range')
     maximum = integer('SOL_DB_MAX_BYTES', 2*1024**3, 1024**2, 1024**4)
     target = integer('SOL_DB_TARGET_BYTES', 1536*1024**2, 512*1024, maximum-1)
     dry = boolean(get('DRY_RUN', 'true'))
@@ -237,6 +253,7 @@ def load(root=ROOT, env=None):
         root=root, data=root/'data', dry_run=dry, rpc=rpc, ws=ws,
         cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
         min_funding=low, max_funding=high,
+        min_funding_usdc=usdc_low, max_funding_usdc=usdc_high,
         hotlist_ttl=hours_to_seconds(get('SOL_HOTLIST_TTL_HOUR', '24')),
         n=integer('SOL_FOLLOW_MIN_WALLETS', 3, 1, 10000),
         window=integer('SOL_FOLLOW_WINDOW_SECONDS', 120, 1, 86400),

@@ -31,7 +31,12 @@ async def qualify_activity(item,rpc,store):
     rows=store.rows('funding','SELECT detail FROM funding_activity_checks WHERE event=?',(item.event,))
     state=json.loads(rows[0]['detail']) if rows else None
     if not state or state.get('cutoff')!=cutoff or state.get('funding_slot')!=item.slot:
-        state=dict(cutoff=cutoff,funding_slot=item.slot,cursor=None,last_slot=None,anchored=False,pending=[],exhausted=False,
+        # SPL transfers may include only the recipient token account, not its
+        # owner. The decoder already proves the owner using confirmed meta;
+        # that deposit cannot appear in the owner's address history. Bound the
+        # existing signer-history scan by its confirmed slot in this case.
+        external_anchor = item.asset == 'USDC' and not item.wallet_in_keys
+        state=dict(cutoff=cutoff,funding_slot=item.slot,cursor=None,last_slot=None,anchored=external_anchor,pending=[],exhausted=False,
                    complete=False,allowed=False,reason='',saw_prior=False)
     def save():
         with store.db('funding') as db:

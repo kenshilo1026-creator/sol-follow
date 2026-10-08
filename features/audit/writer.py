@@ -38,6 +38,12 @@ def funding_candidates(store,tx,config,accepted):
     """Record configured-CEX transfers rejected before qualification, without RPC."""
     from chain_common.primitives import SYSTEM
     known={item.event for item in accepted}
+    from features.funding.decoder import usdc_candidates
+    for item, reason in usdc_candidates(tx, config):
+        if reason and item.event not in known:
+            record(store,'funding','blocked',reason,wallet=item.wallet,signature=item.signature,event=item.event,
+                   detail={**item.dict(),'minimum_raw':str(config.min_funding_usdc),
+                           'maximum_raw':str(config.max_funding_usdc),'decimals':6})
     for path,ix in tx.instructions():
         if ix.get('programId')!=SYSTEM or ix.get('parsed',{}).get('type')!='transfer':continue
         info=ix['parsed']['info'];source=info['source'];wallet=info['destination']

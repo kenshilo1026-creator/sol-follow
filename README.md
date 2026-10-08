@@ -1,6 +1,6 @@
 # sol-follow
 
-獨立 Solana 服務：CEX／Privacy Cash 原生 SOL 入金 → 資格檢查 → SQLite hotlist，
+獨立 Solana 服務：CEX SOL／USDC、Privacy Cash 原生 SOL 入金 → 資格檢查 → SQLite hotlist，
 並解碼監聽交易中的 Pump／Stonk Create。
 群體跟買已接入 Pump 及 Stonk 原子買入路由；支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
 **沒有修改、import 或共用 RH/BSC 的 runtime、錢包和資料庫。**
@@ -77,6 +77,15 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。
 買入必須有本次程序的即時接收紀錄，補查及重啟恢復的交易不投票、不觸發買入報價。
 入金前 30 天簽名活動資格檢查、processed 分叉核對及自己已送出訂單的確認仍保留。
+Funding discovery 亦辨認 `cex_addresses.json` 內交易所的原生 USDC 出金；
+`SOL_HOTLIST_MIN_FUNDING_USDC=50`、`SOL_HOTLIST_MAX_FUNDING_USDC=800` 是預設值，兩端包含。
+以 1 USDC = 1 USD 作金額門檻，不查即時美元匯率；SOL 入金繼續使用原有 SOL 門檻。
+只接受 [Solana 官方列出的 USDC mint](https://solana.com/docs/payments/how-payments-work)
+`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`，支援 SPL Token `transfer`／`transferChecked`（含 inner instructions）。
+以同筆 confirmed 交易的 token balance owner、CEX 簽名及收支餘額證明出金，無需額外 RPC 查 mint／owner／報價。
+收款 token account 的擁有人才是 hotlist 錢包，仍須通過 system wallet 及 30 天簽名活動資格檢查；
+若錢包地址不在該筆帳戶列表，以已證實的入金 slot 界定歷史檢查，同 slot 簽名活動仍暫緩。
+範圍按每筆轉帳指令判斷，raw amount 為六位小數 USDC；持久化 event 以 `:USDC` 區分 SOL。
 設定、即時監控範圍及一萬地址連線測試見 [Alchemy hotlist 訂閱](docs/alchemy-hotlist-stream.md)。
 公共 RPC 僅適合短暫探測，不能承諾訂閱上限／延遲／零漏單。環境變數優先於 `.env`。
 Telegram 填本專案 `.env` 的 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`，不自動讀上層憑證。
