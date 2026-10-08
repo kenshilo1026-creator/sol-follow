@@ -19,14 +19,14 @@ function account(row,owner,size,name) {
     ||(name&&!row.data.subarray(0,8).equals(disc('account',name))))throw Error('stonk-pool-rejected');
   return row.data;
 }
-function poolState(row,pool,mint,quote) {
+function poolState(row,pool,mint,quote,statuses=[0]) {
   const d=account(row,PROGRAM,429,'PoolState');
-  if(d[17]!==0 || !key(d,173).equals(PLATFORM)||!key(d,205).equals(mint)||!key(d,237).equals(quote)
+  if(!statuses.includes(d[17]) || !key(d,173).equals(PLATFORM)||!key(d,205).equals(mint)||!key(d,237).equals(quote)
     ||!pool.equals(pda(Buffer.from('pool'),mint.toBuffer(),quote.toBuffer())))throw Error('stonk-pool-rejected');
   const vaultA=pda(Buffer.from('pool_vault'),pool.toBuffer(),mint.toBuffer());
   const vaultB=pda(Buffer.from('pool_vault'),pool.toBuffer(),quote.toBuffer());
   if(!vaultA.equals(key(d,269))||!vaultB.equals(key(d,301)))throw Error('stonk-pool-rejected');
-  return {config:key(d,141),creator:key(d,333),vaultA,vaultB,
+  return {status:d[17],migrateType:d[20],config:key(d,141),creator:key(d,333),vaultA,vaultB,
     totalSell:u64(d,29),virtualA:u64(d,37),virtualB:u64(d,45),realA:u64(d,53),realB:u64(d,61)};
 }
 function feeSchedule(configRow,platformRow,quote) {
@@ -133,4 +133,4 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
     mint:mint.toBase58(),targetAta:targetAta.toBase58(),amount:amount.toString(),quotedOut:expected.toString(),
     minOut:minOut.toString(),quoteIn:hop.minimum.toString(),quoteOut:hop.expected.toString(),swapRecipe:hop.swapRecipe,risk:metrics};
 }
-module.exports={buildStonk,poolState,feeSchedule,quoteNet,quoteDetails,buyInstruction,PROGRAM,PLATFORM};
+module.exports={buildStonk,poolState,feeSchedule,quoteNet,quoteDetails,buyInstruction,PROGRAM,PLATFORM,FEE_WALLET};

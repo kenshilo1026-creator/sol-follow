@@ -16,6 +16,8 @@ const exactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_quote
 const nativeBuyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy');
 const nativeExactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_sol_in');
 const REASONS = new Set(['sweep-quote-expired','sell-balance-unavailable','sell-fill-rejected','invalid-integer','invalid-u64','invalid-percent','dust-route',
+  'unsupported-graduation','graduated-pool-unavailable','cpmm-pool-rejected','cpmm-quote-rejected','cpmm-pool-not-open',
+  'pumpswap-pool-rejected','pumpswap-quote-rejected','pumpswap-sell-disabled',
   'unsupported-mint-extension','uninitialized-mint','unexpected-signer','transaction-too-large',
   'non-native-only','invalid-slot','invalid-tables','account-owner','token-program',
   'curve-graduated-or-quote-mismatch','dlmm-quote-mismatch','dlmm-token-program',

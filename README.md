@@ -2,7 +2,7 @@
 
 獨立 Solana 服務：CEX／Privacy Cash 原生 SOL 入金 → 資格檢查 → SQLite hotlist，
 並解碼監聽交易中的 Pump／Stonk Create。
-群體跟買已接入 Pump 及 Stonk 原子買入路由；賣出與分批止盈／止損仍待實作。
+群體跟買已接入 Pump 及 Stonk 原子買入路由；支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
 **沒有修改、import 或共用 RH/BSC 的 runtime、錢包和資料庫。**
 
 發射台範圍固定為 **pump.fun 和 stonk 旗下代幣**。以下地址只作來源驗證樣本，不是 mint 白名單：
@@ -42,9 +42,9 @@ Jupiter 使用免 key 存取（0.5 RPS），不需認證 header；不使用 Jupi
 支援已核驗 Stonk platform 的未畢業 constant curve，目標幣可有 Token-2022 轉帳稅；
 報價讀當前 epoch 費率，滑點下限及持倉均按扣稅後實收。報價幣有轉帳稅、未知平台、畢業池、
 CPI 內的 LaunchLab 買入、缺少有效尋路或交易超過 1232 bytes 時拒絕。
-PumpSwap、其他 quote 換幣場所、其他 CPI 聚合路由及所有賣出仍待實作。
+PumpSwap 買入、其他 quote 換幣場所、其他 CPI 聚合買入及一般止盈／止損賣出仍待實作。
 新買單保存簽名後才送出，依 finalized 交易核對實收數量；未知送單結果保留預留，不另簽新買單。
-舊訂單／持倉資料保留，通知人工管理；目前沒有自動賣出或止盈止損。
+舊訂單／持倉資料保留；自動賣出目前僅處理有完整跟買紀錄的 dev 超標退出，詳見下節。
 
 ## 啟動 DRY_RUN
 
@@ -107,7 +107,7 @@ DRY_RUN 的 `trading_enabled=false`。Stonk 本地路徑亦檢查第一段池的
 
 Stonk SOL 回歸樣本：`39FLtNUXE65aTrBBxtTPQ8t2bPkHBoft9gqBDwnPndnVhGXGMNs3Tvy5bge5A7ddUEAn4G5gGDLM7nEUHN9NHmDM`。
 樣本花費 4.34 SOL，扣除目標幣 1% 轉帳稅後實收 102384232.409726 枚；租金、小費不計入買入金額。
-目前池已畢業，歷史池狀態重建僅供離線測試；現時路由會拒絕該池，不切換至畢業後場所。
+目前池已畢業，歷史池狀態重建僅供離線測試；買入路由會拒絕該池。賣出另支援下述 Stonk CPMM 遷移。
 Stonk 非 SOL 回歸樣本：`2R6jsVXbZN2CRN59VwHysxgadAgropybVwk7ou2DQYjDLJ74CFqgf7cmMhCkYNZ5cDJk9Ki3Un17mxjBwKXffaDT`。
 歷史交易的 JSON／protobuf 解碼和扣稅報價有離線測試。樣本池目前已畢業；
 離線組單測試使用明確重建的歷史池狀態及 mocked Jupiter／模擬回應，不代表主網完整買入成功。
@@ -345,7 +345,7 @@ SOL_WALLET_ADDRESS=填入買入錢包的Base58私鑰
 
 再次執行 `check` 後 `sudo systemctl start sol-follow`。這一步才允許系統簽名及實際買入；
 成功訊息分為 `buy submitted`（已送出）與 `buy finalized`（最終成交核對完成）。
-目前沒有自動賣出，持倉退出需人工處理。
+目前只支援 dev 超標自動退出；一般止盈／止損及不支援的退出路由仍需人工處理。
 
 ### 維護、更新及排錯
 
@@ -447,7 +447,10 @@ processed 不保證同 slot 成交；`minContextSlot` 是 RPC 最低讀取 slot�
 Pump／Stonk 畢業前曲線支援直接賣回原報價幣，共用 `SOL_SLIPPAGE_PERCENT` 計算 minOut。
 非 SOL 緊急賣出先收原報價幣；Stonk 已有 WSOL 帳戶會保留 WSOL，避免關閉原有帳戶。
 賣出 finalized 後將本次實收報價幣／WSOL 排入下述背景換 SOL 佇列。
-不能保證即時成交：若已畢業、流動性不足、滑點或 RPC／模擬失敗，會通知並延後重試；暫無畢業後池的賣出路由。
+Stonk 已遷移到 Raydium CPMM 時，賣出會自動切換到核驗後的 CPMM 池，SOL／非 SOL 報價幣皆支援。
+Pump 曲線完成後，賣出會自動尋找官方 canonical PumpSwap 池，SOL／非 SOL 報價幣皆支援。
+不能保證即時成交：遷移尚未完成、池子不可用、流動性不足、滑點或 RPC／模擬失敗時會通知並延後重試。
+Stonk 遷移到非 CPMM 場所、非 canonical PumpSwap 池及一般止盈／止損仍未支援。
 簽名交易在送出前持久化，送單逾時／重啟只核對及重送同一簽名，未知結果不另簽賣單，避免重複賣出。
 只有已確認 finalized 失敗才重新建單。買賣確認順序不同時亦會正確更新持倉。
 `DRY_RUN=true` 不送出買賣交易，超標退出只記錄通知。
@@ -463,6 +466,55 @@ Pump／Stonk 畢業前曲線支援直接賣回原報價幣，共用 `SOL_SLIPPAG
 省略參數預設 6,000 萬；留空僅停用新檢查，`0` 表示不容許任何正數持倉。
 提高上限或停用檢查不會解除已存的排除結果；降低上限以首次快照重新比較，不另發 RPC。
 首次超標或無法判定會記錄日誌，Telegram 已配置時亦會排入通知。
+
+## Stonk 畢業後 CPMM 緊急賣出
+
+參考交易：`4nCR6soQt3ngbFLYsstthF6pUk6ZWwsdHrvXhGLUi2Cs4kwjt7Eu18KEtGe93dsWmCdETUKeT2RdixukRTLdJ8SX`。
+鏈上 slot 454149770，第一段經 Jupiter CPI 呼叫 Raydium CPMM `swap_base_input`：
+`7y4NAbrNJbc1xQjtsZoNrhoKwJjBTxG8euKPTiX5nC1w` → `Xs3oZwbHvqis4NYcf4YKWmEia2eC84wSiVrcYcTqpH8`，
+賣出 19,222,990.8786 枚，扣 1% 輸入轉帳稅後取得 0.30244461 枚報價幣。
+樣本後續經 Raydium CLMM／Orca／其他場地兌回 SOL；本專案直接組 CPMM 賣回原報價幣，
+不複製樣本的 Jupiter 多池拆單、佣金、優先費或帳戶，原報價幣再交由閒置背景換幣流程處理。
+
+每次建賣單驗證原 LaunchLab pool PDA、Stonk platform、base／quote 及 status=2、migrateType=1；
+從已驗證的平台 cpConfig 推導排序後的 canonical CPMM pool，核對 pool/config/vault/oracle 的
+owner、discriminator、mint、token program、authority、swap 狀態及鏈上 Clock 的開池時間。
+若平台設定變更而無法定位這個 canonical 池，暫緩並通知，不盲目搜尋或接受任意池。
+建單重算池 reserve，扣除 protocol／fund／creator 待領費用，按官方整數公式處理
+creator 在輸入或輸出收費及 Token-2022 輸入稅；套用現有 pool／total／tax 上限及共用滑點。
+報價幣轉帳稅仍不支援。模擬確認精確賣出本次跟買數量、保留舊持倉，非 SOL／保留 WSOL 時核對實收 minOut。
+沒有新增參數或 Jupiter 報價請求；`check` 的 `emergency_sell_routes` 會列出 `stonk_cpmm_to_quote`。
+
+測試包含真實交易事件／指令帳戶比對、後續帳戶快照、合成 SOL 池、費率及偽造帳戶拒絕、
+遷移途中暫緩及重試；均為離線測試，並非真實資金買賣或主網模擬成功紀錄。
+公式來源：[Raydium CPMM swap](https://github.com/raydium-io/raydium-cp-swap/blob/master/programs/cp-swap/src/instructions/swap_base_input.rs)、
+[費用與曲線計算](https://github.com/raydium-io/raydium-cp-swap/blob/master/programs/cp-swap/src/curve/calculator.rs)。
+
+## Pump 畢業後 PumpSwap 緊急賣出
+
+參考交易：`tVDdek1fVJM28zTAUDyY2yM8XuBkrCiRL516jhwMmCfQo8ubuZtdyRuawEr4JVS6rurqW9unJo7hdvtZiVgZ61j`。
+slot 454200320，`F77SVJjnJ9da6CYPvrhxg2LAxjRMCKozV8q7PSVzpump` 在官方 PumpSwap 池
+`884eMYZpeKYqYT7zeuHTxnjHt1ioJ9nhNUTLRSQDzgSf` 賣出 14,213,352.207018 枚，實收 0.619363185 SOL。
+樣本使用 `sell(base_amount_in, min_quote_amount_out)`，其 min-out 為 0；本程式不沿用該數值，
+每次按最新淨報價及 `SOL_SLIPPAGE_PERCENT` 設正數 min-out。
+
+先驗證原 Pump 曲線 PDA、owner、complete 及原報價幣，再推導 index=0、creator 為
+`pumpPoolAuthorityPda(mint)` 的 canonical PumpSwap pool；不掃描任意同名池或複製舊交易。
+驗證 pool/global/fee-config owner 與 discriminator、LP mint、base/quote vault 的 ATA、mint、owner
+及 token program；全局停賣、池尚未遷移、餘額或費率不符時暫緩並通知。
+以固定版本官方 `@pump-fun/pump-swap-sdk@1.20.0` 離線組單，包含當前 pool-v2、creator、buyback
+及適用的 cashback 帳戶；舊版池需要 extend_account 時在同一交易內處理，由模擬驗證。
+
+報價使用實際 vault reserve 加上 `virtualQuoteReserves`，並確認真實報價幣 reserve 足夠支付。
+LP、protocol、creator 費計入單池費及總費上限；buyback 是 protocol 費內部分拆，不再重複相加。
+Pump 的 base／quote 轉帳稅與活躍 hook 仍拒絕。只賣本次跟買實收，不動原有代幣；
+SOL 對沒有既有 WSOL 時原子解包，有既有 WSOL 則保留帳戶及舊餘額，只將本次新增 WSOL 排入背景解包。
+非 SOL 對先賣回原報價幣，沿用已知路徑的閒置背景換 SOL 及其費率限制。
+賣出不需要 Jupiter 報價或新參數，`check` 會列出 `pump_swap_to_quote`。
+
+測試重現上述真實 SellEvent、虛擬 reserve、協議費分拆及指令帳戶；非 SOL、舊版池及 cashback
+使用明確合成的池狀態測試。沒有進行真實資金交易或主網模擬，VPS 需更新程式後重啟。
+協議來源：[PumpSwap 官方文件](https://github.com/pump-fun/pump-public-docs/blob/main/docs/PUMP_SWAP_README.md)。
 
 ## 背景換回 SOL
 

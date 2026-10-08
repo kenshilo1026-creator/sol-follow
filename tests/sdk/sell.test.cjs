@@ -95,7 +95,7 @@ for(const kind of ['pump_native_curve','sol_to_pump_curve','stonk_native_curve',
     simulationError={InstructionError:[0,'failed']};await assert.rejects(build(input,connection),/simulation-rejected/);simulationError=null;
     await assert.rejects(build({...input,amount:'2000000001'},connection),/sell-balance-unavailable/);
     curve[stonk?17:48]=stonk?2:1;
-    await assert.rejects(build(input,connection),/stonk-pool-rejected|curve-graduated/);
+    await assert.rejects(build(input,connection),/graduated-pool-unavailable|unsupported-graduation|stonk-pool-rejected|curve-graduated/);
   });
 }
 test('Stonk exact-in sell rounds fees upward and deducts base transfer tax',()=>{
