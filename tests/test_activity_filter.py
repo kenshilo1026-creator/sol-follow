@@ -5,8 +5,8 @@ from features.funding.decoder import Funding
 from tests.helpers import address
 
 
-@pytest.fixture
-def deposit():return Funding('fund-event','fund',address(),address(),'cex:test',10**9,1000,int(time.time()))
+@pytest.fixture(params=['cex:test','privacy-cash'])
+def deposit(request):return Funding('fund-event','fund',address(),address(),request.param,10**9,1000,int(time.time()))
 
 
 def row(sig,slot,stamp):return {'signature':sig,'slot':slot,'blockTime':stamp,'err':None}
@@ -126,15 +126,21 @@ async def test_history_cannot_skip_unindexed_deposit(store,deposit):
 
 
 @pytest.mark.asyncio
-async def test_non_cex_keeps_existing_admission(config,store,deposit):
-    from dataclasses import replace
+@pytest.mark.parametrize('history',['new','incoming','dormant'])
+async def test_service_admits_only_after_history_passes(config,store,deposit,history):
     from features.runtime.service import Service
     from chain_common.primitives import SYSTEM
-    class AccountOnly:
+    class Public(RPC):
         async def call(self,method,params):
-            assert method=='getAccountInfo'
-            return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
-    assert await Service(config,store).qualify(replace(deposit,provider='privacy-cash'),AccountOnly())
+            if method=='getAccountInfo':return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
+            return await super().call(method,params)
+    entries=[row('fund',1000,deposit.time)]
+    if history!='new':entries.append(row('old',900,deposit.time-(31*86400 if history=='dormant' else 10)))
+    rpc=Public(deposit,{None:entries},['old'] if history=='dormant' else [])
+    assert await Service(config,store).qualify(deposit,rpc)
+    assert deposit.wallet in store.hotlist(time.time())
+    assert any(method=='getSignaturesForAddress' for method,_ in rpc.calls)
+    assert store.rows('funding','SELECT * FROM funding_activity_checks')
 
 
 @pytest.mark.asyncio

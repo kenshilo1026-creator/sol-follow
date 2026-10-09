@@ -1,4 +1,4 @@
-"""Resumable signer-history qualification at the CEX funding transaction."""
+"""Resumable signer-history qualification at the funding transaction."""
 import json
 import time
 
@@ -81,7 +81,7 @@ async def qualify_activity(item,rpc,store):
             if slot!=item.slot:raise HistoryPending('funding-slot-mismatch')
             state['anchored']=True
         elif slot>item.slot:
-            pass  # Activity after this CEX deposit is outside the admission test.
+            pass  # Activity after this deposit is outside the admission test.
         else:
             if not state['anchored'] and slot<item.slot:
                 restart()

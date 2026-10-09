@@ -76,12 +76,12 @@ class Service:
         if row['owner']!=SYSTEM or row.get('executable') or row['data']!=['','base64']:
             decision('blocked','wallet-not-system-account')
             return False
-        if item.provider.startswith('cex:'):
+        if item.provider.startswith('cex:') or item.provider=='privacy-cash':
             allowed,reason=await qualify_activity(item,rpc,self.store)
             if not allowed:
                 decision('blocked',reason)
-                logging.getLogger(__name__).info('CEX admission rejected wallet=%s signature=%s reason=%s',
-                                                 item.wallet,item.signature,reason)
+                logging.getLogger(__name__).info('Funding admission rejected provider=%s wallet=%s signature=%s reason=%s',
+                                                 item.provider,item.wallet,item.signature,reason)
                 return False
         added=self.store.admit(item,self.config.hotlist_ttl,time.time())
         if added:

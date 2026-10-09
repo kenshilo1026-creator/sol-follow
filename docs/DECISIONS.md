@@ -328,3 +328,14 @@ pass the amount gate, subject to all other signal, market-cap and execution gate
 Ignore/minimum USD thresholds use the existing cache-only quote operation. Unknown
 ignore valuations skip without removing. Configuration requires IGNORE <= MIN <= MAX.
 `dev_audit` distinguishes ignored buys, below-minimum removals and above-maximum removals.
+
+
+## 2026-10-09: Privacy Cash admission requires inactive signer history
+
+Privacy Cash SOL withdrawals now use the same resumable 30-day signer-history
+check as CEX deposits, after the existing recipient-account checks and before
+hotlist admission. The funding transaction itself is excluded. Incoming-only
+activity is allowed; signed transactions, including failed ones, inside the
+30-day window reject admission. Missing or ambiguous history remains pending
+and uses the existing retry path. The existing RPC, audit and notification
+paths are reused. No environment setting or existing hotlist migration is added.
