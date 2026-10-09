@@ -1,5 +1,8 @@
 # sol-follow
 
+畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
+使用獨立研究資料庫，不依賴真實成交；啟動及報告定義見 [畢業研究監控](docs/graduation-research.md)。
+
 獨立 Solana 服務：CEX SOL／USDC、Privacy Cash 原生 SOL 入金 → 資格檢查 → SQLite hotlist，
 並解碼監聽交易中的 Pump／Stonk Create。
 群體跟買已接入 Pump 及 Stonk 原子買入路由；支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
