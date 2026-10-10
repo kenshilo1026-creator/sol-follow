@@ -120,7 +120,8 @@ async def test_service_checks_wallet_owner_history_and_deduplicates(config, stor
             if sig == 'usdc-withdrawal': return raw
             assert sig == 'activity'
             return transaction([wallet],[wallet] if history in ('signed','same-slot') else [],[],
-                               slot=slot if history=='same-slot' else slot-1,when=stamp-1,sig=sig)
+                               slot=slot+(1 if history=='later' else 0 if history=='same-slot' else -1),
+                               when=stamp+(1 if history=='later' else -1),sig=sig)
     service = Service(cfg, store); service.notices = Notices(); rpc = RPC()
     store.enqueue(['usdc-withdrawal'])
     if history in ('same-slot','owner-key-missing-deposit'):

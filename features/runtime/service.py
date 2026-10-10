@@ -63,7 +63,7 @@ class Service:
         def decision(outcome,reason):
             record(self.store,'qualification',outcome,reason,wallet=item.wallet,
                    signature=item.signature,event=item.event,detail={'funding_slot':item.slot,'funding_time':item.time,
-                   'hotlist_ttl_s':self.config.hotlist_ttl})
+                   'hotlist_ttl_s':self.config.hotlist_ttl,'max_prelaunch_tx':self.config.max_prelaunch_tx})
         if not Pubkey.from_string(item.wallet).is_on_curve():
             decision('blocked','wallet-off-curve')
             return False
@@ -77,7 +77,7 @@ class Service:
             decision('blocked','wallet-not-system-account')
             return False
         if item.provider.startswith('cex:') or item.provider=='privacy-cash':
-            allowed,reason=await qualify_activity(item,rpc,self.store)
+            allowed,reason=await qualify_activity(item,rpc,self.store,self.config.max_prelaunch_tx)
             if not allowed:
                 decision('blocked',reason)
                 logging.getLogger(__name__).info('Funding admission rejected provider=%s wallet=%s signature=%s reason=%s',

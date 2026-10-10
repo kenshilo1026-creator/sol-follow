@@ -339,3 +339,46 @@ activity is allowed; signed transactions, including failed ones, inside the
 30-day window reject admission. Missing or ambiguous history remains pending
 and uses the existing retry path. The existing RPC, audit and notification
 paths are reused. No environment setting or existing hotlist migration is added.
+
+
+## 2026-10-10: bounded prelaunch activity count for Solana admission
+
+`SOL_MAX_PRELAUNCH_TX=10` applies to CEX SOL/USDC and Privacy Cash admissions.
+One confirmed `getSignaturesForAddress` request with `limit=cap+1` rejects
+wallets over the cap before downloading transaction details. Signatures count
+regardless of success or signer status, include the current deposit and activity
+after it, and are not multiplied by transfers/instructions in the transaction.
+A confirmed USDC deposit absent from the owner's accountKeys is added once.
+This is address-reference history, not a full token-account activity index:
+older transfers mentioning only an ATA are outside this query's coverage.
+
+At/below the cap, reuse the returned rows for the existing 30-day signer check
+(which still excludes this deposit and later transactions). Count all returned
+rows before the 30-day cutoff can finish the signer check. Cache the count and
+signer progress together per funding event; a policy/version or limit change
+invalidates old cached qualifications. Unknown/malformed history stays pending.
+Existing RPC routing, trading strategy, and existing hotlist rows are unchanged;
+there is no new historical-API integration or automatic requalification.
+
+
+## 2026-10-10: reject previous Pump/Stonk launches within bounded history
+
+After the total-history cap passes, inspect every returned transaction using
+our Pump create/create_v2 and Stonk initialize decoders, including CPI and
+SOL/non-SOL pairs. Successful creation by the wallet (instruction user, or a
+creator who also signed) rejects admission with `previous-token-launch`, even
+when older than 30 days. An unsigned creator field alone is not attribution.
+Failed creates do not count as launches; recent failed signed transactions
+still fail the existing 30-day activity gate. Current funding and later rows
+are inspected for launches but remain excluded from the 30-day signer gate.
+
+CEX SOL/USDC and Privacy Cash share this policy. More than 10 transactions
+(default `SOL_MAX_PRELAUNCH_TX`) still rejects after one signature-list call,
+without detail downloads. Otherwise each scanned row needs at most one detail
+fetch per completed check; progress is persisted and retries resume unresolved
+rows. Missing/unsupported details or rejected create decoding remain pending.
+The old approval-cache policy is invalidated. dev_audit explains launch rejects;
+the funding activity record retains signature, mint and launchpad evidence.
+This does not re-audit existing hotlist entries or change Telegram behaviour.
+Coverage remains wallet-address history and the supported Pump/Stonk decoders,
+not every Solana token launch or historical token-account-only activity.

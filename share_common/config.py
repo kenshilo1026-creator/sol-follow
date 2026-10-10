@@ -150,6 +150,7 @@ class Config:
     grpc_endpoint: str = 'https://solana-mainnet.streaming.alchemy.com'
     public_timeout: float = 2.0
     history_rps: int = 2
+    max_prelaunch_tx: int = 10
     max_pool_fee_bps: int = 200
     max_total_fee_bps: int = 300
     max_token_tax_bps: int = 200
@@ -271,6 +272,7 @@ def load(root=ROOT, env=None):
         grpc_endpoint=endpoint,
         public_timeout=integer('SOL_PUBLIC_RPC_TIMEOUT_MS', 2000, 100, 8000)/1000,
         history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
+        max_prelaunch_tx=integer('SOL_MAX_PRELAUNCH_TX',10,1,999),
         max_pool_fee_bps=risk_bps(get('SOL_MAX_POOL_FEE_PERCENT', '2')),
         max_total_fee_bps=risk_bps(get('SOL_MAX_TOTAL_FEE_PERCENT', '3')),
         max_token_tax_bps=risk_bps(get('SOL_MAX_TOKEN_TAX_PERCENT', '2')),

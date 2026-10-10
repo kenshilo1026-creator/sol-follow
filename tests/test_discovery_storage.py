@@ -9,7 +9,7 @@ from features.funding.decoder import Funding
 from features.runtime.service import Service
 from chain_common.primitives import SYSTEM
 from chain_common.rpc import Priority
-from tests.helpers import address
+from tests.helpers import address,transaction
 from tests.helpers import Notices
 
 
@@ -76,6 +76,8 @@ async def test_wallet_qualification_checks_owner(config,store):
             if method=='getSignaturesForAddress':
                 return [{'signature':f.signature,'slot':f.slot,'blockTime':f.time}]
             return {'value':{'owner':SYSTEM,'executable':False,'data':['','base64']}}
+        async def transaction(self,sig):
+            return transaction([w],[],[],slot=f.slot,when=f.time,sig=sig)
     service=Service(config,store)
     assert await service.qualify(f,RPC())
     class WrongOwner:
