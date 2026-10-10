@@ -7,6 +7,7 @@ from solders.pubkey import Pubkey
 import aiohttp
 from chain_common.rpc import Priority, Rpc
 from chain_common.background_rpc import BackgroundRpc
+from features.funding.rpc import FundingRpc
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM, WSOL
 from features.notifications.buy_failures import context as buy_context, unrecognized_non_sol
@@ -346,6 +347,8 @@ class Service:
                     'last_slot':feed.last_slot,'reconnects':feed.reconnects}
             if hasattr(self,'background_rpc'):
                 detail['background_public_rpc']=self.background_rpc.snapshot()
+            if hasattr(self,'funding_rpc'):
+                detail['funding_check_rpc']=self.funding_rpc.snapshot()
             if hasattr(self,'funding_history_rpc'):
                 detail['funding_history_rpc']={'provider':self.config.funding_history_provider,
                                               **self.funding_history_rpc.snapshot()}
@@ -370,6 +373,9 @@ class Service:
             self.funding_history_rpc=(BackgroundRpc(Rpc(background_session,self.config.funding_history_url,self.priority,
                 timeout=self.config.public_timeout,source="alchemy-history"),self.priority,self.config.history_rps)
                 if self.config.alchemy_key else self.background_rpc)
+            self.funding_rpc=FundingRpc(self.background_rpc,
+                self.funding_history_rpc if self.config.alchemy_key
+                and self.config.funding_history_url != self.config.rpc else None)
             genesis=await rpc.call('getGenesisHash',[])
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
@@ -404,7 +410,7 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.worker(self.background_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
+                                      self.worker(self.funding_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
                     if grpc_mode:
                         coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
                             self.proofs.run(self.background_rpc,self.signals,self.notices,self.config.backfill_age)])

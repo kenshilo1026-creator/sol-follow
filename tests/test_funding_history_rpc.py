@@ -27,7 +27,7 @@ def test_history_provider_uses_local_key_without_changing_execution(tmp_path,env
     assert cfg.rpc=='https://public.example'
     assert cfg.funding_history_provider==('alchemy' if key else 'configured-public')
     assert cfg.funding_history_url==('https://solana-mainnet.g.alchemy.com/v2/'+key if key else cfg.rpc)
-    assert cfg.http_policy==('alchemy-source-history-public-other' if key else 'configured-public-only')
+    assert cfg.http_policy==('alchemy-source-history-public-funding-alchemy-fallback' if key else 'configured-public-only')
     payload=payload_for(cfg,{},address())
     assert payload['rpc']==cfg.rpc
     assert 'alchemy.com' not in json.dumps(payload)

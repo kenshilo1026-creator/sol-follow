@@ -187,7 +187,7 @@ class Config:
 
     @property
     def http_policy(self):
-        return 'alchemy-source-history-public-other' if self.alchemy_key else 'configured-public-only'
+        return 'alchemy-source-history-public-funding-alchemy-fallback' if self.alchemy_key else 'configured-public-only'
 
 
 def load(root=ROOT, env=None):

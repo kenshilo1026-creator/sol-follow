@@ -3,9 +3,10 @@
 Alchemy is used for the hotlist transaction stream, small block metadata messages
 needed for chain timestamps, slot status updates for fork invalidation, and
 CEX/Privacy Cash source-address `getSignaturesForAddress` catch-up over HTTP.
-Source WebSocket logs, transaction detail retrieval, recipient qualification,
-SDK quotes, simulations, submission and reconciliation use the configured public RPC.
-Alchemy history is a direct route, not a fallback for public RPC failures.
+Source WebSocket logs, SDK quotes, simulations, submission and reconciliation
+use the configured public RPC. Funding transaction details and recipient checks
+use public RPC first, then at most one Alchemy attempt after errors or invalid/
+unindexed results. Source-history pagination remains a direct Alchemy route.
 Adding an API key never rewrites `SOL_RPC_HTTP_URL` or `SOL_RPC_WS_URL`.
 
 ## Configuration
@@ -59,7 +60,8 @@ without printing endpoints or credentials. It does not prove live Alchemy access
   with an explicit diagnostic; no paid HTTP call is made.
 - Source-address pagination uses its dedicated Alchemy background client when
   configured. Returned signatures still enter the existing durable jobs; their
-  `getTransaction` reads and qualification checks use public RPC.
+  `getTransaction` reads and qualification checks use public RPC first with
+  bounded Alchemy recovery. Complete streamed transactions are still reused.
 - Stream jobs have a separate worker from history/source jobs. Background reads
   are rate-budgeted and yield while a buy is active. Public reads still share the
   provider's IP limits; this cannot guarantee a buy is never rate limited.
@@ -140,3 +142,27 @@ Official references:
 - https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-transactions
 - https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-request
 - https://github.com/rpcpool/yellowstone-grpc/tree/79abd849f6a7ea2284d861388adf249bd4093d92/yellowstone-grpc-proto
+
+## Funding public-first recovery (2026-10-10)
+
+`features/funding/rpc.py` applies the token_alert funding routing principle to
+Solana: candidate `getTransaction`, recipient `getAccountInfo`, recipient
+`getSignaturesForAddress` and missing `getBlockTime` use public RPC first. A
+configured local Alchemy key enables one recovery attempt using the existing
+Alchemy background client. Each actual request retains rate pacing and waits
+for active trades to finish. No key is read from token_alert.
+
+Funding failures and malformed/unindexed results cool that provider for 30 to
+120 seconds. HTTP/JSON-RPC 429s also retain the endpoint's existing cooldown.
+An empty complete signature list and a null account value are valid responses;
+a null transaction, malformed history or stale account context are unavailable.
+If both providers fail, the persisted job follows its existing retry/expiry
+policy. This change neither resets stopped jobs nor grants admission from an
+unknown result. Signature, slot, account and launch validation remain required.
+
+Only the confirmed/non-streamed worker uses the funding reader. The processed
+live worker, transaction execution, order reconciliation and fork/finalization
+checks keep their existing RPC clients. Source-address pagination stays on
+Alchemy without a public fallback. Health `funding_check_rpc` reports safe
+attempt/recovery counts; the Alchemy background client's counts now include
+both source-history reads and funding recovery, not just pagination.

@@ -24,6 +24,9 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='service started':
+        mode='Dry run' if detail['mode']=='dry' else 'live'
+        return f'sol-follow 開始 ({mode})'
     if kind=='dev holding entry check':
         state='dev 持倉超標，代幣已排除' if detail['state']=='blocked' else 'dev 持倉無法判定，代幣已排除'
         return (f"⚠️ [SOL] {state}\n代幣: {detail['mint']}\ndev: {detail.get('creator','未知')}"

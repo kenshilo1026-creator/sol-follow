@@ -412,3 +412,14 @@ on the public endpoint. This supersedes the earlier stream-only Alchemy policy.
 Offline check/startup and health identify the funding-history provider without
 printing its URL or key. Alchemy 429s carry the `alchemy-history` source label
 and use a separate notification title from public RPC 429s.
+
+## 2026-10-10: bounded public-first funding qualification
+
+Funding transaction details, recipient account validation, recipient signature
+counts and launch-history transaction checks now use public RPC first and one
+Alchemy recovery attempt, following token_alert's per-candidate funding routing.
+The funding reader validates responses and cools unavailable providers for
+30..120 seconds; no missing response is converted to zero history or admission.
+Existing job persistence, retry/expiry, trade priority and execution routing are
+unchanged. Source-address pagination remains Alchemy-only with a configured key.
+This supersedes the public-only qualification portion of the decision above.
