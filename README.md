@@ -73,9 +73,14 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 ```
 
 目前本地 `.env` 是 `DRY_RUN=true`、N=3、窗口 120 秒、買額 0.01 SOL；這些是可調初值。
-正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；報價、模擬、買入送單及 HTTP 查詢使用此公共 RPC。
+正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；報價、模擬、買入送單及一般 HTTP 查詢使用此公共 RPC。
 在本專案 `.env` 加入 `ALCHEMY_API_KEY` 並設定 `SOL_FEED_MODE=alchemy_grpc`，
-只有 hotlist 交易改用 Alchemy 完整交易串流；不會切換 HTTP 到 Alchemy。
+hotlist 交易使用 Alchemy 完整交易串流。只要有此 key，CEX／Privacy Cash 來源地址的
+`getSignaturesForAddress` 補查亦使用 Alchemy HTTP（即使 feed 是 websocket）。
+沿用 `SOL_ALCHEMY_API_KEY` 別名；沒有 key 時來源補查使用原有公共 RPC。
+Alchemy 補查失敗只保留任務重試，不轉回公共 RPC。交易詳情、收款錢包資格檢查及交易執行仍使用公共 RPC。
+`SOL_BACKGROUND_RPC_RPS` 預設為 2，公共背景查詢與 Alchemy 補查各自限速、各自按 endpoint 冷卻。
+`features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
 入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。
 新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。
 買入必須有本次程序的即時接收紀錄，補查及重啟恢復的交易不投票、不觸發買入報價。

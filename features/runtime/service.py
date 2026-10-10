@@ -86,7 +86,7 @@ class Service:
         added=self.store.admit(item,self.config.hotlist_ttl,time.time())
         if added:
             decision('admitted','qualified')
-            self.notices.emit('hotlist-add',item.dict(),alert=True)
+            self.notices.emit('hotlist-add',item.dict())
         else:
             removal=self.store.rows('funding','SELECT slot FROM hotlist_removals WHERE wallet=?',(item.wallet,))
             reason=('funding-expired' if item.time+self.config.hotlist_ttl<=time.time() else
@@ -346,6 +346,9 @@ class Service:
                     'last_slot':feed.last_slot,'reconnects':feed.reconnects}
             if hasattr(self,'background_rpc'):
                 detail['background_public_rpc']=self.background_rpc.snapshot()
+            if hasattr(self,'funding_history_rpc'):
+                detail['funding_history_rpc']={'provider':self.config.funding_history_provider,
+                                              **self.funding_history_rpc.snapshot()}
             self.notices.emit('health',detail)
             self.completed=self.expired=discovery.received=discovery.added=0
             self.store.new_jobs=self.store.revisited_jobs=0
@@ -358,19 +361,22 @@ class Service:
     async def _run(self):
         timeout=aiohttp.ClientTimeout(total=8)
         # Separate connection pools keep background pagination from occupying
-        # execution sockets. Both clients still share the PUBLIC endpoint and
-        # cooldown; there is deliberately no Alchemy HTTP fallback.
+        # execution sockets. Source-address pagination uses Alchemy when a key
+        # is configured, with its own rate budget and endpoint-specific cooldown.
         async with aiohttp.ClientSession(timeout=timeout) as session, aiohttp.ClientSession() as background_session:
             rpc=Rpc(session,self.config.rpc,self.priority)
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
                 timeout=self.config.public_timeout,source="background"),self.priority,self.config.history_rps)
+            self.funding_history_rpc=(BackgroundRpc(Rpc(background_session,self.config.funding_history_url,self.priority,
+                timeout=self.config.public_timeout,source="alchemy-history"),self.priority,self.config.history_rps)
+                if self.config.alchemy_key else self.background_rpc)
             genesis=await rpc.call('getGenesisHash',[])
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
                 logging.error('[SOL] startup rejected: RPC genesis hash does not match Solana mainnet-beta')
                 raise ValueError('only-solana-mainnet-beta-is-supported')
             grpc_mode=self.config.feed_mode=='alchemy_grpc'
-            discovery=Discovery(self.config,self.store,self.background_rpc,self.notices,sources_only=grpc_mode)
+            discovery=Discovery(self.config,self.store,self.funding_history_rpc,self.notices,sources_only=grpc_mode)
             self.discovery=discovery
             if grpc_mode:
                 from features.funding.grpc_feed import HotlistFeed
@@ -391,7 +397,8 @@ class Service:
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
                 'create_decoders':CREATE_DECODERS,
                 'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
-                'max_target_buy_sol':self.config.max_observed_buy/1_000_000_000,'http_policy':'configured-public-only',
+                'max_target_buy_sol':self.config.max_observed_buy/1_000_000_000,'http_policy':self.config.http_policy,
+                'funding_history_provider':self.config.funding_history_provider,
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:

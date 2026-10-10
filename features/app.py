@@ -35,7 +35,8 @@ def main():
                           'min_target_buy_usd_micros':config.min_observed_buy_usd_micros,
                           'max_dev_holding_tokens':str(config.max_dev_holding_tokens) if config.max_dev_holding_tokens is not None else None,
                           'max_market_cap_usd_k':str(config.max_market_cap_usd_micros/10**9),'alchemy_key_configured':bool(config.alchemy_key),
-                          'http_policy':'configured-public-only','background_rpc_rps':config.history_rps,
+                          'http_policy':config.http_policy,'background_rpc_rps':config.history_rps,
+                          'funding_history_provider':config.funding_history_provider,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return
     if args.command=='stats':

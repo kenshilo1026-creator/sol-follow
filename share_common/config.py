@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from dotenv import dotenv_values
 from solders.keypair import Keypair
 from chain_common.primitives import pubkey, PRIVACY, pda
@@ -174,6 +174,20 @@ class Config:
     @property
     def mode(self):
         return 'dry' if self.dry_run else 'live'
+
+    @property
+    def funding_history_provider(self):
+        return 'alchemy' if self.alchemy_key else 'configured-public'
+
+    @property
+    def funding_history_url(self):
+        if self.alchemy_key:
+            return 'https://solana-mainnet.g.alchemy.com/v2/'+quote(self.alchemy_key,safe='')
+        return self.rpc
+
+    @property
+    def http_policy(self):
+        return 'alchemy-source-history-public-other' if self.alchemy_key else 'configured-public-only'
 
 
 def load(root=ROOT, env=None):

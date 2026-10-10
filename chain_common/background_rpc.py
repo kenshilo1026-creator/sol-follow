@@ -1,4 +1,4 @@
-"""Rate-budgeted public RPC reads. No paid HTTP fallback."""
+"""Rate-budgeted reads on one RPC endpoint, with no provider fallback."""
 import asyncio
 import time
 

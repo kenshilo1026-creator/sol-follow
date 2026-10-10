@@ -1,9 +1,11 @@
-# Alchemy hotlist stream / public execution
+# Alchemy hotlist stream and source-history pagination / public execution
 
-Alchemy is used only for the hotlist transaction stream, plus small block metadata
-messages needed for chain timestamps, and slot status updates for fork invalidation. CEX/Privacy Cash source logs, HTTP reads,
-historical catch-up, SDK quotes, simulations, transaction submission and order
-reconciliation use the configured public RPC. There is **no Alchemy HTTP fallback**.
+Alchemy is used for the hotlist transaction stream, small block metadata messages
+needed for chain timestamps, slot status updates for fork invalidation, and
+CEX/Privacy Cash source-address `getSignaturesForAddress` catch-up over HTTP.
+Source WebSocket logs, transaction detail retrieval, recipient qualification,
+SDK quotes, simulations, submission and reconciliation use the configured public RPC.
+Alchemy history is a direct route, not a fallback for public RPC failures.
 Adding an API key never rewrites `SOL_RPC_HTTP_URL` or `SOL_RPC_WS_URL`.
 
 ## Configuration
@@ -25,12 +27,18 @@ SOL_PUBLIC_RPC_TIMEOUT_MS=2000
 `SOL_FEED_MODE=auto` (default) selects gRPC if a key is present, otherwise legacy
 WebSocket. Explicit `alchemy_grpc` fails configuration validation if no key exists.
 `SOL_ALCHEMY_API_KEY` is accepted as an alias; `ALCHEMY_API_KEY` takes precedence.
+With either key configured, source pagination uses
+`https://solana-mainnet.g.alchemy.com/v2/<api-key>`, including in WebSocket feed mode.
+Without a key, legacy source pagination shares the public background client.
+When selected, Alchemy failures retain the durable request for retry and never
+fall back to the public endpoint. Both background clients use
+`SOL_BACKGROUND_RPC_RPS` independently (default 2); cooldown is per endpoint.
 Keys in other projects are never read. Existing dry/live and wallet settings are
 unchanged. gRPC availability and filter capacity depend on the Alchemy account.
 
 Install `requirements.txt` before starting. Offline `features.app check` reports
-the selected feed and whether a key is configured, without printing endpoints or
-credentials. It does not prove live gRPC access.
+the selected feed, `funding_history_provider`, and whether a key is configured,
+without printing endpoints or credentials. It does not prove live Alchemy access.
 
 ## Data flow
 
@@ -49,8 +57,11 @@ credentials. It does not prove live gRPC access.
   advancing the checkpoint. Completed payloads are removed. Replays deduplicate by
   signature. A metadata/schema rejection queues a public `getTransaction` fallback,
   with an explicit diagnostic; no paid HTTP call is made.
-- Stream jobs have a separate worker from history/source jobs. Background public
-  reads are rate-budgeted and yield while a buy is active. They still share the
+- Source-address pagination uses its dedicated Alchemy background client when
+  configured. Returned signatures still enter the existing durable jobs; their
+  `getTransaction` reads and qualification checks use public RPC.
+- Stream jobs have a separate worker from history/source jobs. Background reads
+  are rate-budgeted and yield while a buy is active. Public reads still share the
   provider's IP limits; this cannot guarantee a buy is never rate limited.
 - CEX funding admission still requires confirmed evidence. Target buy budgets
   above the configured SOL cap, undecodable budgets, and missing/stale non-SOL
@@ -87,7 +98,10 @@ Providers do not return a per-address subscription acknowledgement. Events aroun
 filter updates and during disconnection can be missed under this live-only policy.
 
 Health reports stream messages, received protobuf bytes, reconnects, slot and
-address count separately from public HTTP calls. Protobuf byte counts are a local
+address count separately from public HTTP calls. `funding_history_rpc` reports
+the selected provider, calls, errors and rate limits; Alchemy 429 notifications
+use `Alchemy RPC 429` with source `alchemy-history`, without credentials.
+Protobuf byte counts are a local
 usage indicator, **not an exact Alchemy invoice meter**.
 
 ## Bounded live probe
@@ -116,10 +130,12 @@ and license are in `chain_common/yellowstone/proto`. Python code was generated w
 
 Regression tests include 10,000-key serialization, four real Create fixtures and
 the supported buy-route fixture round-tripped through protobuf, restart durability,
-deduplication, no idle history calls, public-only routing, live-only reconnection, and an
+deduplication, no idle history calls, Alchemy source-history/public execution routing,
+isolated endpoint cooldowns, live-only reconnection, and an
 in-process gRPC server exercising receipt, filter updates and cancellation.
 
 Official references:
+- https://www.alchemy.com/docs/chains/solana/solana-api-endpoints/get-signatures-for-address
 - https://www.alchemy.com/docs/reference/yellowstone-grpc-quickstart
 - https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-transactions
 - https://www.alchemy.com/docs/reference/yellowstone-grpc-subscribe-request

@@ -395,3 +395,20 @@ History policy 4 invalidates prior cached verdicts and partial progress on the n
 qualification attempt. Successful checks report `history-qualified`. Completed
 funding jobs are not automatically reopened; existing hotlist entries are unchanged.
 This supersedes the signer inactivity requirement in the earlier decisions above.
+
+## 2026-10-10: use Alchemy HTTP for funding-source pagination
+
+When the local Alchemy key is configured, Discovery routes CEX/Privacy Cash
+source-address `getSignaturesForAddress` calls directly to Alchemy Solana mainnet
+HTTP. This also applies with a WebSocket feed. Without a key, legacy source
+pagination retains the configured public background client.
+
+Alchemy has an independent background rate budget and endpoint cooldown. Errors
+keep durable requests for retry without public fallback. The 120-second window,
+three-page limit, saved cursor and non-live treatment of recovered signatures
+are unchanged. Transaction details, recipient qualification and execution stay
+on the public endpoint. This supersedes the earlier stream-only Alchemy policy.
+
+Offline check/startup and health identify the funding-history provider without
+printing its URL or key. Alchemy 429s carry the `alchemy-history` source label
+and use a separate notification title from public RPC 429s.

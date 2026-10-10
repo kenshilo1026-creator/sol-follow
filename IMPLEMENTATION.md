@@ -220,7 +220,7 @@ decoder 同時核對 program、對應資金池、提款方向／收款人、成�
 | --- | --- |
 | `DRY_RUN` | 預設 true |
 | `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL` | 公共 HTTP／來源 WebSocket；包含自己買入的報價、模擬及送單，不自動切到 Alchemy |
-| `ALCHEMY_API_KEY`、`SOL_FEED_MODE` | `alchemy_grpc` 只用於 hotlist 完整交易串流；設定 key 不會改 HTTP URL |
+| `ALCHEMY_API_KEY`、`SOL_FEED_MODE` | `alchemy_grpc` 用於 hotlist 完整交易串流；有 key 時來源地址歷史分頁使用 Alchemy HTTP，其他查詢及執行沿用原有 RPC |
 | `SOL_BACKGROUND_RPC_RPS`、`SOL_PUBLIC_RPC_TIMEOUT_MS` | 背景公共查詢配額及 timeout；歷史查詢只由入列／恢復事件觸發 |
 | `SOL_HOTLIST_MIN_FUNDING_SOL`、`SOL_HOTLIST_MAX_FUNDING_SOL` | 直接 CEX SOL 入金篩選，使用十進位安全轉換 |
 | `SOL_HOTLIST_TTL_HOUR` | 地址有效期，小時；預設 24，可填小數 |
