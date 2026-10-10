@@ -124,12 +124,12 @@ async def test_service_checks_wallet_owner_history_and_deduplicates(config, stor
                                when=stamp+(1 if history=='later' else -1),sig=sig)
     service = Service(cfg, store); service.notices = Notices(); rpc = RPC()
     store.enqueue(['usdc-withdrawal'])
-    if history in ('same-slot','owner-key-missing-deposit'):
+    if history == 'owner-key-missing-deposit':
         with pytest.raises(HistoryPending): await service.process({'signature':'usdc-withdrawal'},rpc)
     else:
         await service.process({'signature':'usdc-withdrawal'},rpc)
         await service.process({'signature':'usdc-withdrawal'},rpc)
-    allowed = history in ('empty','unsigned','later','owner-key-deposit')
+    allowed = history != 'owner-key-missing-deposit'
     assert (wallet in store.hotlist(time.time())) is allowed
     assert len(store.rows('funding','SELECT * FROM funding')) == int(allowed)
     assert len(service.notices.items) == int(allowed)

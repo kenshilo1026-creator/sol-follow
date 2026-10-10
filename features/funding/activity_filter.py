@@ -1,11 +1,10 @@
-"""Bounded, resumable launch and signer-history admission checks."""
+"""Bounded, resumable transaction-count and launch-history admission checks."""
 import json
 import time
 from chain_common.transaction import Tx, Unsupported
 from launchpads.create import inspect
 
-DAYS = 30
-HISTORY_POLICY = 3
+HISTORY_POLICY = 4
 BUDGET = 12
 
 
@@ -13,7 +12,7 @@ class HistoryPending(RuntimeError):
     pass
 
 
-def signed_by(raw, signature, slot, wallet):
+def validate_history_transaction(raw, signature, slot, wallet):
     if not isinstance(raw,dict) or raw.get('slot')!=slot:
         raise HistoryPending('history-transaction-unavailable')
     tx=raw.get('transaction',{})
@@ -24,8 +23,6 @@ def signed_by(raw, signature, slot, wallet):
         raise HistoryPending('history-signers-unavailable')
     if wallet not in {k.get('pubkey') for k in keys}:
         raise HistoryPending('history-wallet-mismatch')
-    # Failed transactions still involved the wallet's signature.
-    return any(k.get('pubkey')==wallet and k['signer'] for k in keys)
 
 
 def previous_launch(raw, wallet, stamp):
@@ -61,16 +58,15 @@ async def qualify_activity(item,rpc,store,max_transactions=10):
     """
     if not 1<=max_transactions<=999:
         raise ValueError('invalid-prelaunch-transaction-limit')
-    cutoff=item.time-DAYS*86400
     rows=store.rows('funding','SELECT detail FROM funding_activity_checks WHERE event=?',(item.event,))
     state=json.loads(rows[0]['detail']) if rows else None
     if (not state or state.get('policy')!=HISTORY_POLICY or state.get('max_transactions')!=max_transactions
-            or state.get('cutoff')!=cutoff or state.get('funding_slot')!=item.slot):
+            or state.get('funding_time')!=item.time or state.get('funding_slot')!=item.slot):
         external_anchor=item.asset=='USDC' and not item.wallet_in_keys
-        state=dict(policy=HISTORY_POLICY,max_transactions=max_transactions,cutoff=cutoff,
+        state=dict(policy=HISTORY_POLICY,max_transactions=max_transactions,funding_time=item.time,
                    funding_slot=item.slot,anchored=external_anchor,external_anchor=external_anchor,
                    pending=[],count_checked=False,total_transactions=None,complete=False,
-                   allowed=False,reason='',saw_prior=False)
+                   allowed=False,reason='')
     def save():
         with store.db('funding') as db:
             db.execute('INSERT OR REPLACE INTO funding_activity_checks VALUES (?,?,?,?)',
@@ -122,23 +118,17 @@ async def qualify_activity(item,rpc,store,max_transactions=10):
         if type(stamp) is not int or stamp<=0 or (prior and stamp>item.time):
             raise HistoryPending('history-time-unavailable')
         raw=await rpc.transaction(sig);work+=1
-        signed=signed_by(raw,sig,slot,item.wallet)
+        validate_history_transaction(raw,sig,slot,item.wallet)
         # Also inspect the deposit and later rows: a successful launch in any
         # returned transaction disqualifies admission, regardless of its age.
         launch=previous_launch(raw,item.wallet,stamp)
         if launch:
             state['previous_launch']=launch
             return finish(False,'previous-token-launch')
-        if prior:
-            state['saw_prior']=True
-            if stamp>=cutoff and signed:
-                if slot==item.slot:raise HistoryPending('same-slot-signed-activity-order-unknown')
-                state['signed_activity']={'signature':sig,'slot':slot,'time':stamp}
-                return finish(False,'signed-activity-within-30d')
         state['pending'].pop(0);save()
     if state['pending']:raise HistoryPending('wallet-history-check-incomplete')
     if not state['anchored']:restart()
-    return finish(True,'no-prior-signatures' if not state['saw_prior'] else 'no-signed-activity-30d')
+    return finish(True,'history-qualified')
 
 
 def store_activity_retention():

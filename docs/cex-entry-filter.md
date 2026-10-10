@@ -1,13 +1,26 @@
-# CEX hotlist entry filter
+# CEX / Privacy Cash hotlist entry filter
 
-CEX funding recipients must pass the existing wallet account checks and a signer-history check before admission. The reference time is the CEX deposit block time, not the current wall clock.
+CEX SOL/USDC and Privacy Cash SOL recipients must pass the wallet account checks,
+transaction-count cap and supported launch-history check before admission.
 
-- No prior transactions returned, or no wallet-signed transactions in the preceding 30 days: eligible.
-- Incoming transfers and other transactions that only mention the wallet do not count as activity.
-- Successful and failed transactions signed by the wallet both count. Activity exactly 30 days before the deposit is still inside the exclusion window.
-- The funding transaction itself and transactions in later slots are excluded. Another signed transaction in the same slot stays pending because address history alone cannot establish its execution order.
-- The funding signature must appear in address history before admission; an empty or unindexed response does not certify a new wallet. Missing transaction data, timestamps, or RPC failures remain pending in the existing retry queue, subject to its coverage expiry.
+- `SOL_MAX_PRELAUNCH_TX` defaults to 10. All wallet-address signatures count,
+  including incoming, failed, current funding and later transactions. An externally
+  proven USDC deposit absent from the owner's account keys is counted once.
+- Above the cap, reject before fetching transaction details. At or below it,
+  inspect every returned transaction for successful supported Pump/Stonk creates
+  attributable to the wallet, regardless of age. A previous launch rejects admission.
+- Recent wallet-signed transactions, including failed and same-slot transactions,
+  do not by themselves block admission. There is no 30-day inactivity requirement.
+- The funding signature must appear in address history unless independently proven
+  by the USDC owner balance evidence. Empty or unindexed responses do not certify
+  a new SOL recipient. Missing details, timestamps or RPC failures remain pending
+  in the existing retry queue, subject to its coverage expiry.
 
-History is queried through the existing background RPC. Pagination and checked rows are persisted in SQLite, so retries resume without rescanning completed receipts. Checks are scoped to each funding event. Expired checkpoints are removed by the existing maintenance loop.
+History uses the existing background RPC. Progress is persisted per funding event
+in SQLite; retries resume completed work. Policy version 4 invalidates earlier
+cached approvals, rejections and pending checks when qualification is invoked again.
+It does not automatically reopen completed funding jobs or re-audit existing hotlist entries.
 
-This uses the history returned by the RPC; it cannot prove completeness if the provider silently omits older records. Existing hotlist entries are not retrospectively removed. Privacy Cash admission and Telegram behavior are unchanged. No new environment variables are required.
+Coverage is limited to history returned for the wallet address and supported
+Pump/Stonk decoders; older token-account-only activity may not appear. Funding
+amounts, hotlist expiry and Telegram behavior are unchanged.

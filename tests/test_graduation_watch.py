@@ -119,15 +119,11 @@ class ResearchRPC:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('active',[False,True])
-async def test_theoretical_admission_reuses_30_day_signer_rule_without_live_bot(tmp_path,config,original,active):
+async def test_theoretical_admission_allows_recent_signed_activity_without_live_bot(tmp_path,config,original,active):
     created,_=original;cfg=replace(config,cex={address():'test'},min_funding=1,max_funding=2_000_000_000)
     rpc=ResearchRPC(created,cfg,active=active);archive=Archive(tmp_path)
     result=await admission(created,rpc,archive,cfg,3)
-    if active:
-        assert result['status']=='unknown'
-        assert result['declined_funding'][0]['reason']=='signed-activity-within-30d'
-    else:
-        assert result['status']=='pass' and result['funding']['signature']=='funding'
+    assert result['status']=='pass' and result['funding']['signature']=='funding'
     assert not list(tmp_path.glob('trading*'))
     assert {m for m,_ in rpc.calls} <= {'getAccountInfo','getTokenAccountsByOwner','getSignaturesForAddress'}
 

@@ -382,3 +382,16 @@ the funding activity record retains signature, mint and launchpad evidence.
 This does not re-audit existing hotlist entries or change Telegram behaviour.
 Coverage remains wallet-address history and the supported Pump/Stonk decoders,
 not every Solana token launch or historical token-account-only activity.
+
+## 2026-10-10: remove the 30-day signer inactivity requirement
+
+CEX SOL/USDC and Privacy Cash admission no longer rejects recent wallet-signed
+activity or defers same-slot signed activity solely because its order is unknown.
+The transaction-count cap, supported successful launch checks, funding evidence,
+wallet account checks and TTL remain in force. All returned transactions still
+need validation for launch attribution, including failed transactions.
+
+History policy 4 invalidates prior cached verdicts and partial progress on the next
+qualification attempt. Successful checks report `history-qualified`. Completed
+funding jobs are not automatically reopened; existing hotlist entries are unchanged.
+This supersedes the signer inactivity requirement in the earlier decisions above.

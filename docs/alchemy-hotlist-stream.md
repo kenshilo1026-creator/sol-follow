@@ -79,8 +79,8 @@ Buying requires fresh in-memory receipt evidence from this process's WebSocket o
 a gRPC transaction that passes the current-slot/time anchor barrier. History jobs
 and payloads restored after restart cannot vote or trigger buy quotes. Untouched
 recovery jobs older than 120 seconds expire before a transaction fetch. Funding
-qualification retries retain their existing deadline. The independent 30-day
-pre-deposit signed-activity check, processed fork checks and own-order reconciliation
+qualification retries retain their existing deadline. The independent transaction-count
+and launch-history checks, processed fork checks and own-order reconciliation
 remain enabled; this policy does not remove all historical RPC calls.
 
 Providers do not return a per-address subscription acknowledgement. Events around

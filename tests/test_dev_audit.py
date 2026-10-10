@@ -30,7 +30,7 @@ def test_candidate_rejection_is_wallet_indexed(config,store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode,reason',[('recent','signed-activity-within-30d'),
+@pytest.mark.parametrize('mode,reason',[('over-cap','prelaunch-activity-too-high'),
     ('missing','wallet-account-missing'),('pending','wallet-history-check-incomplete')])
 async def test_qualification_denials_and_pending_are_recorded(config,store,monkeypatch,mode,reason):
     now=int(time.time());wallet=address()

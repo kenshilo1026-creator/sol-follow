@@ -1,6 +1,6 @@
 import time
 import pytest
-from features.funding.activity_filter import qualify_activity, HistoryPending, DAYS
+from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.decoder import Funding
 from tests.helpers import address
 
@@ -30,16 +30,17 @@ class RPC:
 @pytest.mark.asyncio
 async def test_new_wallet_and_current_deposit_excluded(store,deposit):
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time)]})
-    assert await qualify_activity(deposit,rpc,store)==(True,'no-prior-signatures')
+    assert await qualify_activity(deposit,rpc,store)==(True,'history-qualified')
     assert len(rpc.calls)==2
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('days,signer,allowed',[(29,False,True),(29,True,False),(30,True,False),(31,True,True)])
-async def test_only_signed_activity_and_strict_30_day_cutoff(store,deposit,days,signer,allowed):
+@pytest.mark.parametrize('days',[0,1,29,30,31])
+@pytest.mark.parametrize('signer',[False,True])
+async def test_recent_signed_activity_is_allowed(store,deposit,days,signer):
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time),row('old',900,deposit.time-days*86400)]},['old'] if signer else [])
-    assert (await qualify_activity(deposit,rpc,store))[0] is allowed
-    # Failed signed transactions count too; receiving alone is not activity.
+    assert await qualify_activity(deposit,rpc,store)==(True,'history-qualified')
+    # Failed signed transactions count toward the cap but no longer exclude recent wallets.
 
 
 @pytest.mark.asyncio
@@ -63,7 +64,7 @@ async def test_missing_transaction_does_not_admit_and_resumes(store,deposit):
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time),row('old',900,deposit.time-1)]},['old']);rpc.missing=True
     with pytest.raises(HistoryPending):await qualify_activity(deposit,rpc,store)
     rpc.missing=False
-    assert (await qualify_activity(deposit,rpc,store))[0] is False
+    assert (await qualify_activity(deposit,rpc,store))[0] is True
     assert sum(c[0]=='getSignaturesForAddress' for c in rpc.calls)==1
 
 
@@ -74,18 +75,18 @@ async def test_detail_budget_resumes_without_repeating_checked_receipts(store,de
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time),row('receipt',950,deposit.time-10),
         row('signed',900,deposit.time-20)]},['signed'])
     with pytest.raises(HistoryPending,match='incomplete'):await qualify_activity(deposit,rpc,store)
-    assert (await qualify_activity(deposit,rpc,store))[0] is False
+    assert (await qualify_activity(deposit,rpc,store))[0] is True
     assert sum(c==('transaction','receipt') for c in rpc.calls)==1
 
 
 @pytest.mark.asyncio
-async def test_same_slot_signed_order_unknown_is_pending(store,deposit):
+async def test_same_slot_signed_activity_is_allowed(store,deposit):
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time),row('signed',1000,deposit.time)]},['signed'])
-    with pytest.raises(HistoryPending,match='same-slot'):await qualify_activity(deposit,rpc,store)
+    assert await qualify_activity(deposit,rpc,store)==(True,'history-qualified')
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('missing',[False,True])
-async def test_service_does_not_admit_active_or_unknown_wallet(config,store,deposit,missing):
+async def test_service_admits_active_wallet_only_with_complete_history(config,store,deposit,missing):
     from features.runtime.service import Service
     from chain_common.primitives import SYSTEM
     class Public(RPC):
@@ -97,9 +98,9 @@ async def test_service_does_not_admit_active_or_unknown_wallet(config,store,depo
     if missing:
         with pytest.raises(HistoryPending):await Service(config,store).qualify(deposit,rpc)
     else:
-        assert not await Service(config,store).qualify(deposit,rpc)
-    assert store.hotlist(time.time())=={}
-    assert store.rows('funding','SELECT * FROM funding')==[]
+        assert await Service(config,store).qualify(deposit,rpc)
+    assert (deposit.wallet in store.hotlist(time.time())) is (not missing)
+    assert bool(store.rows('funding','SELECT * FROM funding')) is (not missing)
 
 
 @pytest.mark.asyncio
@@ -115,7 +116,7 @@ async def test_missing_block_time_retries_then_resolves(store,deposit):
     with pytest.raises(HistoryPending,match='history-time-unavailable'):
         await qualify_activity(deposit,rpc,store)
     rpc.stamp=deposit.time-1
-    assert (await qualify_activity(deposit,rpc,store))[0] is False
+    assert (await qualify_activity(deposit,rpc,store))[0] is True
 
 
 @pytest.mark.asyncio
@@ -154,13 +155,13 @@ async def test_filter_rejection_does_not_emit_telegram(config,store,deposit):
     service=Service(config,store)
     def unexpected(*args,**kwargs):raise AssertionError('filter must not add notifications')
     service.notices.emit=unexpected
-    rpc=Public(deposit,{None:[row('fund',1000,deposit.time),row('signed',900,deposit.time-1)]},['signed'])
+    rpc=Public(deposit,{None:[row('fund',1000,deposit.time)]+[row('receipt'+str(i),999-i,deposit.time-1) for i in range(10)]})
     assert not await service.qualify(deposit,rpc)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('count,allowed',[(1,True),(10,True),(11,False)])
-async def test_total_history_cap_precedes_old_age_shortcut(config,store,deposit,count,allowed):
+async def test_total_history_cap_and_persisted_result(config,store,deposit,count,allowed):
     import json
     from features.runtime.service import Service
     from features.database.storage import Store
@@ -210,7 +211,7 @@ async def test_usdc_missing_owner_deposit_is_counted_once(store,deposit,prior,al
 @pytest.mark.asyncio
 async def test_old_cached_approval_does_not_bypass_new_cap(store,deposit):
     import json
-    state={'cutoff':deposit.time-DAYS*86400,'funding_slot':deposit.slot,'complete':True,'allowed':True,'reason':'no-signed-activity-30d'}
+    state={'cutoff':deposit.time-30*86400,'funding_slot':deposit.slot,'complete':True,'allowed':True,'reason':'no-signed-activity-30d'}
     with store.db('funding') as db:
         db.execute('INSERT INTO funding_activity_checks VALUES (?,?,?,?)',(deposit.event,time.time(),deposit.time+86400,json.dumps(state)))
     rpc=RPC(deposit,{None:[row('fund',1000,deposit.time)]+[row('old'+str(i),999-i,deposit.time-40*86400) for i in range(10)]})
@@ -243,3 +244,19 @@ def test_total_history_limit_configuration(tmp_path):
     assert load(tmp_path,env={'SOL_MAX_PRELAUNCH_TX':'5'}).max_prelaunch_tx==5
     for value in ['0','-1','1000','1.5','bad']:
         with pytest.raises(ValueError):load(tmp_path,env={'SOL_MAX_PRELAUNCH_TX':value})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('complete',[False,True])
+async def test_old_signed_activity_verdict_is_rechecked(store,deposit,complete):
+    import json
+    state={'policy':3,'max_transactions':10,'cutoff':deposit.time-30*86400,
+           'funding_slot':deposit.slot,'complete':complete,'allowed':False,
+           'reason':'signed-activity-within-30d','pending':[]}
+    with store.db('funding') as db:
+        db.execute('INSERT INTO funding_activity_checks VALUES (?,?,?,?)',
+                   (deposit.event,time.time(),deposit.time+86400,json.dumps(state)))
+    rpc=RPC(deposit,{None:[row('fund',1000,deposit.time),row('signed',900,deposit.time-1)]},['signed'])
+    assert await qualify_activity(deposit,rpc,store)==(True,'history-qualified')
+    assert sum(c[0]=='getSignaturesForAddress' for c in rpc.calls)==1
+    assert sum(c[0]=='transaction' for c in rpc.calls)==2

@@ -7,7 +7,7 @@ import time
 import pytest
 from chain_common.primitives import SYSTEM
 from chain_common.transaction import Tx
-from features.funding.activity_filter import qualify_activity, HistoryPending, DAYS
+from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.runtime.service import Service
 from launchpads.create import inspect
 from tests.helpers import address
@@ -62,7 +62,7 @@ async def test_real_sol_and_non_sol_launches_block_cex_and_privacy(config,store,
     assert state['previous_launch']['mint']==created.mint
     assert state['previous_launch']['launchpad']==created.launchpad
     assert state['total_transactions']==10
-    assert state['previous_launch']['time']<item.time-DAYS*86400
+    assert state['previous_launch']['time']<item.time-30*86400
     assert store.rows('audit',"SELECT reason FROM decisions WHERE stage='qualification'")==[{'reason':'previous-token-launch'}]
     prior=list(rpc.calls)
     assert await qualify_activity(item,rpc,store)==(False,'previous-token-launch')
@@ -132,7 +132,7 @@ async def test_unavailable_create_details_stay_pending_and_resume(store,deposit,
 @pytest.mark.asyncio
 async def test_previous_policy_approval_is_rechecked_for_launches(store,deposit):
     item,rpc,_=history(deposit,pump())
-    state={'policy':2,'max_transactions':10,'cutoff':item.time-DAYS*86400,
+    state={'policy':2,'max_transactions':10,'cutoff':item.time-30*86400,
            'funding_slot':item.slot,'complete':True,'allowed':True,'reason':'no-signed-activity-30d'}
     with store.db('funding') as db:
         db.execute('INSERT INTO funding_activity_checks VALUES (?,?,?,?)',

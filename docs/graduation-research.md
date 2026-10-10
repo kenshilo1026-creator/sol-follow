@@ -50,7 +50,7 @@ tail -n 30 data/graduation-research/watch.log
 - `data/graduation-research/report.json`：完整理由、資金來源、門檻快照、尚未判定的檢查及監控缺口。
 - `data/graduation-research/research.sqlite3`：研究專用收集紀錄、公開交易快取、可續查的活動檢查。
 
-`candidate=pass` 的定義是：**create 成功解碼 + dev 通過入金／30 天簽名活動檢查 + 同筆 dev 買入路由受支援且通過靜態 SOL 金額門檻**。
+`candidate=pass` 的定義是：**create 成功解碼 + dev 通過入金資格檢查 + 同筆 dev 買入路由受支援且通過靜態 SOL 金額門檻**。
 `blocked` 表示有明確不符合的條件；`unknown` 表示現有證據不足，不能當作不合資格。
 目前非 SOL 買入的美元金額門檻需要當時的價格快取，故即使路由已解碼也會保留 `unknown`。
 原始 dev 只從已核驗的 create 取得，不會將畢業執行者、目前被更改的 creator 或池 authority 當成原始 dev。
@@ -66,7 +66,7 @@ Create 本身不會觸發訂單；沒有同筆可識別 dev 買入，會標明 `
 - 使用兩個公共 WebSocket 程式 log 訂閱，先保存 create 線索及畢業候選；只有畢業候選才進行 HTTP 查詢。
   兩個程式的全量 logs 仍有網路流量，公共端點可能斷線或限流。報告記錄缺口，不能保證列出全網所有畢業代幣。
 - 找不到即時 create 線索時，按 pool 歷史作有上限查找。預設每地址最多 3 頁；pool 每頁 1000，錢包每頁 100。
-- 入金查 dev 錢包及 USDC ATA／現存 USDC token accounts，使用現有 SOL／USDC 金額範圍、Privacy Cash 驗證、hotlist TTL 及 CEX 30 天簽名活動規則。
+- 入金查 dev 錢包及 USDC ATA／現存 USDC token accounts，使用現有 SOL／USDC 金額範圍、Privacy Cash 驗證、hotlist TTL 及 CEX 交易筆數／發幣紀錄規則；不再要求入金前 30 天沒有簽名活動。
   無入金證據、已關閉 USDC 帳戶、歷史超出查詢上限、同 slot 次序不明或 RPC 失敗，都保留未能判定。
 - 錢包是否 System account 使用目前 finalized 狀態，沒有 archival account-state 證明；缺失時不直接當作歷史不合資格。
   入金到 create 間已知會移除 hotlist 的 SOL 買入也會排除；非 SOL 中途買入缺少歷史價格則保留未知。
