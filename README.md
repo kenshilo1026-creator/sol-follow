@@ -81,6 +81,9 @@ hotlist 交易使用 Alchemy 完整交易串流。只要有此 key，CEX／Priva
 Alchemy 來源補查失敗只保留任務重試，不轉回公共 RPC。入金交易詳情及收款錢包資格檢查先用公共 RPC，失敗時嘗試 Alchemy；交易執行仍使用公共 RPC。
 有 Alchemy 後備的入金查詢，單一供應商的 429 只保留日誌／審計；後備成功不發 Telegram。
 兩邊都未取得有效結果才發「入金 RPC 查詢失敗」，同一方法每 60 秒最多一次。未配置後備及其他 RPC 通知維持原有行為。
+finalization／processed 訊號的 `getSignatureStatuses` 確認亦先用公共 RPC，失敗時用 Alchemy 後備。
+後備成功不發 Telegram；兩邊失敗才發「交易確認查詢失敗」，每 60 秒最多一次，待確認資料保留重試。
+合法的 `null` 狀態仍代表未確認；鏈上失敗、slot 不符及原有撤票規則照常執行。
 `SOL_BACKGROUND_RPC_RPS` 預設為 2，公共背景查詢與 Alchemy 補查各自限速、各自按 endpoint 冷卻。
 `features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
 入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。

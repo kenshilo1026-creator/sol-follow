@@ -8,6 +8,7 @@ import aiohttp
 from chain_common.rpc import Priority, Rpc
 from chain_common.background_rpc import BackgroundRpc
 from features.funding.rpc import FundingRpc
+from features.funding.confirmation_rpc import ConfirmationRpc, ConfirmationUnavailable
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM, WSOL
 from features.notifications.buy_failures import context as buy_context, unrecognized_non_sol
@@ -325,7 +326,8 @@ class Service:
                             self.notices.emit('finalization unknown; evidence retained',{'signature':row['signature']},
                                               alert=True,key='finalization-unknown')
                 except Exception as exc:
-                    self.notices.emit('finalization check deferred',{'type':type(exc).__name__},alert=True,key='finalization-error')
+                    self.notices.emit('finalization check deferred',{'type':type(exc).__name__},
+                                      alert=not isinstance(exc,ConfirmationUnavailable),key='finalization-error')
             await asyncio.sleep(5)
 
     async def health(self,discovery,rpc):
@@ -349,6 +351,8 @@ class Service:
                 detail['background_public_rpc']=self.background_rpc.snapshot()
             if hasattr(self,'funding_rpc'):
                 detail['funding_check_rpc']=self.funding_rpc.snapshot()
+            if hasattr(self,'confirmation_rpc'):
+                detail['confirmation_rpc']=self.confirmation_rpc.snapshot()
             if hasattr(self,'funding_history_rpc'):
                 detail['funding_history_rpc']={'provider':self.config.funding_history_provider,
                                               **self.funding_history_rpc.snapshot()}
@@ -362,6 +366,8 @@ class Service:
             await self._run()
 
     async def _run(self):
+        removed=self.store.prune_startup_jobs(time.time())
+        logging.info('[SOL] startup queue cleanup removed=%s max_age_s=3600',removed)
         timeout=aiohttp.ClientTimeout(total=8)
         # Separate connection pools keep background pagination from occupying
         # execution sockets. Source-address pagination uses Alchemy when a key
@@ -376,6 +382,7 @@ class Service:
             self.funding_rpc=FundingRpc(self.background_rpc,
                 self.funding_history_rpc if self.config.alchemy_key
                 and self.config.funding_history_url != self.config.rpc else None)
+            self.confirmation_rpc=ConfirmationRpc(self.background_rpc,self.funding_rpc.alchemy)
             genesis=await rpc.call('getGenesisHash',[])
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
@@ -405,15 +412,16 @@ class Service:
                 'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
                 'max_target_buy_sol':self.config.max_observed_buy/1_000_000_000,'http_policy':self.config.http_policy,
                 'funding_history_provider':self.config.funding_history_provider,
+                'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
                 'threshold':self.config.n,'window_s':self.config.window},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
-                    coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.background_rpc),
+                    coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
                                       self.worker(self.funding_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
                     if grpc_mode:
                         coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
-                            self.proofs.run(self.background_rpc,self.signals,self.notices,self.config.backfill_age)])
+                            self.proofs.run(self.confirmation_rpc,self.signals,self.notices,self.config.backfill_age)])
                     for coroutine in coroutines:
                         group.create_task(coroutine)
             finally:

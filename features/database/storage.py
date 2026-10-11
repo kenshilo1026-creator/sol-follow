@@ -221,14 +221,33 @@ class Store:
                 self.mark_live(signature)
         return changed
 
+    def prune_startup_jobs(self, now):
+        """Remove stale admission work; order and confirmation evidence is separate."""
+        with self.db('funding') as c:
+            c.execute('BEGIN IMMEDIATE')
+            deleted = c.execute("DELETE FROM jobs WHERE state='pending' AND first_seen<?",
+                                (now-3600,)).rowcount
+            # stream_payloads are removed by the jobs foreign-key cascade.
+            c.commit()
+        return deleted
+
     def due(self, limit, now, oldest=False, streamed=None):
         order = 'ASC' if oldest else 'DESC'
         lane = '' if streamed is None else (' AND '+('' if streamed else 'NOT ')+
             'EXISTS (SELECT 1 FROM stream_payloads p WHERE p.signature=jobs.signature)')
+        received_now = time.monotonic()
+
+        def live_priority(signature):
+            received = self.live_receipts.get(signature)
+            return received if received is not None and 0 <= received_now-received <= 300 else -1
+
         with self.db('funding') as c:
+            # Use process-local receipt evidence, never persisted stream flags.
+            # Live work stays newest-first even on an oldest-history turn.
+            c.create_function('live_priority', 1, live_priority)
             c.execute('BEGIN IMMEDIATE')
             rows = [dict(r) for r in c.execute('SELECT * FROM jobs WHERE state=\'pending\' AND due<=? '
-                        f'{lane} ORDER BY first_seen {order} LIMIT ?', (now, limit))]
+                        f'{lane} ORDER BY live_priority(signature) DESC, first_seen {order} LIMIT ?', (now, limit))]
             c.executemany('UPDATE jobs SET due=? WHERE signature=?', [(now+60, r['signature']) for r in rows])
             c.commit()
         return rows

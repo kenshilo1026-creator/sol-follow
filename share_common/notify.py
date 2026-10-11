@@ -49,6 +49,9 @@ def message(kind, detail):
     if kind=='funding RPC unavailable':
         return (f"⚠️ [SOL] 入金 RPC 查詢失敗\n方法: {detail['method']}"
                 "\n公共 RPC 與 Alchemy 均未能取得有效結果，稍後重試。")
+    if kind=='confirmation RPC unavailable':
+        return (f"⚠️ [SOL] 交易確認查詢失敗\n方法: {detail['method']}"
+                "\n公共 RPC 與 Alchemy 均未能取得有效結果，保留待確認紀錄，稍後重試。")
     if kind in ('public RPC 429','Alchemy RPC 429'):
         provider='Alchemy' if kind=='Alchemy RPC 429' else '公共'
         return (f"⚠️ [SOL] {provider} RPC 429 限流\n來源: {detail['source']}"

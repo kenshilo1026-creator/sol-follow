@@ -435,3 +435,19 @@ one per RPC method per 60 seconds. Cancellation is not reported as an outage.
 Deferral uses task-local context and ends after each provider call, so the shared
 clients keep normal alerts for direct source pagination or unrelated tasks.
 Calls without configured recovery retain their original notification behavior.
+
+## 2026-10-11: Alchemy fallback for finalization and processed status checks
+
+Funding/create finalization and processed-signal reconciliation share a dedicated
+public-first `getSignatureStatuses` reader with Alchemy recovery. It reuses the
+existing key, background rate budgets and endpoint cooldowns, with independent
+status failure tracking. Other methods and own-order reconciliation keep their
+existing clients.
+
+The complete batch is validated before applying any status: malformed counts,
+contexts, slots, missing error fields or unknown confirmation levels cannot mark
+transactions confirmed. Null statuses retain the existing unknown-status behavior.
+Provider failures leave pending checks intact; chain failure/slot mismatch still
+invalidates evidence. A recovered request sends no Telegram. Both-provider failure
+sends one confirmation-specific alert per minute, with no duplicate finalization
+deferred alert. Raw 429s remain in the local audit/logs.

@@ -3,9 +3,9 @@
 Alchemy is used for the hotlist transaction stream, small block metadata messages
 needed for chain timestamps, slot status updates for fork invalidation, and
 CEX/Privacy Cash source-address `getSignaturesForAddress` catch-up over HTTP.
-Source WebSocket logs, SDK quotes, simulations, submission and reconciliation
-use the configured public RPC. Funding transaction details and recipient checks
-use public RPC first, then at most one Alchemy attempt after errors or invalid/
+Source WebSocket logs, SDK quotes, simulations, submission and own-order reconciliation
+use the configured public RPC. Funding transaction details, recipient checks and
+funding/processed status confirmation use public RPC first, then at most one Alchemy attempt after errors or invalid/
 unindexed results. Source-history pagination remains a direct Alchemy route.
 Adding an API key never rewrites `SOL_RPC_HTTP_URL` or `SOL_RPC_WS_URL`.
 
@@ -161,9 +161,10 @@ If both providers fail, the persisted job follows its existing retry/expiry
 policy. This change neither resets stopped jobs nor grants admission from an
 unknown result. Signature, slot, account and launch validation remain required.
 
-Only the confirmed/non-streamed worker uses the funding reader. The processed
-live worker, transaction execution, order reconciliation and fork/finalization
-checks keep their existing RPC clients. Source-address pagination stays on
+Only the confirmed/non-streamed worker uses the funding reader. A separate status
+reader now handles processed-signal reconciliation and funding/create finalization
+as described below. The processed live worker, transaction execution and own-order
+reconciliation keep their existing RPC clients. Source-address pagination stays on
 Alchemy without a public fallback. Health `funding_check_rpc` reports safe
 attempt/recovery counts; the Alchemy background client's counts now include
 both source-history reads and funding recovery, not just pagination.
@@ -174,5 +175,30 @@ or Alchemy result completes silently. Only when neither provider returns a valid
 result does `funding RPC unavailable` alert, at most once per method per 60 seconds
 to avoid flooding while providers cool down. Malformed/unindexed recovery results
 also count as failures; cancellation does not. The deferral is task-local: direct
-source pagination, execution, reconciliation, WebSocket and SDK alerts retain
+source pagination, execution, own-order reconciliation, WebSocket and SDK alerts retain
 their existing behavior. Without an Alchemy fallback, public 429 alerts are unchanged.
+
+## Status confirmation recovery (2026-10-11)
+
+Funding/create finalization and processed-signal reconciliation now use
+`ConfirmationRpc` for `getSignatureStatuses`, with public-first Alchemy recovery.
+The same local Alchemy key is reused. Rate budgets, trade priority and endpoint
+cooldowns are shared with the existing background clients; status recovery has
+separate failure counters/cooldowns so a missing funding transaction does not
+itself disable status queries.
+
+Each batch retains `searchTransactionHistory=true`. Responses must contain a valid
+context, exactly one value per requested signature, valid slots, an explicit error
+field and a recognized confirmation status for each non-null value. A null value
+is valid unknown evidence, not confirmation. Malformed responses trigger recovery
+before any local state changes; both failures keep pending checks for retry.
+Existing chain-error, slot-mismatch and missing-confirmation vote rules remain.
+
+Recovered 429s only produce local audit/log records. If both providers fail, one
+`confirmation RPC unavailable` Telegram notification is emitted per method per
+60 seconds. Finalization does not send a second deferred-error alert for that same
+outage. Without Alchemy configured, the existing public-error alerts remain.
+Health exposes `confirmation_rpc` counters; check/startup reports
+`confirmation_alchemy_fallback` without credentials.
+
+RPC reference: https://www.alchemy.com/docs/chains/solana/solana-api-endpoints/get-signature-statuses

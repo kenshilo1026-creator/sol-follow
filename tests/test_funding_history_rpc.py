@@ -46,6 +46,7 @@ def test_offline_check_reports_provider_without_credentials(tmp_path,monkeypatch
     app.main()
     output=capsys.readouterr().out
     assert json.loads(output)['funding_history_provider']=='alchemy'
+    assert json.loads(output)['confirmation_alchemy_fallback'] is True
     assert 'fixture-secret' not in output and cfg.funding_history_url not in output
 
 

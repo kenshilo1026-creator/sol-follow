@@ -67,7 +67,7 @@ class FundingRpc:
 
     async def call(self, method, params):
         if method not in self.METHODS:
-            # Reconciliation/status reads keep the public-only background client.
+            # Only explicitly supported reads can use this reader's fallback.
             return await self.public.call(method, params)
         async with self.lock:
             self.counts['calls'] += 1
@@ -91,10 +91,13 @@ class FundingRpc:
                     self.counts['recovered'] += 1
                 return result
             self.counts['unavailable'] += 1
-            if self.alchemy is not None:
-                report_funding_unavailable(method)
             # Never carry provider URLs, keys, signatures or response bodies into logs.
-            raise RpcError('funding-rpc-unavailable') from None
+            raise self.unavailable(method) from None
+
+    def unavailable(self, method):
+        if self.alchemy is not None:
+            report_funding_unavailable(method)
+        return RpcError('funding-rpc-unavailable')
 
     async def transaction(self, signature, commitment='confirmed'):
         return await self.call('getTransaction', [signature, {'encoding': 'jsonParsed',

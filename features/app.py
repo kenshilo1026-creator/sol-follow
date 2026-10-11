@@ -37,6 +37,7 @@ def main():
                           'max_market_cap_usd_k':str(config.max_market_cap_usd_micros/10**9),'alchemy_key_configured':bool(config.alchemy_key),
                           'http_policy':config.http_policy,'background_rpc_rps':config.history_rps,
                           'funding_history_provider':config.funding_history_provider,
+                          'confirmation_alchemy_fallback':bool(config.alchemy_key and config.funding_history_url!=config.rpc),
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return
     if args.command=='stats':
