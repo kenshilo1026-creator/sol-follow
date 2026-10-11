@@ -3,6 +3,7 @@ import asyncio
 import time
 
 from chain_common.rpc import RpcError
+from chain_common.public_rpc import defer_429_alerts, report_funding_unavailable
 
 
 class FundingRpc:
@@ -75,7 +76,8 @@ class FundingRpc:
                     continue
                 self.counts[label + '_attempts'] += 1
                 try:
-                    result = await client.call(method, params)
+                    with defer_429_alerts(self.alchemy is not None):
+                        result = await client.call(method, params)
                     if not self.valid(method, result, params):
                         raise RpcError('funding-result-unavailable')
                 except (RpcError, ValueError, TypeError, KeyError, AttributeError):
@@ -89,6 +91,8 @@ class FundingRpc:
                     self.counts['recovered'] += 1
                 return result
             self.counts['unavailable'] += 1
+            if self.alchemy is not None:
+                report_funding_unavailable(method)
             # Never carry provider URLs, keys, signatures or response bodies into logs.
             raise RpcError('funding-rpc-unavailable') from None
 

@@ -5,6 +5,7 @@ import logging
 import re
 
 _sink=ContextVar('public_rpc_notice_sink',default=None)
+_defer_429=ContextVar('defer_rpc_429_alerts',default=False)
 
 
 @contextmanager
@@ -14,6 +15,19 @@ def rpc_notices(notices):
         yield
     finally:
         _sink.reset(token)
+
+
+@contextmanager
+def defer_429_alerts(enabled=True):
+    """Keep per-provider evidence local while this task tries funding recovery."""
+    if not enabled:
+        yield
+        return
+    token=_defer_429.set(True)
+    try:
+        yield
+    finally:
+        _defer_429.reset(token)
 
 
 def report_429(source,method,transport):
@@ -27,8 +41,20 @@ def report_429(source,method,transport):
     if sink is None:
         logging.getLogger('sol-follow').warning('[SOL] %s %s',kind,detail)
         return
-    # No deduplication: each actual provider 429 is a separate alert.
-    sink.emit(kind,detail,alert=True)
+    # Record each actual 429, but funding recovery decides whether to alert.
+    sink.emit(kind,detail,alert=not _defer_429.get())
+
+
+def report_funding_unavailable(method):
+    method=method if isinstance(method,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}',method) else 'unknown'
+    detail={'method':method,'reason':'public-and-alchemy-unavailable'}
+    sink=_sink.get()
+    if sink is None:
+        logging.getLogger('sol-follow').warning('[SOL] funding RPC unavailable %s',detail)
+        return
+    # Cooling providers can fail many queued jobs without another network call.
+    sink.emit('funding RPC unavailable',detail,alert=True,
+              key='funding-rpc-unavailable:'+method,interval=60)
 
 
 def sdk_event(row):

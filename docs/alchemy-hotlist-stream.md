@@ -101,8 +101,9 @@ filter updates and during disconnection can be missed under this live-only polic
 
 Health reports stream messages, received protobuf bytes, reconnects, slot and
 address count separately from public HTTP calls. `funding_history_rpc` reports
-the selected provider, calls, errors and rate limits; Alchemy 429 notifications
-use `Alchemy RPC 429` with source `alchemy-history`, without credentials.
+the selected provider, calls, errors and rate limits. Direct Alchemy source-history
+429 notifications use `Alchemy RPC 429` with source `alchemy-history`, without
+credentials. Funding recovery defers Telegram alerts until both providers fail.
 Protobuf byte counts are a local
 usage indicator, **not an exact Alchemy invoice meter**.
 
@@ -166,3 +167,12 @@ checks keep their existing RPC clients. Source-address pagination stays on
 Alchemy without a public fallback. Health `funding_check_rpc` reports safe
 attempt/recovery counts; the Alchemy background client's counts now include
 both source-history reads and funding recovery, not just pagination.
+
+For funding reads with Alchemy recovery configured, each provider's actual 429
+is still logged/audited, but does not immediately alert Telegram. A valid public
+or Alchemy result completes silently. Only when neither provider returns a valid
+result does `funding RPC unavailable` alert, at most once per method per 60 seconds
+to avoid flooding while providers cool down. Malformed/unindexed recovery results
+also count as failures; cancellation does not. The deferral is task-local: direct
+source pagination, execution, reconciliation, WebSocket and SDK alerts retain
+their existing behavior. Without an Alchemy fallback, public 429 alerts are unchanged.

@@ -423,3 +423,15 @@ The funding reader validates responses and cools unavailable providers for
 Existing job persistence, retry/expiry, trade priority and execution routing are
 unchanged. Source-address pagination remains Alchemy-only with a configured key.
 This supersedes the public-only qualification portion of the decision above.
+
+## 2026-10-10: notify only after both funding providers fail
+
+The public-first funding reader defers per-provider 429 Telegram alerts while
+Alchemy recovery is available. Actual 429s retain local log/audit evidence. A
+valid recovery result sends no Telegram; unavailable results from both providers
+produce one credential-free `funding RPC unavailable` notification, limited to
+one per RPC method per 60 seconds. Cancellation is not reported as an outage.
+
+Deferral uses task-local context and ends after each provider call, so the shared
+clients keep normal alerts for direct source pagination or unrelated tasks.
+Calls without configured recovery retain their original notification behavior.

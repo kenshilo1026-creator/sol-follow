@@ -46,6 +46,9 @@ def message(kind, detail):
                 f"\n待處理: {detail['pending']} 筆（包括尚未解碼的工作）"
                 f"\n本分鐘淨增加: {detail['pending_delta']} 筆\n最舊等待: {detail['oldest_s']} 秒"
                 "\n本輪積壓只通知一次，恢復後再次積壓才重新通知。")
+    if kind=='funding RPC unavailable':
+        return (f"⚠️ [SOL] 入金 RPC 查詢失敗\n方法: {detail['method']}"
+                "\n公共 RPC 與 Alchemy 均未能取得有效結果，稍後重試。")
     if kind in ('public RPC 429','Alchemy RPC 429'):
         provider='Alchemy' if kind=='Alchemy RPC 429' else '公共'
         return (f"⚠️ [SOL] {provider} RPC 429 限流\n來源: {detail['source']}"
