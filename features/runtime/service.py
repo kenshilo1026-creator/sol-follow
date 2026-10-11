@@ -368,6 +368,7 @@ class Service:
     async def _run(self):
         removed=self.store.prune_startup_jobs(time.time())
         logging.info('[SOL] startup queue cleanup removed=%s max_age_s=3600',removed)
+        self.backlog=BacklogMonitor(self.store,self.notices)
         timeout=aiohttp.ClientTimeout(total=8)
         # Separate connection pools keep background pagination from occupying
         # execution sockets. Source-address pagination uses Alchemy when a key

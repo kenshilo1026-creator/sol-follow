@@ -451,3 +451,17 @@ Provider failures leave pending checks intact; chain failure/slot mismatch still
 invalidates evidence. A recovered request sends no Telegram. Both-provider failure
 sends one confirmation-specific alert per minute, with no duplicate finalization
 deferred alert. Raw 429s remain in the local audit/logs.
+
+## 2026-10-11: prune stale admission jobs on startup and prioritize live receipts
+
+Each service start deletes pending admission/transaction jobs whose original
+enqueue time is strictly more than 3600 seconds old, including delayed retries.
+Their stream payloads are removed in the same transaction. This happens before
+network clients, feeds and workers start; the removed count is logged locally.
+Completed jobs, orders, positions and independent confirmation evidence remain.
+
+Within each worker lane, due jobs with a process-local live receipt from the last
+300 seconds run first, newest receipt first. The existing newest/oldest history
+rotation applies only after live jobs, including on every fifth oldest turn.
+Retry delays and claim leases still apply. Restarted jobs and recovered history
+do not gain live priority; execution freshness and eligibility checks are unchanged.
