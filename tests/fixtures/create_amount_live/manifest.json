@@ -1,0 +1,74 @@
+[
+  {
+    "fixture": "EU2nrjEzeYQNb5KSJmzqZ9jNwKbcWye2RdKyH7Q7pump.json",
+    "mint": "EU2nrjEzeYQNb5KSJmzqZ9jNwKbcWye2RdKyH7Q7pump",
+    "signature": "4qhK6eY8eWQecj27XcPn8SkBjGUrbEtw8TRVHXveYPwfFXtfhuQZCzUfLcyBwAXj6VLjJ49ZKdzebWW4Hg5dcoMA",
+    "dev_post_amount_raw": "0",
+    "name": "SNOOT",
+    "time_hk": "2026-10-11T14:46:41+08:00"
+  },
+  {
+    "fixture": "CUfWAsfyZS9emMTTzYHDwpT6ceNrSK1CtZPVV68pxj8x.json",
+    "mint": "CUfWAsfyZS9emMTTzYHDwpT6ceNrSK1CtZPVV68pxj8x",
+    "signature": "48bnf6hEANJJqrG1b1KsQZy8QcMh3Z2QHyu1gZ2AZx8WwSoYRGzwcFKuhhk7VKJH5a3JKeT1Udqxy2dJWcRjb1X5",
+    "dev_post_amount_raw": "0",
+    "name": "BagsPayCat",
+    "time_hk": "2026-10-11T14:46:41+08:00"
+  },
+  {
+    "fixture": "CdZA5xnfs6GnoQvAdxsr49HHzGsbg7jDou7uMCvcpump.json",
+    "mint": "CdZA5xnfs6GnoQvAdxsr49HHzGsbg7jDou7uMCvcpump",
+    "signature": "27iFhVcdXj8rrDuBPru8dveeZEdj2ECppAHSH7ixCzML1oV8v9CSQQqTLAy5M9xKqamW1j63gDMzxpzZGDrjSrGW",
+    "dev_post_amount_raw": "3485709524202",
+    "name": "Loneliness",
+    "time_hk": "2026-10-11T14:46:39+08:00"
+  },
+  {
+    "fixture": "9bfcqWsnZ1bYgGhVjKFj6LzFLSoRNkdsFMb93j23pump.json",
+    "mint": "9bfcqWsnZ1bYgGhVjKFj6LzFLSoRNkdsFMb93j23pump",
+    "signature": "2sxmie3LwMETfdchsAjK73nWC4R9wZp6fLQN84EAX8BCq9pkcv5YnKKtQyh2o3vBLvUsm3RiMUxnXA5ZXuPbvir2",
+    "dev_post_amount_raw": "9702678127551",
+    "name": "uinhim",
+    "time_hk": "2026-10-11T14:46:39+08:00"
+  },
+  {
+    "fixture": "7yWAtddTZeRX8GbGQby6vmY426zaiq7iqcP4LsYdpump.json",
+    "mint": "7yWAtddTZeRX8GbGQby6vmY426zaiq7iqcP4LsYdpump",
+    "signature": "DTnakqAdxSYxqP6eETL4EAjtDSrwHg2WWbyfTG25EEF3Xc6eKrYBKH15oNpr6S79rv1dvAbJNpW9rYUSCM8AEWJ",
+    "dev_post_amount_raw": "0",
+    "name": "Gaycoin",
+    "time_hk": "2026-10-11T14:46:38+08:00"
+  },
+  {
+    "fixture": "39iR5FMWL4W7Cmj5RhvCMbcCUgk3SLvaHQinZqmtpump.json",
+    "mint": "39iR5FMWL4W7Cmj5RhvCMbcCUgk3SLvaHQinZqmtpump",
+    "signature": "2NpsLKFnJonBqKA4KFoUwWbEs8TW1Z5QGmBoW5j8LDJP9rNRjTpTZNxRhdu8FGCVCD6gCXDTQgySTWDGrK5VMh1F",
+    "dev_post_amount_raw": "2094174425768",
+    "name": "CATECOIN",
+    "time_hk": "2026-10-11T14:46:36+08:00"
+  },
+  {
+    "fixture": "ha2ibYnf1m754Dx5FNgWVQSNWm78uRJj1pPYuQLpa6C.json",
+    "mint": "ha2ibYnf1m754Dx5FNgWVQSNWm78uRJj1pPYuQLpa6C",
+    "signature": "2uie3G9nzwbFZRibuQwkLNoXFpiBSYV93CcMLGuspC1uSsvz6NVFtUokm1hujPTj38zQUYUpyUBFhsBZZSu5Ko4N",
+    "dev_post_amount_raw": "95341546515855",
+    "name": "Incognito69420",
+    "time_hk": "2026-10-11T14:35:52+08:00"
+  },
+  {
+    "fixture": "G1GRpvCnGYQ8QvfmcNoqco9ebdVjqH72NKMytZL13z9r.json",
+    "mint": "G1GRpvCnGYQ8QvfmcNoqco9ebdVjqH72NKMytZL13z9r",
+    "signature": "2s4z8BPUnd3mbs76rbzSkYDJ9y1B7Px1LpU2NFMURS1nyrKuiBi9YKrX5CWWcrMZcmsXJvMx4DWqN7h1hGW77mat",
+    "dev_post_amount_raw": "100999904917",
+    "name": "Toothpaste",
+    "time_hk": "2026-10-11T14:28:33+08:00"
+  },
+  {
+    "fixture": "936E5H2dyFjiGFc8Y2mDUdLr72NSNukzrBvhsRTpNsNt.json",
+    "mint": "936E5H2dyFjiGFc8Y2mDUdLr72NSNukzrBvhsRTpNsNt",
+    "signature": "JweN7mFrtv2ENRzYpF8qpb5MfeZ8s1Wpib1BdL8XvZ9rJWutUW2zDbNdaE5BNoH64XJjrR3EPF2jSo4hZp7MGYB",
+    "dev_post_amount_raw": "26345036491807",
+    "name": "Eli Ben-Sasson",
+    "time_hk": "2026-10-11T14:24:01+08:00"
+  }
+]

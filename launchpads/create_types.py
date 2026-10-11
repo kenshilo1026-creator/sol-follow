@@ -1,4 +1,4 @@
-"""Creation evidence is separate from trade events and never triggers an order."""
+"""Creation evidence is decoded separately; the dev-create strategy decides entries."""
 from dataclasses import dataclass,asdict
 from chain_common.primitives import WSOL,pubkey
 from chain_common.transaction import Unsupported

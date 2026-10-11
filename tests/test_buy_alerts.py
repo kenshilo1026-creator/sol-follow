@@ -25,27 +25,18 @@ def alerts(notices, kind):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reject',['cache-miss','unsupported'])
-async def test_non_sol_skipped_buy_alert(config,store,reject,monkeypatch):
-    raw=direct();raw['blockTime']=int(time.time());route=decode_all(Tx(raw))[0]
-    store.admit(Funding('fund','fund',route.trade.wallet,address(),'cex:test',10**9,route.trade.slot-1,
-        raw['blockTime']-10),3600,time.time())
-    if reject=='unsupported':
-        for group in raw['meta']['innerInstructions']:
-            if group['index']==7:group['instructions']=[]
-    service=Service(config,store);service.notices=Notices();service.signals.started=raw['blockTime']-1
-    async def unavailable(*args):raise BuildError('price-cache-miss')
-    monkeypatch.setattr(service.quote_builder,'quote_limit',unavailable)
-    class Public:
-        async def transaction(self,sig):return raw
-    store.enqueue([route.trade.signature])
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},Public())
-    rows=alerts(service.notices,'target buy skipped' if reject=='cache-miss' else 'non-SOL buy skipped')
-    assert len(rows)==1
-    assert rows[0]['mint']==route.trade.mint and rows[0]['quote_mint']==route.quote_mint
-    assert rows[0]['source_signature']==route.trade.signature
-    assert rows[0]['reason']==('price-cache-miss' if reject=='cache-miss' else 'unsupported-or-unverified-buy-route')
-    assert store.rows('trading','SELECT * FROM orders')==[]
+@pytest.mark.parametrize('reason',['cache-miss','unsupported'])
+async def test_non_sol_create_build_failure_keeps_alert_and_consumption(config,store,reason):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store,non_sol=True)
+    async def fail(*args):raise BuildError('price-cache-miss' if reason=='cache-miss' else 'pool-fee-limit')
+    case.service.executor=Executor(case.service.config,store,case.rpc,case.service.notices,
+                                   case.service.priority,builder=fail)
+    await case.service.process(case.row,case.rpc)
+    rows=alerts(case.service.notices,'buy rejected')
+    assert len(rows)==1 and rows[0]['stage']=='build'
+    assert rows[0]['mint']==case.item.mint and rows[0]['source_signature']==case.item.signature
+    assert case.item.user not in store.hotlist(time.time())
 
 
 @pytest.mark.asyncio

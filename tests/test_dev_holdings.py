@@ -167,33 +167,15 @@ async def test_vote_reservation_and_execution_guards(config,store,allowed):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('allowed',[True,False])
-async def test_processed_service_first_buy_gate(config,store,allowed):
-    from chain_common.transaction import Tx
-    from features.runtime.service import Service
-    from tests.test_native_buy import sample
-    from tests.test_processed import admit
-    from trade_execution.route import decode_all
-    now=int(time.time());raw=sample();raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    routes=decode_all(Tx(raw,observed_at=now))
-    for route in routes:admit(store,route,now)
-    route=routes[0];creator=address()
-    rpc=Rpc(route,creator,[60_000_000_000_000+(not allowed)])
-    cfg=replace(config,n=3,hotlist_commitment='processed',max_dev_holding_tokens=Decimal('60000000'))
-    service=Service(cfg,store);service.signals.started=now-1
-    executed=[]
-    class Engine:
-        async def buy(self,oid,route):executed.append(oid)
-    service.executor=Engine()
-    store.stream_transaction(raw)
-    store.mark_live(raw['transaction']['signatures'][0])
-    await service.process({'signature':raw['transaction']['signatures'][0]},rpc)
-    assert len(executed)==1  # Three wallets buy before the background result.
-    await service.dev_holdings.check(route,rpc)
-    assert len(rpc.calls)==2
-    assert permitted(store,route.trade.mint,cfg.max_dev_holding_tokens) is allowed
-    if not allowed:assert not store.rows('trading','SELECT * FROM votes')
-    await service.dev_holdings.close()
+async def test_processed_create_checks_dev_quantity_before_buy_without_rpc(config,store,allowed):
+    from tests.create_snipe_helpers import setup_create,token_snapshot
+    case=setup_create(replace(config,max_dev_holding_tokens=Decimal('60000000')),store)
+    token_snapshot(case.raw,case.item,60_000_000_000_000+(not allowed))
+    store.stream_transaction(case.raw)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==int(allowed)
+    assert case.service.dev_holdings.row(case.item.mint)['state']==('allowed' if allowed else 'blocked')
+    await case.service.dev_holdings.close()
 
 
 @pytest.mark.asyncio

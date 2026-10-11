@@ -142,23 +142,13 @@ async def test_expired_signal_never_builds(config,store):
 
 
 @pytest.mark.asyncio
-async def test_hotlist_buy_signal_reaches_executor(config,store,monkeypatch):
-    raw=sample();raw['blockTime']=int(time.time());route=decode(Tx(raw))
-    cfg=replace(config,n=1)
-    f=Funding('fund','fund',route.trade.wallet,address(),'cex:test',10**9,route.trade.slot-1,raw['blockTime']-10)
-    store.admit(f,3600,time.time());store.enqueue([route.trade.signature])
-    service=Service(cfg,store);service.signals.started=raw['blockTime']-1
-    calls=[]
-    class Engine:
-        async def buy(self,oid,r):calls.append((oid,r))
-    class TransactionRPC:
-        async def transaction(self,sig):return raw
-    service.executor=Engine()
-    async def cached_limit(route):return {"quoteLimit":str(route.observed_amount),"maximumUsdMicros":"500000000"}
-    monkeypatch.setattr(service.quote_builder,"quote_limit",cached_limit)
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},TransactionRPC())
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},TransactionRPC())
-    assert len(calls)==1 and calls[0][1].dlmm_pool==route.dlmm_pool
+async def test_hotlist_pump_create_signal_reaches_executor(config,store):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store,non_sol=True,processed=False)
+    await case.service.process(case.row,case.rpc)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and case.calls[0][1].kind=='sol_to_pump_curve'
+    assert not store.rows('trading','SELECT * FROM votes')
 
 
 @pytest.mark.asyncio

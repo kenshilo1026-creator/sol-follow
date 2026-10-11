@@ -116,30 +116,16 @@ async def test_missing_or_old_snapshot_is_closed(config,store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('cap,buys',[('19999999999',1),('20000000001',0)])
-async def test_processed_service_checks_before_first_vote(config,store,cap,buys):
-    from chain_common.transaction import Tx
-    from features.runtime.service import Service
-    from tests.test_native_buy import sample
-    from tests.test_processed import admit,NoRpc
-    from trade_execution.route import decode_all
-    now=int(time.time());raw=sample();raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    routes=decode_all(Tx(raw,observed_at=now))
-    for route in routes:admit(store,route,now)
-    cfg=replace(config,n=1,hotlist_commitment='processed',max_market_cap_usd_micros=20_000_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    checked=[];executed=[]
-    async def snapshot(route):
-        assert not store.rows('trading','SELECT * FROM votes')
-        checked.append(route.trade.mint)
-        return {'marketCapUsdMicros':cap,'snapshotSlot':route.trade.slot}
-    service.quote_builder.market_cap=snapshot
-    class Engine:
-        async def buy(self,oid,route):executed.append(oid)
-    service.executor=Engine()
-    store.stream_transaction(raw)
-    service.store.mark_live(raw['transaction']['signatures'][0]);await service.process({'signature':raw['transaction']['signatures'][0]},NoRpc())
-    assert len(checked)==1 and len(executed)==buys
-    assert len(store.rows('trading','SELECT * FROM orders'))==buys
-    if not buys:assert store.rows('trading','SELECT * FROM votes')==[]
+@pytest.mark.parametrize('state',['blocked','unavailable','checking'])
+async def test_create_ignores_old_market_cap_limit_and_exclusion(config,store,state):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(replace(config,max_market_cap_usd_micros=1),store)
+    with store.db('trading') as db:
+        db.execute('INSERT INTO token_entry_caps VALUES (?,?,?,?,?,?,?,?,?)',
+            (case.item.mint,case.item.signature,case.item.user,case.item.slot,time.time(),state,'999999999','1','{}'))
+    async def forbidden(*a):raise AssertionError('create must not price market cap')
+    case.service.quote_builder.market_cap=forbidden
+    case.service.market_cap.check=forbidden
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1
+    assert not store.rows('trading','SELECT * FROM votes')

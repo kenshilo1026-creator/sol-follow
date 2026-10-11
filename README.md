@@ -5,7 +5,9 @@
 
 獨立 Solana 服務：CEX SOL／USDC、Privacy Cash 原生 SOL 入金 → 資格檢查 → SQLite hotlist，
 並解碼監聽交易中的 Pump／Stonk Create。
-群體跟買已接入 Pump 及 Stonk 原子買入路由；支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
+買入模式已改為 **hotlist dev create 狙擊**：合資格、實際簽名的 dev 建立 Pump／Stonk 代幣便觸發一次買入，無須多錢包買入票數，也無須 create 交易附帶 dev buy。
+Create 先消耗 hotlist，再檢查 dev 持倉與原子買入風控；市值條件已取消。重播、補查及重啟不追買。詳見 [Create 狙擊模式](docs/dev-create-sniping.md)。
+支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
 **沒有修改、import 或共用 RH/BSC 的 runtime、錢包和資料庫。**
 
 發射台範圍固定為 **pump.fun 和 stonk 旗下代幣**。以下地址只作來源驗證樣本，不是 mint 白名單：
@@ -27,7 +29,7 @@ quote mint 沒有 SPCX／DJT／USDC 白名單；按 Pump 指令、mint program �
 **通用 mint 不代表任意 DEX 或任意 Token-2022 擴充都可執行**；沒有可用路徑、未知 hook、
 轉帳稅、不足流動性、費用／滑點超標或超過交易大小上限時拒絕。詳見 [Pump 非 SOL 路由](docs/pump-quote-routing.md)。
 亦支援 **畢業前原生 SOL → Pump** 買入，辨認 `buy`／`buy_exact_sol_in`。
-同一交易的多個買方按各自指令、簽名者及實際 SOL／token 轉帳分開解碼；每個合資格 hotlist 地址一票。
+同一交易的多個買方仍可解碼及提供換幣路徑提示；一般買入交易不再計票或觸發狙擊。
 仍只使用設定錢包跟買一次，不複製舊交易的數量或指令。
 服務仍保留 CEX／Privacy Cash 入金資格、hotlist、交易取得／補查、持久化佇列及健康通知。
 pump.fun／stonk 鏈上來源核驗可透過 `--mint` probe 使用。
@@ -88,7 +90,7 @@ finalization／processed 訊號的 `getSignatureStatuses` 確認亦先用公共 
 `features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
 入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。
 新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。
-買入必須有本次程序的即時接收紀錄，補查及重啟恢復的交易不投票、不觸發買入報價。
+Create 狙擊必須有本次程序的即時接收紀錄；補查及重啟恢復的交易只保存資料，不追補買入。
 入金資格仍檢查地址交易筆數上限及已支援的發幣紀錄；不再限制入金前 30 天的簽名活動。
 processed 分叉核對及自己已送出訂單的確認仍保留。
 Funding discovery 亦辨認 `cex_addresses.json` 內交易所的原生 USDC 出金；
@@ -449,22 +451,19 @@ processed 不保證同 slot 成交；`minContextSlot` 是 RPC 最低讀取 slot�
 部署時明確設定 `SOL_FEED_MODE=alchemy_grpc`、`SOL_HOTLIST_COMMITMENT=processed`，
 並配置 `ALCHEMY_API_KEY`，可讓缺少 key 時直接報配置錯誤，避免 auto 模式選用 confirmed websocket。
 
-## dev 持倉檢查與超標退出
+## Create 買前 dev token 數量檢查
 
-`SOL_DEV_MAX_HOLDING_TOKENS=60000000`：每個 mint 首次合資格 hotlist 即時買入時，
-背景最多發出兩次 RPC：`getMultipleAccounts` 讀 mint decimals 及曲線／池的 creator，
-再用 `getTokenAccountsByOwner`（mint 篩選）合計該 creator 名下該代幣的全部 token 帳戶。
-按 decimals 換算完整 token 數量，嚴格超過 6,000 萬才排除；等於上限可通過。不查供應量。
-這是當次 RPC 節點快照（slot 不早於觸發交易），並非還原觸發交易當刻的歷史持倉；
-也不包括 creator 已轉到其他錢包的代幣。檢查在買額及票數門檻之前進行。
+`SOL_DEV_MAX_HOLDING_TOKENS=60000000`：在預留買單前，用已收到的 create 交易決定是否買入。
+Pump `buy`／`buy_v2` 有指定 token 數量時，calldata 超標可立即拒絕；exact-in 類型則用同筆完整交易的 token metadata 核對實收。
+不另外呼叫 `getMultipleAccounts` 或 `getTokenAccountsByOwner`，不再「查詢中先買」。
+嚴格超過上限就不買；等於上限可通過。數量未知／資料不完整也不買，不會當成零。
+同筆交易若轉出、賣出或燒毀 dev token，會計回已消耗數量，避免只看末尾餘額而低估。
+判定對象是實際簽名、命中 hotlist 的 launch user；metadata 的 creator／費用接收人另存作證據。
+市值已取消；自己的買額、滑點、費用、流動性、模擬與成交核對沿用。
+完整規則見 [Create 狙擊模式](docs/dev-create-sniping.md)。
 
-不需要本地建立紀錄。dev 指鏈上曲線／池的當前 creator；Pump 此地址可能已變更為費用分配帳戶，
-不保證是最初建立者，不能以買家或 mint authority 替代。兩次 RPC 不自動重試，其他建單／成交核對 RPC 另計。
+既有已簽名訂單、持倉及超標退出核對保留；新 create 已在買前被拒絕，不需等背景結果才賣出。
 
-檢查進行中不阻塞即時訊號；若達到 `SOL_FOLLOW_MIN_WALLETS`（例如 3 個不同錢包），照常跟買。
-查到超標後永久封鎖該 mint、清除票數，尚未送出的買單在建單／模擬／簽名及送出前重新檢查並取消。
-已送出的買單保留核對，確認實收後立刻安排賣出該張跟買的全部實收數量，不賣掉買入前已有的代幣。
-緊急退出使用 confirmed 成交證據，不等待買單 finalized；也不受原跟買訊號過期或錢包票數撤銷影響。
 背景事件即時喚醒退出工作，等待鏈上買入入帳／賣出確認時每 2 秒核對。
 
 Pump／Stonk 畢業前曲線支援直接賣回原報價幣，共用 `SOL_SLIPPAGE_PERCENT` 計算 minOut。
@@ -481,12 +480,12 @@ Stonk 遷移到非 CPMM 場所、非 canonical PumpSwap 池及一般止盈／止
 緊急賣出亦遵守單池費、總費及轉帳稅上限；超標不簽名、不送單，保留退出任務並通知暫緩，
 之後重新報價重試。因此費率一直超標時不保證能立即退出；不會為緊急賣出自動繞過上限。
 
-資料不符、RPC 失敗／429、30 秒檢查逾時或重啟中斷會停止該 mint 新增跟買，之後不重查。
+新 create 的數量資料不完整或不相符時，會停止該筆入場，不另查持倉 RPC 或等待補齊後追買。舊版尚未完成的背景檢查在重啟時標為無法判定。
 這些情況不能證實超標，所以**不會自動賣出已持有的代幣**，會發出無法判定通知。
 
 結果保存在 `trading.sqlite3` 的 `token_dev_holdings`，跨重啟保留且不隨審計清理刪除。
-後續錢包不重查；已排除的 mint 不再跟買，hotlist 錢包本身不因此移除。
-省略參數預設 6,000 萬；留空僅停用新檢查，`0` 表示不容許任何正數持倉。
+新 create 已消耗 hotlist，後續重播不重查、不重買；已排除的 mint 維持排除。
+省略參數預設 6,000 萬；留空僅停用新檢查，`0` 表示不容許任何正數 dev launch token 數量。
 提高上限或停用檢查不會解除已存的排除結果；降低上限以首次快照重新比較，不另發 RPC。
 首次超標或無法判定會記錄日誌，Telegram 已配置時亦會排入通知。
 
@@ -572,3 +571,11 @@ WSOL 以臨時帳戶在同一交易解包回 SOL，不關閉原有 WSOL ATA；�
 DRY_RUN 的失敗同樣通知並標示 dry。背景預熱本身、非 hotlist 地址及未達策略門檻不當成買單失敗。
 同一事件重試的跳過通知會去重，不使用所有代幣共用的限頻 key。
 通知沿用獨立非阻塞佇列；Telegram 未設定、服務不可用或佇列滿時仍可能送達失敗，請查看服務日誌。
+
+## 2026-10-11：買入觸發改為 dev create
+
+目前服務固定使用 `dev-create`，不再以多 hotlist 錢包買入投票觸發。
+上文涉及目標買方金額／票數的舊策略敘述只適用舊版；相關設定不再控制入場。
+本人買額、滑點、流動性、DRY_RUN 與成交核對設定沿用；市值取消，dev token 數量改為買前本地判定。
+實際簽名的 launch user 命中 hotlist 即消耗資格；純 create 也支援。
+完整觸發、去重及分叉恢復規則見 [Create 狙擊模式](docs/dev-create-sniping.md)。

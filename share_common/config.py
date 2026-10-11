@@ -172,6 +172,10 @@ class Config:
     max_funding_usdc: int = 800_000_000
 
     @property
+    def buy_trigger(self):
+        return 'dev-create'
+
+    @property
     def mode(self):
         return 'dry' if self.dry_run else 'live'
 

@@ -95,26 +95,12 @@ def test_observed_dlmm_route_seeds_reusable_quote_recipe(config,store):
     assert builder.seen.recipe(other.quote_mint)==recipe
 
 @pytest.mark.asyncio
-async def test_direct_quote_hotlist_buy_reaches_executor(config,store,monkeypatch):
-    import time
-    from features.runtime.service import Service
-    from features.funding.decoder import Funding
-    raw=direct();raw['blockTime']=int(time.time());route=decode_quote(Tx(raw))[0]
-    cfg=replace(config,n=1)
-    store.admit(Funding('fund','fund',route.trade.wallet,address(),'cex:test',10**9,
-        route.trade.slot-1,raw['blockTime']-10),3600,time.time())
-    service=Service(cfg,store);service.notices=Notices();service.signals.started=raw['blockTime']-1
-    calls=[]
-    class Engine:
-        async def buy(self,oid,r):calls.append(r)
-    class RPC:
-        async def transaction(self,sig):return raw
-    async def limit(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
-    service.executor=Engine();monkeypatch.setattr(service.quote_builder,'quote_limit',limit)
-    store.enqueue([route.trade.signature])
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},RPC())
-    assert len(calls)==1 and calls[0].kind=='sol_to_pump_curve'
-    assert builder_request(service)==route.quote_mint
+async def test_non_sol_pump_create_reaches_executor_with_decoded_quote(config,store):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store,non_sol=True)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and case.calls[0][1].kind=='sol_to_pump_curve'
+    assert builder_request(case.service)==case.item.quote_mint
 
 
 def builder_request(service):

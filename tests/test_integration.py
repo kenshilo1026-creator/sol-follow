@@ -20,7 +20,11 @@ def test_concurrent_reservation(config,store):
 
 
 @pytest.mark.asyncio
-async def test_service_boot_and_cancel_with_local_rpc(config,store):
+async def test_service_boot_and_cancel_with_local_rpc(config,store,monkeypatch):
+    # SDK builders have separate offline tests. This test isolates service boot,
+    # public funding traffic and cancellation from OS-specific Node pipe APIs.
+    async def idle_builder(self):await asyncio.Event().wait()
+    monkeypatch.setattr('trade_execution.cache.CachedBuilder.warm',idle_builder)
     from aiohttp import web,WSMsgType
     calls=[]
     async def http(request):

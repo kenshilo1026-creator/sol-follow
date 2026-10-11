@@ -50,10 +50,10 @@ flags.uninterpreted_tail_hex，creator_fee_bps／holder_reward 為 null，不猜
 
 在 funding.sqlite3.launch_creates 以 signature:path:mint:create 去重；重播不重複
 記錄或發出 launchpad-create 日誌。保存先於 job 完成，加入 chain_checks 追蹤 finalized；
-狀態為 confirmed／finalized／invalid。RPC null 不是回滾，實際 finalized error 才標 invalid。
+狀態為 processed／confirmed／finalized／invalid；狙擊用的 processed create 在 confirmed follow-up 升級。RPC null 不是回滾，實際 finalized error 才標 invalid。
 已完成且超過 audit 保留時間的記錄可分批清理，待核對 evidence 保留。舊 DB 啟動時新增表，
 不刪原有訂單、持倉或入金。服務仍使用一小時 backfill 窗口；舊樣本可由 probe 解碼，
-不追補為即時發幣。create+buy 同筆交易只產生 Create evidence，不計買票、不簽名或送單。
+不追補為即時發幣。即時 create（有或沒有附帶 dev buy）現在可觸發 hotlist dev 狙擊；一般 buy 不計票。詳見 [Create 狙擊模式](dev-create-sniping.md)。
 
 ```powershell
 .\.venv\Scripts\python -m features.app check

@@ -27,6 +27,14 @@ def message(kind, detail):
     if kind=='service started':
         mode='Dry run' if detail['mode']=='dry' else 'live'
         return f'sol-follow 開始 ({mode})'
+    if kind=='dry create detected':
+        commitment='processed（尚未確認）' if detail['commitment']=='processed' else 'confirmed'
+        return (f"🔎 [SOL] Dry run 偵測到 create\nLaunchpad: {detail['launchpad']}"
+                f"\n代幣: {detail['mint']}\ndev（發幣錢包）: {detail['user']}"
+                f"\n交易: {detail['signature']}\nSlot: {detail['slot']}"
+                f"\n指令: {detail['instruction_path']}\n確認狀態: {commitment}"
+                f"\n名稱: {detail['name']}\nSymbol: {detail['symbol']}"
+                "\nDry run：沒有實際下單。")[:3900]
     if kind=='dev holding entry check':
         state='dev 持倉超標，代幣已排除' if detail['state']=='blocked' else 'dev 持倉無法判定，代幣已排除'
         return (f"⚠️ [SOL] {state}\n代幣: {detail['mint']}\ndev: {detail.get('creator','未知')}"
@@ -94,9 +102,11 @@ class Notices:
         log.log(logging.WARNING if alert else logging.INFO, '[SOL] %s %s', kind, log_detail)
         try:
             self.queue.put_nowait((kind, detail, alert))
+            return True
         except asyncio.QueueFull:
             self.dropped += 1
             log.error('[SOL] audit/notification queue full dropped=%s', self.dropped)
+            return False
 
     @asynccontextmanager
     async def running(self):

@@ -63,22 +63,11 @@ def test_native_exact_input_decoded_with_budget_and_minimum():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('eligible,expected',[(0,0),(2,0),(3,1),(4,1)])
-async def test_multi_buyer_hotlist_threshold_and_no_retry_within_signature(config,store,eligible,expected):
-    raw=sample();raw['blockTime']=int(time.time());routes=decode_all(Tx(raw))
-    cfg=replace(config,n=3)
-    for i,r in enumerate(routes[:eligible]):
-        store.admit(Funding(str(i),'fund',r.trade.wallet,address(),'cex:test',10**9,r.trade.slot-1,raw['blockTime']-10),3600,time.time())
-    service=Service(cfg,store);service.signals.started=raw['blockTime']-1
-    calls=[]
-    class Engine:
-        async def buy(self,oid,route):
-            calls.append(route)
-            store.fail_order(oid,'simulated-test-failure')
-    class RPC:
-        async def transaction(self,sig):return raw
-    service.executor=Engine();row={'signature':routes[0].trade.signature}
-    store.enqueue([row['signature']],live=True)
-    await service.process(row,RPC());await service.process(row,RPC())
-    assert len(calls)==expected
-    assert len(store.rows('trading','SELECT * FROM votes'))==eligible
+@pytest.mark.parametrize('threshold',[1,3,99])
+async def test_one_native_dev_create_buys_without_wallet_threshold(config,store,threshold):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(replace(config,n=threshold),store,fail=True)
+    await case.service.process(case.row,case.rpc)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and case.calls[0][1].kind=='pump_native_curve'
+    assert not store.rows('trading','SELECT * FROM votes')

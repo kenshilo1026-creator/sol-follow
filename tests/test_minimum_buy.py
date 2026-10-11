@@ -80,27 +80,14 @@ def test_removal_survives_restart_old_funding_and_invalidation(config,store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('paid,orders',[(99_999_999,0),(100_000_000,1)])
-async def test_processed_minimum_skips_order_and_keeps_subscription(config,store,monkeypatch,paid,orders):
-    now=int(time.time());raw=sample();raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    route=decode_all(Tx(raw,observed_at=now))[0]
-    route=replace(route,trade=replace(route.trade,quote=paid),observed_amount=6_000_000_000 if paid<100_000_000 else 500_000_000)
-    admit(store,route,now)
-    monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,ignore_observed_buy=100_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    executed=[]
-    class Engine:
-        async def buy(self,oid,r):executed.append(oid)
-    service.executor=Engine();store.stream_transaction(raw)
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
-    assert len(executed)==orders
-    assert len(store.rows('trading','SELECT * FROM orders'))==orders
-    if not orders:
-        assert not store.rows('trading','SELECT * FROM votes')
-        assert route.trade.wallet in HotlistFeed(cfg,store,None,None,None).addresses()
-        assert Store(config.data).eligible(route.trade.wallet,route.trade.slot+1,now,now)
+@pytest.mark.parametrize('minimum',[100_000_000,5_000_000_000])
+async def test_pure_processed_create_does_not_require_dev_buy_minimum(config,store,minimum):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(replace(config,min_observed_buy=minimum,ignore_observed_buy=minimum,n=99),store)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and case.calls[0][1].trade.quote==0
+    assert not store.rows('trading','SELECT * FROM votes')
+    assert case.item.user not in Store(config.data).hotlist(time.time())
 
 
 @pytest.mark.asyncio
@@ -117,21 +104,16 @@ async def test_builder_passes_minimum_not_maximum_to_worker(config,store):
 
 
 @pytest.mark.asyncio
-async def test_small_buy_keeps_hotlist_even_if_market_cap_cancelled(config,store,monkeypatch):
-    now=int(time.time());raw=sample();raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    route=decode_all(Tx(raw,observed_at=now))[0]
-    route=replace(route,trade=replace(route.trade,quote=1))
-    admit(store,route,now)
-    monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,ignore_observed_buy=100_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    async def interrupted(r):raise asyncio.CancelledError
-    service.market_cap.check=interrupted;store.stream_transaction(raw)
-    with pytest.raises(asyncio.CancelledError):
-        service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
-    assert route.trade.wallet in Store(config.data).hotlist(now)
-    assert not store.rows('trading','SELECT * FROM orders')
+async def test_create_consumption_survives_execution_cancellation(config,store):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store)
+    async def interrupted(*a):raise asyncio.CancelledError()
+    case.service.executor.buy=interrupted
+    with pytest.raises(asyncio.CancelledError):await case.service.process(case.row,case.rpc)
+    assert case.item.user not in Store(config.data).hotlist(time.time())
+    assert store.rows('trading','SELECT state FROM orders')==[{'state':'reserved'}]
+    await case.service.process(case.row,case.rpc)
+    assert case.calls==[]
 
 
 def test_usd_minimum_default_and_validation():
@@ -152,34 +134,18 @@ async def test_usd_disable_does_not_fall_back_to_sol_minimum(config):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fixture',['stonk_non_sol_buy.json','pump_non_sol_buy.json'])
-@pytest.mark.parametrize('paid,allowed,removed',[(999,False,True),(1000,True,False),(None,False,False)])
-async def test_usd_service_ignores_small_buy_and_missing_price(config,store,monkeypatch,fixture,paid,allowed,removed):
-    import json
-    from pathlib import Path
-    from trade_execution.builder import BuildError
-    now=int(time.time());raw=json.loads((Path(__file__).parent/'fixtures'/fixture).read_text());raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    route=decode_all(Tx(raw,observed_at=now))[0]
-    route=replace(route,trade=replace(route.trade,quote=paid or 1))
-    admit(store,route,now)
-    monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=0,
-                min_observed_buy_usd_micros=50_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    async def minimum(r):
-        if paid is None:raise BuildError('market-cap-price-unavailable')
-        return {'quoteLimit':'1000','solLimit':'333333334','minimumUsdMicros':'50000000'}
-    async def maximum(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
-    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_ignore=minimum;service.quote_builder.quote_limit=maximum
-    executed=[]
-    class Engine:
-        async def buy(self,oid,r):executed.append(oid)
-    service.executor=Engine();store.stream_transaction(raw)
-    service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
-    assert bool(executed)==allowed
-    assert (route.trade.wallet not in Store(config.data).hotlist(now))==removed
-    if not allowed:assert not store.rows('trading','SELECT * FROM votes')
+@pytest.mark.parametrize('launchpad',['pump','stonk'])
+async def test_non_sol_create_needs_no_observed_buyer_usd_valuation(config,store,launchpad):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(replace(config,min_observed_buy_usd_micros=999_000_000,n=99),store,
+                      launchpad=launchpad,non_sol=True)
+    async def missing(*a):raise AssertionError('observed buyer USD valuation should not run')
+    case.service.quote_builder.quote_minimum=missing
+    case.service.quote_builder.quote_ignore=missing
+    case.service.quote_builder.quote_limit=missing
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1
+    assert case.item.user not in Store(config.data).hotlist(time.time())
 
 
 def test_ignored_small_buy_preserves_prior_vote_and_is_deduped(config,store):
@@ -198,35 +164,10 @@ def test_ignored_small_buy_preserves_prior_vote_and_is_deduped(config,store):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('non_sol',[False,True])
-async def test_wallet_can_follow_later_buy_after_small_buy(config,store,monkeypatch,non_sol):
-    import json
-    from pathlib import Path
-    from copy import deepcopy
-    from chain_common.primitives import b58encode
-    now=int(time.time())
-    raw=json.loads((Path(__file__).parent/'fixtures'/'stonk_non_sol_buy.json').read_text()) if non_sol else sample()
-    raw['blockTime']=None;raw['_stream']={'commitment':'processed','live':True}
-    current=decode_all(Tx(raw,observed_at=now))[0]
-    floor=1000 if non_sol else 100_000_000
-    current=replace(current,trade=replace(current.trade,quote=floor-1),observed_amount=500_000_000 if not non_sol else current.observed_amount)
-    admit(store,current,now)
-    monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[current])
-    cfg=replace(config,n=1,hotlist_commitment='processed',min_observed_buy=100_000_000,min_observed_buy_usd_micros=10_000_000,
-                ignore_observed_buy=100_000_000,ignore_observed_buy_usd_micros=10_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    async def minimum(r):return {'quoteLimit':'1000','minimumUsdMicros':'10000000'}
-    async def maximum(r):return {'quoteLimit':str(r.observed_amount),'maximumUsdMicros':'500000000'}
-    service.quote_builder.quote_minimum=minimum;service.quote_builder.quote_ignore=minimum;service.quote_builder.quote_limit=maximum
-    executed=[]
-    class Engine:
-        async def buy(self,oid,r):executed.append(oid)
-    service.executor=Engine();store.stream_transaction(raw)
-    service.store.mark_live(current.trade.signature);await service.process({'signature':current.trade.signature},NoRpc())
-    assert not executed and current.trade.wallet in Store(config.data).hotlist(now)
-    decision=store.rows('audit',"SELECT outcome,detail FROM decisions WHERE stage='ignore'")[0]
-    assert decision['outcome']=='ignored' and not json.loads(decision['detail'])['hotlist_removed']
-    second=deepcopy(raw);sig=b58encode(bytes([19])*64);second['transaction']['signatures'][0]=sig;second['slot']+=1
-    current=replace(current,trade=replace(current.trade,signature=sig,event=sig+':buy',slot=second['slot'],quote=floor))
-    store.stream_transaction(second)
-    service.store.mark_live(sig);await service.process({'signature':sig},NoRpc())
-    assert len(executed)==1
+async def test_later_replay_cannot_rearm_consumed_create(config,store,non_sol):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store,non_sol=non_sol,fail=True)
+    await case.service.process(case.row,case.rpc)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1
+    assert case.item.user not in Store(config.data).hotlist(time.time())

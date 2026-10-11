@@ -105,36 +105,23 @@ def test_processed_filter_and_replay_anchor(config,store,monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_processed_no_block_time_no_rpc_and_confirmed_dedup(config,store,monkeypatch):
-    now=int(time.time());raw=sample();raw['blockTime']=None
-    raw['_stream']={'commitment':'processed','live':True}
-    sig=raw['transaction']['signatures'][0]
-    routes=decode_all(Tx(raw,observed_at=now))
-    for r in routes:admit(store,r,now)
-    cfg=replace(config,n=1,hotlist_commitment='processed')
-    service=Service(cfg,store);service.signals.started=now-1;service.notices=Notices()
-    calls=[]
-    class Engine:
-        async def buy(self,oid,route):calls.append(oid)
-    service.executor=Engine()
+async def test_processed_create_without_time_and_confirmed_dedup(config,store,monkeypatch):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store)
     def forbidden(*a):raise AssertionError('processed funding must wait for confirmation')
     monkeypatch.setattr('features.runtime.service.funding_decode',forbidden)
-    store.stream_transaction(raw)
-    await service.process({'signature':sig},NoRpc())
-    assert len(calls)==1 and store.rows('trading','SELECT * FROM order_sources')
-    assert Processed(store).order_usable(calls[0])
-    # A confirmed follow-up must survive completion of the provisional job.
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and Processed(store).order_usable(case.calls[0][0])
+    sig=case.item.signature
     Processed(store).confirmed(sig,'confirmed')
-    store.finish_processed(sig,'processed-provisional',raw['slot'])
+    store.finish_processed(sig,'processed-provisional',case.item.slot)
     assert store.rows('funding','SELECT reason,state FROM jobs')[0]=={'reason':'confirmed-follow-up','state':'pending'}
     monkeypatch.setattr('features.runtime.service.funding_decode',lambda *a:[])
-    confirmed=deepcopy(raw);confirmed.pop('_stream');confirmed['blockTime']=now
-    class Rpc:
-        async def transaction(self,sig):return confirmed
-    await service.process({'signature':sig},Rpc())
-    assert len(calls)==1
+    case.raw.pop('_stream');case.raw['blockTime']=int(time.time())
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1
     Processed(store).invalidate(sig,'different-slot')
-    assert not Processed(store).order_usable(calls[0])
+    assert not Processed(store).order_usable(case.calls[0][0])
 
 
 @pytest.mark.asyncio
@@ -150,7 +137,7 @@ async def test_over_cap_never_votes_even_after_confirmed_retry(config,store):
     store.enqueue([sig],live=True);await service.process({'signature':sig},Rpc())
     assert not store.rows('trading','SELECT * FROM votes')
     assert not store.rows('trading','SELECT * FROM orders')
-    assert len(store.rows('trading','SELECT * FROM events'))==4
+    assert store.rows('trading','SELECT * FROM events')==[]
     service.config=replace(service.config,max_observed_buy=10**12)
     await service.process({'signature':sig},Rpc())
     assert not store.rows('trading','SELECT * FROM orders')

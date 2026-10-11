@@ -148,3 +148,17 @@ def test_reader_persists_discovery_and_fails_pending_build_on_child_exit(config,
             await future
         assert builder.seen.recipe(route().quote_mint) == recipe
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation',['build','bootstrap'])
+async def test_create_cache_does_not_enable_usd_oracles(config,store,operation):
+    from dataclasses import replace
+    builder=manager(replace(config,max_market_cap_usd_micros=1,max_observed_buy_usd_micros=999),store)
+    async def ready():pass
+    async def exchange(payload):
+        assert payload['marketCapEnabled'] is False
+        return {'checked':True}
+    builder.start=ready;builder.exchange=exchange
+    assert await builder.request({'route':'prime','minSlot':0,'lookupTables':[],'primeAccounts':[]},
+                                 '',operation=operation)=={'checked':True}

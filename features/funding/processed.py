@@ -60,6 +60,8 @@ class Processed:
             db.commit()
         with self.store.db('trading') as db:
             db.executemany('DELETE FROM votes WHERE signature=?', [(r['signature'],) for r in rows])
+        for row in rows:
+            self.store.invalidate(row['signature'])
         return len(rows)
 
     def confirmed(self, signature, state):

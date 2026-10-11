@@ -127,7 +127,7 @@ class CachedBuilder:
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
                        minimumUsdMicros=str(self.config.min_observed_buy_usd_micros if minimum_usd is None else minimum_usd),
                        maximumUsdMicros=str(self.config.max_observed_buy_usd_micros),
-                       marketCapEnabled=bool(self.config.max_market_cap_usd_micros or self.config.min_observed_buy_usd_micros or self.config.ignore_observed_buy_usd_micros or self.config.max_observed_buy_usd_micros),
+                       marketCapEnabled=operation in ('market_cap','quote_minimum','quote_limit','warm_limit'),
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
@@ -209,8 +209,6 @@ class CachedBuilder:
             _, (request, wallet) = self.queue.popitem(last=False)
             try:
                 await self.request(request, self.config.wallet_address or wallet, warm=True)
-                if request["route"]!="prime":
-                    await self.request(request,self.config.wallet_address or wallet,operation="warm_limit")
             except Exception as exc:
                 reason = str(exc) if isinstance(exc, BuildError) else type(exc).__name__
                 self.notices.emit('quote cache warm deferred', {'mint': request['mint'], 'reason': reason},

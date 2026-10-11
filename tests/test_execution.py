@@ -19,8 +19,13 @@ def test_fill_idempotent_and_remaining_tp(config,store):
     assert select_rule(rules,pos,Decimal(650),Decimal(650))==('second-tp',65)
 
 
-def test_protect_and_trailing(config):
-    rules=load_rules(config.root/'take_profit_rules.json')
+def test_protect_and_trailing(tmp_path):
+    path=tmp_path/'take_profit_rules.json'
+    path.write_text(json.dumps({'gain_definition':'profit_over_entry_percent','sell_basis':'current_position',
+        'rules':[{'type':'stop_loss','loss_percent':7,'sell_percent':100},
+                 {'type':'protect','activate_profit_percent':10,'profit_percent':5,'sell_percent':100},
+                 {'type':'trailing','activate_profit_percent':50,'drawdown_percent':20,'sell_percent':100}]}))
+    rules=load_rules(path)
     position={'amount':'1000','rules':'{}'}
     rid,amount=select_rule(rules,position,Decimal(-7),Decimal(0))
     assert amount==1000

@@ -41,9 +41,12 @@ CREATE TABLE IF NOT EXISTS launch_creates(event TEXT PRIMARY KEY, signature TEXT
  status TEXT NOT NULL DEFAULT 'confirmed', detail TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS launch_creates_signature ON launch_creates(signature);
 CREATE INDEX IF NOT EXISTS launch_creates_time ON launch_creates(time);
+CREATE INDEX IF NOT EXISTS launch_creates_user_slot ON launch_creates(user,slot);
 CREATE TABLE IF NOT EXISTS stream_payloads(signature TEXT PRIMARY KEY REFERENCES jobs(signature) ON DELETE CASCADE,
  raw TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stream_state(name TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dry_create_alerts(event TEXT PRIMARY KEY, queued REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS dry_create_alerts_queued ON dry_create_alerts(queued);
 CREATE TABLE IF NOT EXISTS block_times(slot INTEGER PRIMARY KEY, time INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL NOT NULL,
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
@@ -156,6 +159,17 @@ class Store:
     def hotlist(self, now):
         return {r['wallet']: r for r in self.rows('funding', 'SELECT * FROM hotlist WHERE expires>?', (now,))}
 
+    def claim_create_alert(self, event):
+        """Deduplicate dry create alerts across workers, commitments and restarts."""
+        with self.db('funding') as c:
+            return bool(c.execute('INSERT OR IGNORE INTO dry_create_alerts VALUES (?,?)',
+                                  (event,time.time())).rowcount)
+
+    def release_create_alert(self, event):
+        """A full notification queue must not permanently silence this create."""
+        with self.db('funding') as c:
+            c.execute('DELETE FROM dry_create_alerts WHERE event=?',(event,))
+
     def record_creates(self, items):
         added=[]
         with self.db('funding') as c:
@@ -164,11 +178,41 @@ class Store:
                 cur=c.execute('INSERT OR IGNORE INTO launch_creates VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                     (item.event,item.signature,item.mint,item.creator,item.user,item.launchpad,item.quote_mint,
                      item.slot,item.time,'confirmed',json.dumps(item.dict(),ensure_ascii=False,separators=(',',':'))))
-                if cur.rowcount:
+                upgraded=c.execute("UPDATE launch_creates SET status='confirmed',time=?,detail=? "
+                    "WHERE event=? AND status='processed'",(item.time,json.dumps(item.dict(),ensure_ascii=False,
+                    separators=(',',':')),item.event)).rowcount
+                if cur.rowcount or upgraded:
                     added.append(item)
                     c.execute('INSERT OR IGNORE INTO chain_checks VALUES (?,?,?)',(item.signature,item.slot,item.time))
             c.commit()
         return added
+
+    def consume_dev_create(self,item,now,*,processed=False):
+        """Atomically consume prior funding for the signing launch user."""
+        with self.db('funding') as c:
+            c.execute('PRAGMA synchronous=FULL')
+            c.execute('BEGIN IMMEDIATE')
+            funded=c.execute('SELECT 1 FROM funding WHERE wallet=? AND slot<? AND time<=? '
+                'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) LIMIT 1',
+                (item.user,item.slot,item.time,now,item.user)).fetchone()
+            if not funded:
+                c.commit()
+                return False,'dev-not-hotlisted-or-already-consumed'
+            prior=c.execute("SELECT 1 FROM launch_creates WHERE user=? AND slot<=? "
+                "AND signature!=? AND status!='invalid' LIMIT 1",(item.user,item.slot,item.signature)).fetchone()
+            c.execute('INSERT INTO hotlist_removals VALUES (?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
+                'slot=excluded.slot,signature=excluded.signature,reason=excluded.reason '
+                'WHERE excluded.slot>hotlist_removals.slot',
+                (item.user,item.slot,item.signature,'dev-create'))
+            c.execute('DELETE FROM hotlist WHERE wallet=? AND slot<=?',(item.user,item.slot))
+            c.execute('DELETE FROM history_requests WHERE address=? AND NOT EXISTS '
+                '(SELECT 1 FROM hotlist WHERE wallet=?)',(item.user,item.user))
+            c.execute('INSERT OR IGNORE INTO launch_creates VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                (item.event,item.signature,item.mint,item.creator,item.user,item.launchpad,item.quote_mint,
+                 item.slot,item.time,'processed' if processed else 'confirmed',
+                 json.dumps(item.dict(),ensure_ascii=False,separators=(',',':'))))
+            c.commit()
+        return (False,'previous-token-launch') if prior else (True,'hotlisted-dev-create')
 
     def finalize_creates(self, signature):
         with self.db('funding') as c:
@@ -383,19 +427,19 @@ class Store:
             c.commit()
         return bool(new)
 
-    def reserve(self, config, mint, pool, amount, side='buy', rule_id='', sources=()):
+    def reserve(self, config, mint, pool, amount, side='buy', rule_id='', sources=(), *, check_market_cap=True,allow_pending_dev=True):
         key = f'{config.strategy}:{config.mode}:{mint}'
         oid = uuid.uuid4().hex
         with self.db('trading') as c:
             c.execute('BEGIN IMMEDIATE')
             if side == 'buy':
                 dev=c.execute('SELECT * FROM token_dev_holdings WHERE mint=?',(mint,)).fetchone()
-                if not dev_row_permitted(dev,config.max_dev_holding_tokens):
+                if not dev_row_permitted(dev,config.max_dev_holding_tokens,allow_pending=allow_pending_dev):
                     c.commit()
                     return None
                 cap=c.execute('SELECT state,cap_usd_micros FROM token_entry_caps WHERE mint=?',(mint,)).fetchone()
                 limit=config.max_market_cap_usd_micros
-                if (cap and (cap['state']!='allowed' or (limit and int(cap['cap_usd_micros'])>limit))) or (not cap and limit):
+                if check_market_cap and ((cap and (cap['state']!='allowed' or (limit and int(cap['cap_usd_micros'])>limit))) or (not cap and limit)):
                     c.commit()
                     return None
                 if not c.execute("INSERT OR IGNORE INTO signals VALUES (?,?,'reserved')", (key, oid)).rowcount:
@@ -479,6 +523,19 @@ class Store:
                                    '(SELECT slot FROM hotlist_removals WHERE wallet=?),-1) ORDER BY slot DESC LIMIT 1', (wallet,wallet)).fetchone()
                 if latest:
                     c.execute('INSERT INTO hotlist VALUES (?,?,?,?,?,?)', (wallet, latest['event'],latest['slot'],latest['time'],latest['expires'],latest['rowid']))
+            # Restore only a proven invalid create's own consumption. A later
+            # launch/buy tombstone or newer funding must never be overwritten.
+            consumed=[r['wallet'] for r in c.execute("SELECT wallet FROM hotlist_removals "
+                "WHERE signature=? AND reason='dev-create'",(signature,))]
+            c.execute("DELETE FROM hotlist_removals WHERE signature=? AND reason='dev-create'",(signature,))
+            for wallet in consumed:
+                latest=c.execute('SELECT rowid,* FROM funding WHERE wallet=? AND expires>? '
+                    'ORDER BY slot DESC,rowid DESC LIMIT 1',(wallet,time.time())).fetchone()
+                if latest:
+                    c.execute('INSERT INTO hotlist VALUES (?,?,?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
+                        'event=excluded.event,slot=excluded.slot,time=excluded.time,expires=excluded.expires,revision=excluded.revision '
+                        'WHERE excluded.slot>hotlist.slot',(wallet,latest['event'],latest['slot'],latest['time'],
+                        latest['expires'],latest['rowid']))
             c.execute('DELETE FROM chain_checks WHERE signature=?', (signature,))
             c.commit()
         with self.db('trading') as c:

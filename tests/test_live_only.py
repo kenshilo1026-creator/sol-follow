@@ -71,32 +71,14 @@ async def test_new_hotlist_never_schedules_history_and_old_requests_drain(config
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('delivery', ['history', 'live', 'restart'])
-async def test_only_live_receipt_can_vote_and_buy(config, store, delivery):
-    raw = sample()
-    raw['blockTime'] = int(time.time())
-    routes = decode_all(Tx(raw))
-    cfg = replace(config, n=1, hotlist_commitment='confirmed')
-    for route in routes:
-        store.admit(Funding('fund-'+route.trade.wallet, 'fund', route.trade.wallet, address(),
-                    'cex:test', 10**9, route.trade.slot-1, raw['blockTime']-10), 3600, time.time())
-    sig = raw['transaction']['signatures'][0]
-    store.enqueue([sig], live=delivery != 'history')
-    if delivery == 'restart':
-        store = Store(cfg.data)
-    service = Service(cfg, store)
-    service.signals.started = raw['blockTime']-1
-    calls = []
-    class Engine:
-        async def buy(self, oid, route):
-            calls.append(oid)
-    class RPC:
-        async def transaction(self, signature):
-            return raw
-    service.executor = Engine()
-    await service.process({'signature': sig}, RPC())
-    assert bool(calls) == (delivery == 'live')
-    assert bool(store.rows('trading', 'SELECT * FROM votes')) == (delivery == 'live')
+@pytest.mark.parametrize('delivery',['history','live','restart'])
+async def test_only_live_create_can_reserve_and_buy(config,store,delivery):
+    from tests.create_snipe_helpers import setup_create
+    case=setup_create(config,store,processed=False,live=delivery!='history')
+    if delivery=='restart':case.service.store.live_receipts.clear()
+    await case.service.process(case.row,case.rpc)
+    assert bool(case.calls)==(delivery=='live')
+    assert not store.rows('trading','SELECT * FROM votes')
 
 
 def test_live_receipt_expires_and_duplicates_do_not_renew_it(store, monkeypatch):

@@ -9,7 +9,7 @@ def usage(store):
 
 
 def batch(store, name, table, where, params, limit=128):
-    allowed={'decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks'}
+    allowed={'decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks','dry_create_alerts'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
     start=time.monotonic()
@@ -39,6 +39,7 @@ class Maintenance:
                ('audit','audit','time<?',(now-cfg.audit_retention,)),
                ('audit','decisions','time<?',(now-cfg.audit_retention,)),
                ('funding','block_times','time<?',(now-cfg.backfill_age*2,)),
+               ('funding','dry_create_alerts','queued<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','processed_signals','seen<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','dead_slots','time<?',(now-max(cfg.backfill_age*2,86400),)),
                ('funding','jobs',"state IN ('done','expired') AND first_seen<?",(now-max(cfg.backfill_age*2,86400),)),

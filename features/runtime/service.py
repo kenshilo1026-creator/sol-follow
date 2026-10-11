@@ -10,17 +10,15 @@ from chain_common.background_rpc import BackgroundRpc
 from features.funding.rpc import FundingRpc
 from features.funding.confirmation_rpc import ConfirmationRpc, ConfirmationUnavailable
 from chain_common.transaction import Tx, Unsupported
-from chain_common.primitives import SYSTEM, WSOL
-from features.notifications.buy_failures import context as buy_context, unrecognized_non_sol
+from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
-from features.strategy.signals import Signals
+from features.strategy.dev_create import CreateSignals
 from features.strategy.market_cap import MarketCapGate
-from features.strategy.dev_holdings import DevHoldingsGate
+from features.strategy.create_dev_gate import CreateDevGate
 from features.funding.discovery import Discovery, FUNDING_GAP_SECONDS
 from features.funding.activity_filter import qualify_activity, HistoryPending
 from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
-from trade_execution.observed_buy import check as check_observed_buy, check_minimum, check_ignore
 from features.database.maintenance import Maintenance
 from features.database.storage import Store
 from launchpads import ENABLED, pump_fun, stonk
@@ -41,14 +39,14 @@ class Service:
         self.store=store or Store(config.data)
         self.notices=Notices(config,self.store)
         self.priority=Priority()
-        self.signals=Signals(self.store,config)
+        self.signals=CreateSignals(self.store,config)
         self.proofs=Processed(self.store)
         self.completed=self.expired=self.received=0
         self.backlog=BacklogMonitor(self.store,self.notices)
         self.metrics=Metrics()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
-        self.dev_holdings=DevHoldingsGate(config,self.store,self.notices)
+        self.dev_holdings=CreateDevGate(config,self.store,self.notices)
 
     async def qualify(self,item,rpc):
         record(self.store,'funding','observed','candidate',wallet=item.wallet,signature=item.signature,
@@ -135,6 +133,19 @@ class Service:
         funding_items=[] if processed else funding_decode(tx,self.config)
         if not processed:funding_candidates(self.store,tx,self.config,funding_items)
         creation=inspect_creates(tx)
+        # Notify every decoded create in dry mode, independently of hotlist,
+        # quantity gates and order eligibility, including provisional receipts.
+        if self.config.dry_run:
+            for item in creation.creates:
+                if self.store.claim_create_alert(item.event):
+                    detail={**item.dict(),'commitment':'processed' if processed else 'confirmed'}
+                    try:
+                        accepted=self.notices.emit('dry create detected',detail,alert=True)
+                        if accepted is False:
+                            raise RuntimeError('create-notification-queue-full')
+                    except Exception:
+                        self.store.release_create_alert(item.event)
+                        raise
         self.metrics.add('decode',time.monotonic()-parse_started)
         for item in funding_items:
             await self.qualify(item,rpc)
@@ -145,121 +156,27 @@ class Service:
         if creation.rejected:
             self.notices.emit('create instruction rejected',{'signature':tx.signature,'rejected':creation.rejected},
                               key='create-rejected',interval=60)
-        if self.config.remaining:
-            self.signals.observe_holdings(tx)
-        routes=decode_buy_routes(tx)
-        live=self.store.is_live(tx.signature,self.config.signal_age)
-        if live and (self.config.hotlist_commitment!='processed' or processed) and tx.time>=max(self.signals.started,time.time()-self.config.signal_age):
-            for detail in unrecognized_non_sol(tx,routes):
-                if (self.store.eligible(detail['source_wallet'],tx.slot,tx.time,time.time())
-                        and self.proofs.usable(tx.signature,slot=tx.slot)):
-                    record(self.store,'buy','blocked','unsupported-non-sol-route',wallet=detail['source_wallet'],
-                           mint=detail.get('mint',''),signature=tx.signature,event=detail['event'],detail=detail)
-                    self.notices.emit('non-SOL buy skipped',{'mode':self.config.mode,**detail},alert=True,
-                        key='unsupported-buy:'+detail['event'],interval=300)
-        # Reserve before awaiting execution, so a failed first attempt cannot
-        # cause another buyer in this same signature to trigger a second buy.
+        # Trigger directly from decoded creates, even with no embedded dev buy.
+        # Ordinary buys/sells never contribute votes or initiate an entry.
         pending=[]
-        for route in routes:
-            # Confirmed recovery may refresh identities/funding, never initiate a late buy.
-            if not live or (self.config.hotlist_commitment=='processed' and not processed):
-                trade_record(self.store,route.trade,'signal','skipped','recovery-not-live')
+        live=self.store.is_live(tx.signature,self.config.signal_age)
+        # Preserve the original cache's verified swap hints; this is decoding/
+        # prewarming only and cannot call the retired wallet-vote strategy.
+        if live and (self.config.hotlist_commitment!='processed' or processed):
+            for observed in decode_buy_routes(tx):self.quote_builder.observe(observed)
+        if self.config.hotlist_commitment!='processed' or processed:
+            for item in creation.creates:
+                route=self.signals.prepare(item,tx,live)
+                if route is not None:pending.append((route,item))
+        for route,item in pending:
+            if not self.dev_holdings.start_create(item,tx,route):
+                trade_record(self.store,route.trade,'dev-create','blocked','dev-holdings-not-permitted')
                 continue
             self.quote_builder.observe(route)
-            trade=route.trade
-            if (self.store.eligible(trade.wallet,trade.slot,trade.time,time.time())
-                    and self.proofs.usable(trade.signature,slot=trade.slot)):
-                fresh_buy=trade.side=='buy' and trade.time>=max(self.signals.started,time.time()-self.config.signal_age)
-                if fresh_buy:
-                    if not self.dev_holdings.start(route,rpc):
-                        self.signals.reject_mint(trade.mint)
-                        trade_record(self.store,trade,'dev-holdings','blocked','dev-holdings-not-permitted',
-                                     self.dev_holdings.row(trade.mint))
-                        continue
-                    ignore_allowed,ignore_detail=await check_ignore(self.config,route,self.quote_builder)
-                    if not ignore_allowed:
-                        # Tiny executed payments keep their subscription, even with a loose input budget.
-                        # Missing valuations also keep the wallet: they cannot prove either band.
-                        ignored=ignore_detail['reason']=='source-buy-below-ignore'
-                        self.store.ignore_vote(trade)
-                        trade_record(self.store,trade,'ignore','ignored' if ignored else 'unavailable',
-                                     ignore_detail['reason'],{**ignore_detail,'hotlist_removed':False})
-                        if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
-                            self.signals.reject_mint(trade.mint)
-                        await self.market_cap.check(route)
-                        self.notices.emit('target buy skipped',{'signature':trade.signature,
-                            **buy_context(self.config,route),'stage':'target-ignore-check',
-                            **ignore_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
-                            key='target-ignore-skip:'+trade.event,interval=300)
-                        continue
-                    minimum_allowed,minimum_detail=await check_minimum(self.config,route,self.quote_builder)
-                    if not minimum_allowed and minimum_detail['reason']=='source-buy-below-minimum':
-                        self.store.remove_hotlist(trade,'buy-below-minimum')
-                        self.signals.reject(trade)
-                        trade_record(self.store,trade,'minimum','blocked',minimum_detail['reason'],
-                                     {**minimum_detail,'hotlist_removed':True})
-                        self.notices.emit('target buy skipped',{'signature':trade.signature,
-                            **buy_context(self.config,route),'stage':'target-minimum-check',
-                            **minimum_detail,'hotlist_removed':True},alert=route.quote_mint!=WSOL,
-                            key='target-min-skip:'+trade.event,interval=300)
-                        if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
-                            self.signals.reject_mint(trade.mint)
-                        await self.market_cap.check(route)
-                        continue
-                allowed,detail=await check_observed_buy(self.config,route,self.quote_builder)
-                over_limit=not allowed and detail['reason'] in ('source-sol-budget-over-limit','source-token-budget-over-usd-limit')
-                if over_limit and fresh_buy:
-                    # Persist removal before any slower market-cap lookup.
-                    self.store.remove_hotlist(trade,'buy-above-maximum')
-                    self.signals.reject(trade)
-                    trade_record(self.store,trade,'maximum','blocked',detail['reason'],{**detail,'hotlist_removed':True})
-                    self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
-                        'stage':'target-amount-check',**detail,'hotlist_removed':True},alert=route.quote_mint!=WSOL,
-                        key='target-skip:'+trade.event,interval=300)
-                    if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
-                        self.signals.reject_mint(trade.mint)
-                    await self.market_cap.check(route)  # Preserve first-observation valuation.
-                    continue
-                if fresh_buy:
-                    if self.config.max_market_cap_usd_micros and not self.market_cap.row(trade.mint):
-                        self.signals.reject_mint(trade.mint)
-                    cap_allowed=await self.market_cap.check(route)
-                    if not minimum_allowed:
-                        trade_record(self.store,trade,'minimum','unavailable',minimum_detail['reason'],
-                                     {**minimum_detail,'hotlist_removed':False})
-                        self.signals.reject(trade)
-                        self.notices.emit('target buy skipped',{'signature':trade.signature,
-                            **buy_context(self.config,route),'stage':'target-minimum-check',
-                            **minimum_detail,'hotlist_removed':False},alert=route.quote_mint!=WSOL,
-                            key='target-min-skip:'+trade.event,interval=300)
-                        continue
-                    if not cap_allowed:
-                        trade_record(self.store,trade,'market-cap','blocked','market-cap-not-permitted',
-                                     self.market_cap.row(trade.mint))
-                        self.signals.reject_mint(trade.mint)
-                        self.signals.reject(trade)
-                        continue
-                if not allowed:
-                    trade_record(self.store,trade,'maximum','blocked' if over_limit else 'unavailable',detail['reason'],detail)
-                    self.signals.reject(trade)
-                    self.notices.emit('target buy skipped',{'signature':trade.signature,**buy_context(self.config,route),
-                        'stage':'target-amount-check',**detail},alert=route.quote_mint!=WSOL,
-                        key='target-skip:'+trade.event,interval=300)
-                    continue
-            oid=self.signals.observe(trade)
+            oid=self.signals.reserve(route)
             if oid:
-                pending.append((oid,route))
-        for oid,route in pending:
-            executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
-            await executor.buy(oid,route)
-        relevant_programs={pump_fun.PROGRAM,pump_fun.SWAP_PROGRAM,stonk.PROGRAM}
-        if not routes and not creation.creates and any(ix.get('programId') in relevant_programs for _,ix in tx.instructions()):
-            for wallet in tx.signers:
-                if self.store.eligible(wallet,tx.slot,tx.time,time.time()):
-                    record(self.store,'buy','unavailable','unsupported-route-or-not-a-buy',
-                           wallet=wallet,signature=tx.signature)
-            self.notices.emit('unsupported buy route; no vote',{'signature':tx.signature},
-                              key='unsupported-route',interval=60)
+                executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
+                await executor.buy(oid,route)
         if processed:
             self.store.finish_processed(row['signature'],'processed-provisional',tx.slot)
         else:
@@ -411,10 +328,10 @@ class Service:
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
                 'create_decoders':CREATE_DECODERS,
                 'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
-                'max_target_buy_sol':self.config.max_observed_buy/1_000_000_000,'http_policy':self.config.http_policy,
+                'http_policy':self.config.http_policy,
                 'funding_history_provider':self.config.funding_history_provider,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
-                'threshold':self.config.n,'window_s':self.config.window},alert=True)
+                'buy_trigger':self.config.buy_trigger},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),

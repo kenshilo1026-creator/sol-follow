@@ -46,54 +46,21 @@ async def test_ignore_and_minimum_use_distinct_cache_only_payloads(config,store)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fixture',['native','pump_non_sol_buy.json','stonk_non_sol_buy.json'])
-@pytest.mark.parametrize('band,removed,follow',[
-    ('below-ignore',False,False),('equal-ignore',True,False),('between',True,False),
-    ('below-min',True,False),('equal-min',False,True),('equal-max',False,True),
-    ('above-max',True,False),('missing-ignore',False,False),('missing-min',False,False),
-    ('cancel-min',True,False)])
-async def test_processed_three_bands(config,store,monkeypatch,fixture,band,removed,follow):
-    now=int(time.time())
-    raw=sample() if fixture=='native' else json.loads((Path(__file__).parent/'fixtures'/fixture).read_text())
-    raw['blockTime']=None;raw['_stream']={'commitment':'processed','live':True}
-    route=decode_all(Tx(raw,observed_at=now))[0]
-    native=fixture=='native'
-    floor,minimum,maximum=(100_000_000,500_000_000,5_000_000_000) if native else (1000,5000,50000)
-    paid={'below-ignore':floor-1,'equal-ignore':floor,'between':floor+1,'below-min':minimum-1,
-          'equal-min':minimum,'equal-max':maximum,'above-max':maximum+1,
-          'missing-ignore':minimum,'missing-min':minimum,'cancel-min':floor+1}[band]
-    if native and band in ('missing-ignore','missing-min'):
-        pytest.skip('USD cache failure only applies to non-SOL pairs')
-    # A loose maximum input budget must not consume a tiny executed payment.
-    route=replace(route,trade=replace(route.trade,quote=paid),observed_amount=maximum+1 if band=='below-ignore' else paid)
-    admit(store,route,now)
-    monkeypatch.setattr('features.runtime.service.decode_buy_routes',lambda tx:[route])
-    cfg=replace(config,n=1,hotlist_commitment='processed',ignore_observed_buy=100_000_000,
-                min_observed_buy=500_000_000,ignore_observed_buy_usd_micros=10_000_000,min_observed_buy_usd_micros=50_000_000)
-    service=Service(cfg,store);service.signals.started=now-1
-    async def ignore(r):
-        if band=='missing-ignore':raise BuildError('price-cache-miss')
-        return {'quoteLimit':str(floor),'minimumUsdMicros':'10000000'}
-    async def minquote(r):
-        if band=='missing-min':raise BuildError('price-cache-miss')
-        return {'quoteLimit':str(minimum),'minimumUsdMicros':'50000000'}
-    async def maxquote(r):return {'quoteLimit':str(maximum),'maximumUsdMicros':'500000000'}
-    service.quote_builder.quote_ignore=ignore;service.quote_builder.quote_minimum=minquote;service.quote_builder.quote_limit=maxquote
-    if band=='cancel-min':
-        async def cancel(r):raise asyncio.CancelledError
-        service.market_cap.check=cancel
-    orders=[]
-    class Engine:
-        async def buy(self,oid,r):orders.append(oid)
-    service.executor=Engine();store.stream_transaction(raw)
-    if band=='cancel-min':
-        with pytest.raises(asyncio.CancelledError):service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
-    else:service.store.mark_live(route.trade.signature);await service.process({'signature':route.trade.signature},NoRpc())
-    assert bool(orders)==follow
-    restarted=Store(config.data)
-    assert (route.trade.wallet not in restarted.hotlist(now))==removed
-    if removed:assert not restarted.eligible(route.trade.wallet,route.trade.slot+1,now,now)
-    if not follow:
-        assert not store.rows('trading','SELECT * FROM votes')
-        rows=store.rows('audit',"SELECT * FROM decisions WHERE stage IN ('ignore','minimum','maximum')")
-        assert rows and json.loads(rows[-1]['detail'])['hotlist_removed']==removed
-        if band=='below-ignore':assert rows[-1]['stage']=='ignore' and rows[-1]['outcome']=='ignored'
+@pytest.mark.parametrize('band',['below-ignore','equal-min','above-max','missing-price','cancel'])
+async def test_create_does_not_wait_for_observed_buyer_amount_bands(config,store,fixture,band):
+    from tests.create_snipe_helpers import setup_create
+    cfg=replace(config,n=99,min_observed_buy=5_000_000_000,max_observed_buy=5_000_000_001)
+    case=setup_create(cfg,store,launchpad='stonk' if fixture.startswith('stonk') else 'pump',
+                      non_sol=fixture!='native')
+    async def forbidden(*a):raise AssertionError('create has no observed buyer amount to price')
+    case.service.quote_builder.quote_ignore=forbidden
+    case.service.quote_builder.quote_minimum=forbidden
+    case.service.quote_builder.quote_limit=forbidden
+    if band=='cancel':
+        async def interrupted(*a):raise asyncio.CancelledError()
+        case.service.executor.buy=interrupted
+        with pytest.raises(asyncio.CancelledError):await case.service.process(case.row,case.rpc)
+    else:await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==(0 if band=='cancel' else 1)
+    assert case.item.user not in Store(config.data).hotlist(time.time())
+    assert not store.rows('trading','SELECT * FROM votes')

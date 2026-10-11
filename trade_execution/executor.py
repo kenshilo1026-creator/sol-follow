@@ -9,6 +9,7 @@ from chain_common.transaction import Tx
 from trade_execution.builder import build
 from features.funding.processed import Processed
 from features.strategy.dev_holdings import permitted as dev_permitted
+from features.strategy.create_dev_gate import permitted as create_permitted
 from trade_execution.native import decode_native
 from features.notifications.buy_failures import context as buy_context, reason as failure_reason
 
@@ -22,7 +23,9 @@ class Executor:
         self.reconcile_rpc=reconcile_rpc or rpc
 
     def fresh(self, route, oid=None):
-        if not dev_permitted(self.store,route.trade.mint,self.config.max_dev_holding_tokens):
+        allowed=(create_permitted(self.store,route,self.config.max_dev_holding_tokens) if route.trade.side=='create'
+                 else dev_permitted(self.store,route.trade.mint,self.config.max_dev_holding_tokens))
+        if not allowed:
             return False
         proofs=Processed(self.store)
         processed=self.config.hotlist_commitment=='processed'

@@ -17,10 +17,10 @@ def within_limit(detail,limit):
     return limit is None or Fraction(int(detail['amount_raw']),10**detail['decimals'])<=Fraction(limit)
 
 
-def row_permitted(row,limit):
+def row_permitted(row,limit,*,allow_pending=True):
     if row is None:return limit is None
     if row['state']=='checking':
-        return time.time()-row['observed']<30
+        return allow_pending and time.time()-row['observed']<30
     if row['state']!='allowed':return False
     try:return within_limit(json.loads(row['detail']),limit)
     except (ValueError,KeyError,TypeError):return False

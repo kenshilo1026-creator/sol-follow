@@ -21,6 +21,8 @@ def test_batch_funding(config):
 
 
 def test_privacy_real_fixture(config):
+    from chain_common.primitives import PRIVACY,pda
+    config=replace(config,source_programs=(PRIVACY,),privacy_pools=(pda([b'tree_token'],PRIVACY),))
     r=json.loads((Path(__file__).parent/'fixtures/privacy_cash_native.json').read_text())
     result=funding(Tx(r),config)
     assert len(result)==1

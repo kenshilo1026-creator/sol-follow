@@ -465,3 +465,28 @@ Within each worker lane, due jobs with a process-local live receipt from the las
 rotation applies only after live jobs, including on every fifth oldest turn.
 Retry delays and claim leases still apply. Restarted jobs and recovered history
 do not gain live priority; execution freshness and eligibility checks are unchanged.
+
+## 2026-10-11: hotlist dev-create entry replaces wallet voting
+
+The active service uses the signing create user and verified Pump/Stonk create
+metadata, including pure creates with no embedded buy, to reserve one entry.
+Hotlist consumption is durable before entry filters; stale creates and failed
+builds cannot rearm it. Proven rollback restores only the consumed create's
+unexpired funding. Historical/confirmed replay cannot trigger a late buy.
+Existing entry risk gates, source proofs, per-mint reservations, simulation,
+DRY_RUN, execution and reconciliation remain in force. Multi-wallet thresholds
+and observed buyer amount bands no longer trigger or gate the active strategy.
+Detailed migration/attribution rules: docs/dev-create-sniping.md.
+
+## 2026-10-11: dev launch quantity is a pre-entry local decision
+
+Create entries use verified calldata and already received transaction evidence
+before order reservation. A known exact-output Pump amount can immediately
+reject an over-limit create; exact-input minima never become actual quantities.
+No holding account RPC or asynchronous pending permission is used by the active
+create strategy. Unknown evidence skips entry and retains consumption/dedupe.
+The existing SOL_DEV_MAX_HOLDING_TOKENS value/equality/blank semantics remain,
+with local launch receipt exposure replacing the old wallet snapshot. Nine
+public mainnet transactions and boundary/transfer/replay tests verify this.
+Market cap remains disabled; signing, fees, slippage, simulation and existing
+order reconciliation are unchanged.

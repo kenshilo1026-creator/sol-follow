@@ -3,7 +3,7 @@
 # Install as /etc/systemd/system/sol-follow.service (one service per deployment).
 # Create /home/ubuntu/sol-follow/data before starting. The application reads its own .env.
 [Unit]
-Description=Solana hotlist group-follow bot
+Description=Solana hotlist dev-create sniper
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=300
