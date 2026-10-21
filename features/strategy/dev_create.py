@@ -50,9 +50,17 @@ class CreateSignals:
                 or processed and (not proof or proof['state']!='pending')):
             trade_record(self.store,trade,'dev-create','blocked','source-proof-unusable')
             return None
-        claimed,reason=self.store.consume_dev_create(item,now,processed=processed)
+        claimed,reason,funding=self.store.consume_dev_create(item,now,processed=processed,
+            min_funding_age_seconds=self.config.min_funding_age_seconds)
+        age_detail={}
+        if funding:
+            stamp=funding['time']
+            age_detail={'funding_event':funding['event'],'funding_signature':funding['signature'],
+                'funding_provider':funding['provider'],'funded_time':stamp,
+                'funding_age_minutes':(now-stamp)/60 if type(stamp)==int and stamp>0 else None,
+                'required_funding_age_minutes':str(self.config.buy_only_aged_minutes)}
         if not claimed:
-            trade_record(self.store,trade,'dev-create','blocked',reason)
+            trade_record(self.store,trade,'dev-create','blocked',reason,age_detail)
             return None
         # Like RH on_launch, consume the hotlist before filters/builds. A stale
         # launch or a failed simulation cannot rearm a second launch/replay.
@@ -60,7 +68,7 @@ class CreateSignals:
             trade_record(self.store,trade,'dev-create','skipped','create-not-live-or-too-old')
             return None
         trade_record(self.store,trade,'dev-create','candidate','hotlisted-dev-create',
-                     {'creator':item.creator,'launchpad':item.launchpad,'buy_trigger':'dev-create'})
+                     {'creator':item.creator,'launchpad':item.launchpad,'buy_trigger':'dev-create',**age_detail})
         return route
 
     def reserve(self,route):

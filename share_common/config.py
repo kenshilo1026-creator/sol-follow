@@ -59,6 +59,18 @@ def hours_to_seconds(value, minimum=60):
         raise ValueError('invalid-hour-duration') from exc
 
 
+def minutes_to_seconds(value):
+    """Aged funding: zero disables; fractional minutes need whole seconds."""
+    try:
+        seconds=Decimal(str(value))*60
+        if (not seconds.is_finite() or seconds!=seconds.to_integral_value()
+                or not 0<=seconds<=30*86400):
+            raise ValueError('invalid-aged-funding-minutes')
+        return int(seconds)
+    except InvalidOperation as exc:
+        raise ValueError('invalid-aged-funding-minutes') from exc
+
+
 def usdc_units(value):
     try:
         n = Decimal(str(value)) * 10**6
@@ -170,6 +182,11 @@ class Config:
     max_dev_holding_tokens: Decimal | None = Decimal('60000000')
     min_funding_usdc: int = 50_000_000
     max_funding_usdc: int = 800_000_000
+    min_funding_age_seconds: int = 0
+
+    @property
+    def buy_only_aged_minutes(self):
+        return Decimal(self.min_funding_age_seconds)/60
 
     @property
     def buy_trigger(self):
@@ -274,6 +291,7 @@ def load(root=ROOT, env=None):
         min_funding=low, max_funding=high,
         min_funding_usdc=usdc_low, max_funding_usdc=usdc_high,
         hotlist_ttl=hours_to_seconds(get('SOL_HOTLIST_TTL_HOUR', '24')),
+        min_funding_age_seconds=minutes_to_seconds(get('SOL_BUY_ONLY_AGED_MINUTES','0')),
         n=integer('SOL_FOLLOW_MIN_WALLETS', 3, 1, 10000),
         window=integer('SOL_FOLLOW_WINDOW_SECONDS', 120, 1, 86400),
         remaining=boolean(get('SOL_FOLLOW_REQUIRE_REMAINING_POSITION', 'true')),

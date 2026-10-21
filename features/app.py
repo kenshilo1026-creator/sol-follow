@@ -26,6 +26,7 @@ def main():
                           'pending_routes':['pump_swap_buy','take_profit_sell_routes','other_quote_swap_venues'],
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'buy_trigger':config.buy_trigger,'buy_lamports':config.buy_amount,
+                          'buy_only_aged_minutes':str(config.buy_only_aged_minutes),
                           'hotlist_feed':config.feed_mode,'hotlist_commitment':config.hotlist_commitment,
                           'max_dev_holding_tokens':str(config.max_dev_holding_tokens) if config.max_dev_holding_tokens is not None else None,
                           'alchemy_key_configured':bool(config.alchemy_key),

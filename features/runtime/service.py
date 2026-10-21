@@ -331,7 +331,8 @@ class Service:
                 'http_policy':self.config.http_policy,
                 'funding_history_provider':self.config.funding_history_provider,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
-                'buy_trigger':self.config.buy_trigger},alert=True)
+                'buy_trigger':self.config.buy_trigger,
+                'buy_only_aged_minutes':str(self.config.buy_only_aged_minutes)},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),

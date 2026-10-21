@@ -129,3 +129,27 @@ queue releases its claim and retries the job instead of silently losing the
 alert. Normal Telegram credentials and delivery error handling still apply.
 Live mode retains its existing notification behavior. No notification changes
 entry rules or enables transaction submission in dry mode.
+
+## Aged funding in minutes
+
+SOL_BUY_ONLY_AGED_MINUTES applies one age gate to Pump and Stonk create entries
+in both dry and live modes. It covers native SOL/USDC CEX funding and Privacy
+Cash. Zero (the default) disables the gate; 10 requires at least ten minutes;
+0.5 means thirty seconds. Values must resolve to whole seconds, be finite and
+nonnegative, and not exceed thirty days. Hotlist TTL remains independent.
+
+Like RH on_launch, age is evaluated locally at detection, using the persisted
+funding transaction timestamp, not qualification time or service startup. The
+latest eligible qualified deposit strictly before the create slot is selected
+inside the consumption transaction. A newer qualified deposit resets age; an
+older mature deposit cannot bypass it. Missing/invalid timestamps fail the age
+gate when enabled. Expired funding and same/later-slot deposits remain ineligible.
+No extra RPC is added.
+
+A too-young create consumes its hotlist and launch evidence just as other
+rejected entries do. It is skipped immediately; waiting, retries, confirmed
+follow-up or restart cannot turn that create into a late buy. The local decision
+audit records funding-age, deposit identity and actual/required minutes. Dry-run
+create Telegram notifications still fire independently of this gate. The fixed
+SOL_BUY_AMOUNT_SOL remains unchanged. Check/startup metadata includes
+buy_only_aged_minutes. Set the value in sol-follow's own .env and restart.

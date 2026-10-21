@@ -187,17 +187,18 @@ class Store:
             c.commit()
         return added
 
-    def consume_dev_create(self,item,now,*,processed=False):
-        """Atomically consume prior funding for the signing launch user."""
+    def consume_dev_create(self,item,now,*,processed=False,min_funding_age_seconds=0):
+        """Consume once and return the latest eligible funding for the age gate."""
         with self.db('funding') as c:
             c.execute('PRAGMA synchronous=FULL')
             c.execute('BEGIN IMMEDIATE')
-            funded=c.execute('SELECT 1 FROM funding WHERE wallet=? AND slot<? AND time<=? '
-                'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) LIMIT 1',
+            funded=c.execute('SELECT event,signature,provider,slot,time FROM funding WHERE wallet=? AND slot<? AND time<=? '
+                'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) '
+                'ORDER BY slot DESC,time DESC,rowid DESC LIMIT 1',
                 (item.user,item.slot,item.time,now,item.user)).fetchone()
             if not funded:
                 c.commit()
-                return False,'dev-not-hotlisted-or-already-consumed'
+                return False,'dev-not-hotlisted-or-already-consumed',None
             prior=c.execute("SELECT 1 FROM launch_creates WHERE user=? AND slot<=? "
                 "AND signature!=? AND status!='invalid' LIMIT 1",(item.user,item.slot,item.signature)).fetchone()
             c.execute('INSERT INTO hotlist_removals VALUES (?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
@@ -212,7 +213,15 @@ class Store:
                  item.slot,item.time,'processed' if processed else 'confirmed',
                  json.dumps(item.dict(),ensure_ascii=False,separators=(',',':'))))
             c.commit()
-        return (False,'previous-token-launch') if prior else (True,'hotlisted-dev-create')
+        funding=dict(funded)
+        if prior:return False,'previous-token-launch',funding
+        # Mirror RH: too-young/unknown funding skips this launch after consuming
+        # its hotlist. A job retry or later confirmation never buys it late.
+        stamp=funding['time']
+        if min_funding_age_seconds>0 and (type(stamp)!=int or stamp<=0
+                or not 0<=now-stamp or now-stamp<min_funding_age_seconds):
+            return False,'funding-age',funding
+        return True,'hotlisted-dev-create',funding
 
     def finalize_creates(self, signature):
         with self.db('funding') as c:
