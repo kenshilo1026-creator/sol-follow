@@ -17,6 +17,7 @@ from features.funding.decoder import decode as funding_decode
 from features.strategy.dev_create import CreateSignals
 from features.strategy.market_cap import MarketCapGate
 from features.strategy.take_profit import TakeProfit
+from features.strategy.dev_sell import DevSell
 from features.strategy.create_dev_gate import CreateDevGate
 from features.funding.discovery import Discovery, FUNDING_GAP_SECONDS
 from features.funding.activity_filter import qualify_activity, HistoryPending
@@ -185,6 +186,8 @@ class Service:
             self.quote_builder.observe(route)
             oid=self.signals.reserve(route)
             if oid:
+                discovery=getattr(self,'discovery',None)
+                if discovery is not None:discovery.refresh()
                 executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
                 await executor.buy(oid,route)
         if processed:
@@ -333,8 +336,13 @@ class Service:
             self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights)
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.background_rpc)
-            discovery.market_watch=self.take_profit.watch_addresses
-            discovery.market_event=self.take_profit.market_event
+            self.dev_sell=DevSell(self.config,self.store,rpc,self.notices,self.dev_exit)
+            discovery.market_watch=lambda:self.take_profit.watch_addresses() | self.dev_sell.watch_addresses()
+            def market_event(address,signature,slot):
+                self.dev_sell.market_event(address,signature,slot)
+                self.take_profit.market_event(address,signature,slot)
+            discovery.market_event=market_event
+            discovery.market_subscribed=self.dev_sell.subscribed
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set
@@ -365,7 +373,7 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.executor.reconcile(),self.dev_exit.run(),self.take_profit.run(),self.quote_sweep.run()]
+                                      self.executor.reconcile(),self.dev_exit.run(),self.dev_sell.run(),self.dev_sell.catch_up(),self.take_profit.run(),self.quote_sweep.run()]
                     coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
                                       for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:

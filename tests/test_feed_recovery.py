@@ -175,6 +175,7 @@ async def test_idle_polling_keeps_single_receive_and_bounds_subscription_burst(c
 async def test_subscription_batches_complete_and_live_notifications_are_durable(config,store,monkeypatch):
     replies=asyncio.Queue();sent=[];urls=[]
     discovery=Discovery(config,store,None,Notices())
+    acknowledgements=[];discovery.market_subscribed=acknowledgements.append
     discovery.addresses=[f'wallet-{i}' for i in range(28)]
     monkeypatch.setattr(discovery,'refresh',lambda:None)
     class Socket:
@@ -195,6 +196,7 @@ async def test_subscription_batches_complete_and_live_notifications_are_durable(
     assert store.is_live('live-notification',15)
     assert store.rows('funding','SELECT signature FROM jobs')==[{'signature':'live-notification'}]
     assert len(sent)==28
+    assert set(acknowledgements)==set(discovery.addresses) and len(acknowledgements)==28
 
 
 @pytest.mark.asyncio

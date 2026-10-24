@@ -9,6 +9,8 @@ POLICY='create-transaction-v1'
 
 
 def permitted(store,route,limit):
+    if store.rows('trading',"SELECT 1 FROM dev_sell_events e JOIN orders o ON o.id=e.buy_id "
+                  "WHERE o.mint=? AND e.state='triggered'",(route.trade.mint,)):return False
     rows=store.rows('trading','SELECT * FROM token_dev_holdings WHERE mint=?',(route.trade.mint,))
     if not rows:return limit is None
     row=rows[0]

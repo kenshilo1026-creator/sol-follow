@@ -70,6 +70,7 @@ class Discovery:
         self.locks = {}
         self.market_watch = None
         self.market_event = None
+        self.market_subscribed = None
         self.market_addresses = set()
         self.funding_sources = set(config.cex) | set(config.privacy_pools)
 
@@ -206,6 +207,7 @@ class Discovery:
                                         await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[body['result']]})
                                     else:
                                         subs[addr] = body['result']
+                                        if self.market_subscribed:self.market_subscribed(addr)
                                     self.subscribed = set(subs)
                             self.notification(body,subs)
             except asyncio.CancelledError:

@@ -79,6 +79,8 @@ def test_one_hotlisted_dev_triggers_without_votes_and_consumes_once(config,store
     assert route and not store.hotlist(time.time())
     oid=signals.reserve(route)
     assert oid and store.order(oid)['amount']==str(config.buy_amount)
+    from features.strategy.dev_sell import DevSell
+    assert item.user in DevSell(config,store,None,Notices(),None).watch_addresses()
     assert store.rows('trading','SELECT * FROM votes')==[]
     assert store.rows('trading','SELECT * FROM order_sources')==[
         {'order_id':oid,'signature':item.signature,'slot':item.slot}]

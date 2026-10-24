@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS dev_sell_watches(buy_id TEXT PRIMARY KEY,dev TEXT NOT NULL,create_slot INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS dev_sell_events(signature TEXT NOT NULL,buy_id TEXT NOT NULL,
+ slot INTEGER NOT NULL,state TEXT NOT NULL DEFAULT 'pending',due REAL NOT NULL,
+ first_seen REAL NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(signature,buy_id));
+CREATE INDEX IF NOT EXISTS dev_sell_due ON dev_sell_events(state,due);
+
 CREATE TABLE IF NOT EXISTS position_market_indexes(order_id TEXT PRIMARY KEY, mint TEXT NOT NULL,
  mode TEXT NOT NULL, quote_mint TEXT NOT NULL, entry_index TEXT NOT NULL, peak_index TEXT NOT NULL,
  last_index TEXT, registered REAL NOT NULL);

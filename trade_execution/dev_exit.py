@@ -1,4 +1,4 @@
-"""Durable, event-driven emergency exits for buys rejected by a late dev check."""
+"""Durable full-position exits for dev sales and failed dev holding checks."""
 import asyncio
 import base64
 import json
@@ -54,21 +54,27 @@ class DevExit:
         wallet=self.config.wallet_address
         signed_buy=VersionedTransaction.from_bytes(base64.b64decode(buy['raw'],validate=True))
         if str(signed_buy.message.account_keys[0])!=wallet:raise ValueError('exit-wallet-mismatch')
-        raw=await self.rpc.transaction(buy['signature'],commitment='confirmed')
-        if not raw:return  # Never sell someone else's tokens while our buy is unconfirmed.
-        if raw.get('meta',{}).get('err') is not None:
-            return  # Wait for the buy reconciler to prove finalized failure.
-        tx=Tx(raw)
-        if tx.signature!=buy['signature'] or wallet not in tx.signers:raise ValueError('exit-buy-proof-mismatch')
-        amount=tx.owner_tokens('post',wallet,buy['mint'])-tx.owner_tokens('pre',wallet,buy['mint'])
-        if amount<=0:raise ValueError('exit-buy-amount-unavailable')
         position=self.store.rows('trading','SELECT amount FROM positions WHERE mint=? AND mode=?',(buy['mint'],buy['mode']))
-        if position:
-            amount=min(amount,int(position[0]['amount']))
-            if amount<=0:
-                self.update(buy['id'],state='cancelled',reason='position-already-exited')
-                return
-        request={**request,'minSlot':max(tx.slot,request['minSlot'])}
+        proof_slot=request['minSlot']
+        if buy['state']=='finalized' and position:
+            # Finalized fill accounting is already verified and durable. Avoid
+            # another getTransaction on the urgent full-exit path.
+            amount=int(position[0]['amount'])
+        else:
+            raw=await self.rpc.transaction(buy['signature'],commitment='confirmed')
+            if not raw or raw.get('meta',{}).get('err') is not None:return
+            tx=Tx(raw)
+            if tx.signature!=buy['signature'] or wallet not in tx.signers:raise ValueError('exit-buy-proof-mismatch')
+            amount=tx.owner_tokens('post',wallet,buy['mint'])-tx.owner_tokens('pre',wallet,buy['mint'])
+            if amount<=0:raise ValueError('exit-buy-amount-unavailable')
+            proof_slot=max(proof_slot,tx.slot)
+            if position:amount=min(amount,int(position[0]['amount']))
+        if amount<=0:
+            self.update(buy['id'],state='cancelled',reason='position-already-exited')
+            return
+        events=self.store.rows('trading',"SELECT MAX(slot) AS slot FROM dev_sell_events WHERE buy_id=? AND state='triggered'",(buy['id'],))
+        event_slot=events[0]['slot'] or 0
+        request={**request,'minSlot':max(proof_slot,event_slot)}
         self.priority.active+=1
         try:
             result=await self.builder(self.config,request,wallet,amount)
@@ -81,7 +87,7 @@ class DevExit:
                     or not 0<int(result['minOut'])<=int(result['quotedOut'])):
                 raise ValueError('invalid-exit-transaction')
             simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
-                {'encoding':'base64','sigVerify':False,'commitment':'confirmed','minContextSlot':tx.slot}])
+                {'encoding':'base64','sigVerify':False,'commitment':'confirmed','minContextSlot':request['minSlot']}])
             if simulation['value']['err'] is not None:raise ValueError('exit-simulation-rejected')
             keypair=self.config.wallet_keypair
             if keypair is None or str(keypair.pubkey())!=wallet:raise ValueError('exit-wallet-key-required')
@@ -89,17 +95,18 @@ class DevExit:
             encoded=base64.b64encode(bytes(signed)).decode();signature=str(signed.signatures[0])
             # FULL commit before any send; a crash/timeout never permits new signing.
             self.update(buy['id'],state='signed',amount=str(amount),raw=encoded,signature=signature,
-                        last_height=int(result['lastHeight']),min_out=result['minOut'],reason='dev-holdings-over-limit')
+                        last_height=int(result['lastHeight']),min_out=result['minOut'],reason=job['reason'] or 'dev-holdings-over-limit')
             try:
                 sent=await self.rpc.call('sendTransaction',[encoded,{'encoding':'base64','skipPreflight':False,
-                    'preflightCommitment':'confirmed','maxRetries':0,'minContextSlot':tx.slot}])
+                    'preflightCommitment':'confirmed','maxRetries':0,'minContextSlot':request['minSlot']}])
                 if sent!=signature:raise ValueError('exit-send-signature-mismatch')
             except Exception:
                 self.update(buy['id'],state='unknown')
                 self.notice('dev exit unknown',buy,signature=signature)
                 return
             self.update(buy['id'],state='submitted')
-            self.notice('dev exit submitted',buy,signature=signature,amount=str(amount),quote_mint=request['quoteMint'])
+            self.notice('dev exit submitted',buy,signature=signature,amount=str(amount),quote_mint=request['quoteMint'],
+                        reason=job['reason'] or 'dev-holdings-over-limit')
         finally:
             self.priority.active-=1
 

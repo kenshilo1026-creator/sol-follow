@@ -1,4 +1,5 @@
 """Hotlisted signing dev creates trigger one entry; no wallet-vote threshold."""
+import json
 import time
 
 from chain_common.primitives import WSOL, pubkey
@@ -79,6 +80,13 @@ class CreateSignals:
             return None
         oid=self.store.reserve(self.config,trade.mint,trade.pool,self.config.buy_amount,
             sources=[{'wallet':trade.wallet,'signature':trade.signature,'slot':trade.slot}],check_market_cap=False,allow_pending_dev=False)
+        if oid:
+            with self.store.db('trading') as c:
+                c.execute('PRAGMA synchronous=FULL')
+                c.execute('BEGIN IMMEDIATE')
+                c.execute('INSERT OR IGNORE INTO order_routes VALUES (?,?)',(oid,json.dumps(route.request())))
+                c.execute('INSERT OR IGNORE INTO dev_sell_watches VALUES (?,?,?)',(oid,trade.wallet,trade.slot))
+                c.commit()
         trade_record(self.store,trade,'dev-create','reserved' if oid else 'blocked',
                      'order-reserved' if oid else 'order-dedup-or-entry-gate',{'order':oid})
         return oid
