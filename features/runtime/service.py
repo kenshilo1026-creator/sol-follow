@@ -8,6 +8,7 @@ import aiohttp
 from chain_common.rpc import Priority, Rpc
 from chain_common.background_rpc import BackgroundRpc
 from features.funding.rpc import FundingRpc
+from features.funding.work import WalletFlights, TransactionReads
 from features.funding.confirmation_rpc import ConfirmationRpc, ConfirmationUnavailable
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM
@@ -44,6 +45,8 @@ class Service:
         self.completed=self.expired=self.received=0
         self.backlog=BacklogMonitor(self.store,self.notices)
         self.metrics=Metrics()
+        self.funding_flights=WalletFlights()
+        self.active_jobs=set()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
         self.dev_holdings=CreateDevGate(config,self.store,self.notices)
@@ -52,7 +55,8 @@ class Service:
         record(self.store,'funding','observed','candidate',wallet=item.wallet,signature=item.signature,
                event=item.event,detail=item.dict())
         try:
-            return await self._qualify(item,rpc)
+            async with self.funding_flights.hold(item.wallet):
+                return await self._qualify(item,rpc)
         except Exception as exc:
             reason=str(exc) if isinstance(exc,HistoryPending) else type(exc).__name__
             record(self.store,'qualification','pending',reason,wallet=item.wallet,
@@ -149,8 +153,9 @@ class Service:
                         self.store.release_create_alert(item.event)
                         raise
         self.metrics.add('decode',time.monotonic()-parse_started)
+        funding_reads=TransactionReads(rpc,raw)
         for item in funding_items:
-            await self.qualify(item,rpc)
+            await self.qualify(item,funding_reads)
         for item in creation.creates:
             self.quote_builder.observe_create(item)
         for item in ([] if processed else self.store.record_creates(creation.creates)):
@@ -193,7 +198,7 @@ class Service:
             # Let feeds, health, and cancellation run even with a full backlog.
             await asyncio.sleep(0)
             try:
-                rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed)
+                rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed,excluded=self.active_jobs)
             except Exception as exc:
                 self.notices.emit('funding queue unavailable',{'type':type(exc).__name__},alert=True,key='queue-error')
                 await asyncio.sleep(0.5)
@@ -202,6 +207,7 @@ class Service:
                 await asyncio.sleep(0.05 if streamed else 0.2)
                 continue
             row=rows[0]
+            self.active_jobs.add(row['signature'])
             try:
                 # Drop untouched old recovery work before paying for a transaction
                 # fetch. Admission retries and order/proof reconciliation retain
@@ -224,6 +230,8 @@ class Service:
                 if expired:
                     self.expired+=1
                     self.notices.emit('qualification stopped',{'signature':row['signature'],'reason':reason},key='qualification-expired')
+            finally:
+                self.active_jobs.discard(row['signature'])
 
     async def finalized(self,rpc):
         while True:
@@ -297,7 +305,7 @@ class Service:
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
                 timeout=self.config.public_timeout,source="background"),self.priority,self.config.history_rps)
             self.funding_history_rpc=(BackgroundRpc(Rpc(background_session,self.config.funding_history_url,self.priority,
-                timeout=self.config.public_timeout,source="alchemy-history"),self.priority,self.config.history_rps)
+                timeout=self.config.public_timeout,source="alchemy-history"),self.priority,self.config.funding_alchemy_rps)
                 if self.config.alchemy_key else self.background_rpc)
             self.funding_rpc=FundingRpc(self.background_rpc,
                 self.funding_history_rpc if self.config.alchemy_key
@@ -332,6 +340,8 @@ class Service:
                 'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
                 'http_policy':self.config.http_policy,
                 'funding_history_provider':self.config.funding_history_provider,
+                'funding_workers':self.config.funding_workers if grpc_mode else 1,
+                'funding_alchemy_rps':self.config.funding_alchemy_rps,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
                 'buy_trigger':self.config.buy_trigger,
                 'buy_only_aged_minutes':str(self.config.buy_only_aged_minutes)},alert=True)
@@ -339,7 +349,9 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.worker(self.funding_rpc,False if grpc_mode else None),self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
+                                      self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
+                    coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
+                                      for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:
                         coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
                             self.proofs.run(self.confirmation_rpc,self.signals,self.notices,self.config.backfill_age)])

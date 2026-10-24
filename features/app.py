@@ -32,6 +32,8 @@ def main():
                           'alchemy_key_configured':bool(config.alchemy_key),
                           'http_policy':config.http_policy,'background_rpc_rps':config.history_rps,
                           'funding_history_provider':config.funding_history_provider,
+                          'funding_workers':config.funding_workers if config.feed_mode=='alchemy_grpc' else 1,
+                          'funding_alchemy_rps':config.funding_alchemy_rps,
                           'confirmation_alchemy_fallback':bool(config.alchemy_key and config.funding_history_url!=config.rpc),
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return

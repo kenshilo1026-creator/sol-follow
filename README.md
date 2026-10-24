@@ -88,7 +88,7 @@ Alchemy 來源補查失敗只保留任務重試，不轉回公共 RPC。入金�
 finalization／processed 訊號的 `getSignatureStatuses` 確認亦先用公共 RPC，失敗時用 Alchemy 後備。
 後備成功不發 Telegram；兩邊失敗才發「交易確認查詢失敗」，每 60 秒最多一次，待確認資料保留重試。
 合法的 `null` 狀態仍代表未確認；鏈上失敗、slot 不符及原有撤票規則照常執行。
-`SOL_BACKGROUND_RPC_RPS` 預設為 2，公共背景查詢與 Alchemy 補查各自限速、各自按 endpoint 冷卻。
+`SOL_BACKGROUND_RPC_RPS` 預設為 2（公共 RPC）；`SOL_FUNDING_ALCHEMY_RPS` 預設為 8（Alchemy 共用預算），各自按 endpoint 冷卻。`alchemy_grpc` 模式使用 `SOL_FUNDING_WORKERS=4` 個 funding worker，create 串流保留獨立 worker；同錢包依序檢查，活躍交易不會因 60 秒保留期到期被重複執行。WebSocket 混合交易模式維持單 worker，避免改變買入處理順序。
 `features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
 入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。
 新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。

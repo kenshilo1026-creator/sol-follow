@@ -33,7 +33,18 @@ With either key configured, source pagination uses
 Without a key, legacy source pagination shares the public background client.
 When selected, Alchemy failures retain the durable request for retry and never
 fall back to the public endpoint. Both background clients use
-`SOL_BACKGROUND_RPC_RPS` independently (default 2); cooldown is per endpoint.
+separate budgets: public `SOL_BACKGROUND_RPC_RPS` (default 2), Alchemy
+`SOL_FUNDING_ALCHEMY_RPS` (default 8); cooldown is per endpoint.
+Alchemy pagination, qualification fallback and status fallback share that budget.
+`SOL_FUNDING_WORKERS` (default 4, range 1–8) enables bounded funding concurrency
+in gRPC mode, while create processing keeps its separate worker. Background
+requests have at most four HTTP calls in flight per endpoint; the pacing lock
+only reserves request starts. Same-wallet qualification remains serialized, and
+active signatures are excluded even after the durable 60-second lease expires.
+The funding transaction is reused for its own launch-history check. Account and
+signature-list results are not cached across funding events. Raising the Alchemy
+budget increases request usage; adjust it to the account budget. WebSocket mixed
+funding/create mode retains one worker to preserve trade processing order.
 Keys in other projects are never read. Existing dry/live and wallet settings are
 unchanged. gRPC availability and filter capacity depend on the Alchemy account.
 

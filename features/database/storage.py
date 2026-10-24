@@ -299,10 +299,13 @@ class Store:
             c.commit()
         return deleted
 
-    def due(self, limit, now, oldest=False, streamed=None):
+    def due(self, limit, now, oldest=False, streamed=None, excluded=()):
         order = 'ASC' if oldest else 'DESC'
         lane = '' if streamed is None else (' AND '+('' if streamed else 'NOT ')+
             'EXISTS (SELECT 1 FROM stream_payloads p WHERE p.signature=jobs.signature)')
+        excluded = tuple(excluded)
+        if excluded:
+            lane += ' AND signature NOT IN (' + ','.join('?' for _ in excluded) + ')'
         received_now = time.monotonic()
 
         def live_priority(signature):
@@ -315,7 +318,7 @@ class Store:
             c.create_function('live_priority', 1, live_priority)
             c.execute('BEGIN IMMEDIATE')
             rows = [dict(r) for r in c.execute('SELECT * FROM jobs WHERE state=\'pending\' AND due<=? '
-                        f'{lane} ORDER BY live_priority(signature) DESC, first_seen {order} LIMIT ?', (now, limit))]
+                        f'{lane} ORDER BY live_priority(signature) DESC, first_seen {order} LIMIT ?', (now, *excluded, limit))]
             c.executemany('UPDATE jobs SET due=? WHERE signature=?', [(now+60, r['signature']) for r in rows])
             c.commit()
         return rows

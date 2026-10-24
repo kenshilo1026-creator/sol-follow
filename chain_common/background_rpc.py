@@ -8,26 +8,30 @@ class BackgroundRpc:
                'getBlockTime', 'getAccountInfo', 'getMultipleAccounts', 'getBalance','getBlockHeight',
                'getTokenAccountsByOwner'}
 
-    def __init__(self, public, priority, rps=2):
+    def __init__(self, public, priority, rps=2, *, max_inflight=4):
         self.public, self.priority = public, priority
         self.lock = asyncio.Lock()
+        self.slots = asyncio.Semaphore(max_inflight)
         self.interval = 1 / rps
         self.next_request = 0.0
 
     async def call(self, method, params):
         if method not in self.ALLOWED:
             raise ValueError('background-rpc-read-method-required')
-        async with self.lock:
-            while True:
-                if self.priority.active:
-                    await asyncio.sleep(0.05)
-                    continue
-                delay=self.next_request-time.monotonic()
-                if delay>0:
-                    await asyncio.sleep(delay)
-                    continue  # A trade may have started while waiting for the rate budget.
-                self.next_request = time.monotonic() + self.interval
-                return await self.public.call(method, params)
+        async with self.slots:
+            # Reserve request start times, not the entire HTTP round trip.
+            async with self.lock:
+                while True:
+                    if self.priority.active:
+                        await asyncio.sleep(0.05)
+                        continue
+                    delay = self.next_request - time.monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                        continue
+                    self.next_request = time.monotonic() + self.interval
+                    break
+            return await self.public.call(method, params)
 
     async def transaction(self, signature, commitment='confirmed'):
         return await self.call('getTransaction', [signature, {'encoding':'jsonParsed',

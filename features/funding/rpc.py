@@ -11,7 +11,8 @@ class FundingRpc:
 
     def __init__(self, public, alchemy=None, *, clock=time.monotonic):
         self.public, self.alchemy, self.clock = public, alchemy, clock
-        self.lock = asyncio.Lock()
+        self.slots = {"public": asyncio.Semaphore(1), "alchemy": asyncio.Semaphore(4)}
+        self.generation = {"public": 0, "alchemy": 0}
         self.cooldown = {}
         self.failures = {}
         self.counts = dict(calls=0, public_attempts=0, alchemy_attempts=0,
@@ -69,11 +70,15 @@ class FundingRpc:
         if method not in self.METHODS:
             # Only explicitly supported reads can use this reader's fallback.
             return await self.public.call(method, params)
-        async with self.lock:
-            self.counts['calls'] += 1
-            for label, client in (('public', self.public), ('alchemy', self.alchemy)):
-                if client is None or self.clock() < self.cooldown.get(label, 0):
+        self.counts['calls'] += 1
+        for label, client in (('public', self.public), ('alchemy', self.alchemy)):
+            if client is None:
+                continue
+            async with self.slots[label]:
+                # Recheck after waiting: an earlier request may have cooled this endpoint.
+                if self.clock() < self.cooldown.get(label, 0):
                     continue
+                generation = self.generation[label]
                 self.counts[label + '_attempts'] += 1
                 try:
                     with defer_429_alerts(self.alchemy is not None):
@@ -81,18 +86,22 @@ class FundingRpc:
                     if not self.valid(method, result, params):
                         raise RpcError('funding-result-unavailable')
                 except (RpcError, ValueError, TypeError, KeyError, AttributeError):
-                    failures = min(4, self.failures.get(label, 0) + 1)
-                    self.failures[label] = failures
-                    self.cooldown[label] = self.clock() + min(120, 15 * 2**failures)
+                    # Concurrent failures from one wave count as one cooldown transition.
+                    if generation == self.generation[label]:
+                        self.generation[label] += 1
+                        failures = min(4, self.failures.get(label, 0) + 1)
+                        self.failures[label] = failures
+                        self.cooldown[label] = self.clock() + min(120, 15 * 2**failures)
                     continue
-                self.failures.pop(label, None)
-                self.cooldown.pop(label, None)
+                # An older successful request must not erase a newer failure's cooldown.
+                if generation == self.generation[label]:
+                    self.failures.pop(label, None)
+                    self.cooldown.pop(label, None)
                 if label == 'alchemy':
                     self.counts['recovered'] += 1
                 return result
-            self.counts['unavailable'] += 1
-            # Never carry provider URLs, keys, signatures or response bodies into logs.
-            raise self.unavailable(method) from None
+        self.counts['unavailable'] += 1
+        raise self.unavailable(method) from None
 
     def unavailable(self, method):
         if self.alchemy is not None:
