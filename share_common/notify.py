@@ -10,6 +10,10 @@ log = logging.getLogger('sol-follow')
 
 
 BUY_TITLES = {
+    'take profit submitted':'止盈／止損：賣單已送出',
+    'take profit finalized':'止盈／止損：賣出已完成',
+    'take profit deferred':'止盈／止損：暫緩，稍後重試',
+    'take profit unknown':'止盈／止損：結果未知，核對原交易',
     'quote sweep submitted':'報價幣換 SOL：已送出', 'quote sweep finalized':'報價幣換 SOL：已完成',
     'quote sweep deferred':'報價幣換 SOL：暫緩，保留餘額稍後重試',
     'quote sweep unknown':'報價幣換 SOL：結果未知，保留原交易核對',
@@ -68,7 +72,8 @@ def message(kind, detail):
         return f'[SOL] {kind}\n{detail}'[:3900]
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
     fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
-            ('reason','原因'),('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
+            ('rule_type','規則類型'),('thresholds','規則門檻'),('gain_percent','Spot index 盈虧（%）'),
+            ('received','實收報價幣（最小單位）'),('reason','原因'),('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
             ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單'),
             ('sol_lamports','換回 SOL（lamports，未扣網路費／租金）')]
     for field,label in fields:

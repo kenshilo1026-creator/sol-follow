@@ -4,6 +4,7 @@ const web3=require('@solana/web3.js'),spl=require('@solana/spl-token');
 const pump=require('@pump-fun/pump-sdk'),BN=require('bn.js'),crypto=require('node:crypto');
 const stonk=require('./stonk.cjs');
 const risk=require('./risk.cjs');
+const {spotIndex:reserveIndex,SCALE}=require('./spot-index.cjs');
 function sellDetails(state,amount,rate,mint,epoch){
   const transfer=spl.getTransferFeeConfig(mint);
   const net=amount-(transfer?spl.calculateEpochFee(transfer,BigInt(epoch),amount):0n);
@@ -35,23 +36,45 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
   const pool=isStonk?pk(input.pool):pump.bondingCurvePda(mint);
   const target=spl.getAssociatedTokenAddressSync(mint,user,false,baseProgram);
   const out=spl.getAssociatedTokenAddressSync(quote,user,false,quoteProgram);
-  const rows=await connection.getMultipleAccountsInfo([mint,quote,pool,target,out]);
+  const rows=await connection.getMultipleAccountsInfo(input.spotOnly?[mint,quote,pool]:[mint,quote,pool,target,out]);
   for(const [i,p] of [[0,baseProgram],[1,quoteProgram],[2,isStonk?stonk.PROGRAM:pump.PUMP_PROGRAM_ID]])
     if(!rows[i]||rows[i].executable||!rows[i].owner.equals(p))throw Error('account-owner');
   const base=spl.unpackMint(mint,rows[0],baseProgram),quoteInfo=spl.unpackMint(quote,rows[1],quoteProgram);
   safeMint(base,isStonk);safeMint(quoteInfo);
+  // Spot monitoring validates the pool/mints but never needs a wallet balance,
+  // an amount-dependent liquidation quote, fees, blockhash or simulation.
+  if(input.spotOnly){
+    let spotIndex,venue;
+    if(isStonk){
+      const state=stonk.poolState(rows[2],pool,mint,quote,[0,2]);
+      if(state.status===2){
+        ({spotIndex}=await require('./cpmm-sell.cjs').prepare(input,
+          {connection,state,mint,quote,baseProgram,quoteProgram,base,quoteInfo,amount}));
+        venue='raydium_cpmm';
+      }else{spotIndex=reserveIndex(state.virtualB+state.realB,state.virtualA-state.realA);venue='stonk_curve';}
+    }else{
+      const curve=pump.PUMP_SDK.decodeBondingCurve(rows[2]);
+      if(!pump.normalizeQuoteMint(curve.quoteMint).equals(quote))throw Error('curve-graduated-or-quote-mismatch');
+      if(curve.complete){
+        ({spotIndex}=await require('./pumpswap-sell.cjs').prepare(input,
+          {connection,user,mint,quoteMint:quote,baseProgram,quoteProgram,base,target,out,amount}));
+        venue='pump_swap';
+      }else{spotIndex=reserveIndex(curve.virtualQuoteReserves,curve.virtualTokenReserves);venue='pump_curve';}
+    }
+    return {mint:input.mint,quoteMint:input.quoteMint,spotIndex,indexScale:SCALE.toString(),venue};
+  }
   const before=spl.unpackAccount(target,rows[3],baseProgram);
   if(!before.owner.equals(user)||!before.mint.equals(mint)||before.amount<BigInt(amount.toString())||before.isFrozen)throw Error('sell-balance-unavailable');
   const outBefore=rows[4]?spl.unpackAccount(out,rows[4],quoteProgram):null;
   if(outBefore&&(!outBefore.owner.equals(user)||!outBefore.mint.equals(quote)||outBefore.isFrozen))throw Error('account-owner');
-  let expected,minOut,ixs,metrics,venue;
+  let expected,minOut,ixs,metrics,venue,spotIndex;
   if(isStonk){
     const state=stonk.poolState(rows[2],pool,mint,quote,[0,2]);
     let swap;
     if(state.status===2){
       const cpmm=require('./cpmm-sell.cjs');
       const route=await cpmm.prepare(input,{connection,state,mint,quote,baseProgram,quoteProgram,base,quoteInfo,amount});
-      expected=new BN(route.expected.toString());metrics=route.metrics;venue='raydium_cpmm';
+      expected=new BN(route.expected.toString());metrics=route.metrics;venue='raydium_cpmm';spotIndex=route.spotIndex;
       ({minOut}=minimums(amount,expected,input.slippagePercent));
       swap=cpmm.instruction({user,mint,quote,baseProgram,quoteProgram,target,out,amount,minOut,route});
     }else{
@@ -60,7 +83,7 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
       risk.checkTokenTax(input,base,epoch.epoch);
       const rate=stonk.feeSchedule(...configs,quote),details=sellDetails(state,BigInt(amount.toString()),rate,base,epoch.epoch);
       metrics=risk.checkFees(input,details.fees,[rate]);
-      expected=new BN(details.net.toString());venue='stonk_curve';
+      expected=new BN(details.net.toString());venue='stonk_curve';spotIndex=reserveIndex(state.virtualB+state.realB,state.virtualA-state.realA);
       ({minOut}=minimums(amount,expected,input.slippagePercent));
       swap=sellInstruction({user,pool,mint,quote,baseProgram,quoteProgram,state,targetAta:target,quoteAta:out,
         amount:BigInt(amount.toString()),minOut:BigInt(minOut.toString())});
@@ -75,7 +98,7 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
       const swap=require('./pumpswap-sell.cjs');
       const route=await swap.prepare(input,{connection,user,mint,quoteMint:quote,baseProgram,quoteProgram,base,
         target,out,sourceRow:rows[3],quoteRow:rows[4],amount});
-      expected=route.expected;metrics=route.metrics;venue='pump_swap';
+      expected=route.expected;metrics=route.metrics;venue='pump_swap';spotIndex=route.spotIndex;
       ({minOut}=minimums(amount,expected,input.slippagePercent));
       ixs=await swap.instructions(route,amount,minOut);
     }else{
@@ -83,6 +106,7 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
       [pump.PUMP_PROGRAM_ID,pump.PUMP_FEE_PROGRAM_ID].forEach((p,i)=>{
         if(!configs[i]||configs[i].executable||!configs[i].owner.equals(p))throw Error('account-owner');
       });
+      spotIndex=reserveIndex(curve.virtualQuoteReserves,curve.virtualTokenReserves);
       const global=pump.PUMP_SDK.decodeGlobal(configs[0]),feeConfig=pump.PUMP_SDK.decodeFeeConfig(configs[1]);
       expected=pump.getSellSolAmountFromTokenAmount({global,feeConfig,mintSupply:new BN(base.supply.toString()),bondingCurve:curve,amount});
       metrics=require('./pump-risk.cjs').checkFees(input,{global,feeConfig,mintSupply:new BN(base.supply.toString()),
@@ -95,6 +119,10 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
         ...await pump.PUMP_SDK.sellV2Instructions({...args,quoteAmount:minOut,quoteTokenProgram:quoteProgram})];
     }
   }
+  // Monitoring needs a validated executable quote, not a blockhash or simulation.
+  if(input.quoteOnly)return {side:'sell',wallet:user.toBase58(),mint:mint.toBase58(),
+    amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),
+    minOut:minOut.toString(),risk:metrics,venue,spotIndex,indexScale:SCALE.toString()};
   const checkQuote=!native||(isStonk||venue==='pump_swap')&&!!rows[4];
   const check={addresses:[target.toBase58(),...(checkQuote?[out.toBase58()]:[])],verify(values){
     const decode=(address,row,program)=>{
@@ -109,6 +137,6 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
     }
   }};
   return {...await finish(connection,input,user,ixs,check),side:'sell',wallet:user.toBase58(),mint:mint.toBase58(),
-    amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),minOut:minOut.toString(),risk:metrics,venue};
+    amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),minOut:minOut.toString(),risk:metrics,venue,spotIndex,indexScale:SCALE.toString()};
 }
 module.exports={buildSell,sellInstruction,sellQuote};

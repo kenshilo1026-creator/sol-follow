@@ -7,13 +7,15 @@ from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from chain_common.primitives import WSOL
 from trade_execution.builder import build_sell, BuildError
+from features.funding.work import WalletFlights
 from trade_execution.quote_sweep import enqueue as enqueue_sweep, recipe_for
 
 
 class DevExit:
-    def __init__(self,config,store,rpc,notices,priority,builder=build_sell):
+    def __init__(self,config,store,rpc,notices,priority,builder=build_sell,*,flights=None):
         self.config,self.store,self.rpc,self.notices,self.priority=config,store,rpc,notices,priority
         self.builder=builder
+        self.flights=flights or WalletFlights()
         self.wake=asyncio.Event()
         self.next={}
 
@@ -60,6 +62,12 @@ class DevExit:
         if tx.signature!=buy['signature'] or wallet not in tx.signers:raise ValueError('exit-buy-proof-mismatch')
         amount=tx.owner_tokens('post',wallet,buy['mint'])-tx.owner_tokens('pre',wallet,buy['mint'])
         if amount<=0:raise ValueError('exit-buy-amount-unavailable')
+        position=self.store.rows('trading','SELECT amount FROM positions WHERE mint=? AND mode=?',(buy['mint'],buy['mode']))
+        if position:
+            amount=min(amount,int(position[0]['amount']))
+            if amount<=0:
+                self.update(buy['id'],state='cancelled',reason='position-already-exited')
+                return
         request={**request,'minSlot':max(tx.slot,request['minSlot'])}
         self.priority.active+=1
         try:
@@ -149,7 +157,11 @@ class DevExit:
             if time.monotonic()<self.next.get(job['buy_id'],0):continue
             buy=self.store.order(job['buy_id'])
             request=json.loads(self.store.rows('trading','SELECT request FROM order_routes WHERE order_id=?',(buy['id'],))[0]['request'])
-            try:await self.step(buy,job,request)
+            try:
+                async with self.flights.hold(buy['mint']):
+                    if self.store.rows('trading',"SELECT 1 FROM orders WHERE mint=? AND mode=? AND side='sell' AND state IN ('reserved','signed','submitted','unknown','confirmed')",(buy['mint'],buy['mode'])):
+                        continue
+                    await self.step(buy,job,request)
             except asyncio.CancelledError:raise
             except Exception as exc:
                 self.next[buy['id']]=time.monotonic()+5

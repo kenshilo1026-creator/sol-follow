@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "gain_definition": "profit_over_entry_percent",
+  "sell_basis": "current_position",
+  "rules": [
+    {"type": "stop_loss", "loss_percent": 6, "sell_percent": 100},
+    {"profit_percent": 300, "sell_percent": 7},
+    {"type": "protect", "activate_profit_percent": 50, "profit_percent": 20, "sell_percent": 100},
+    {"type": "trailing", "activate_profit_percent": 1000, "drawdown_percent": 20, "sell_percent": 7}
+  ]
+}

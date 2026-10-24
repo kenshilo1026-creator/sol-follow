@@ -17,13 +17,13 @@ def main():
     parser.add_argument('command',choices=('check','stats','run'))
     args=parser.parse_args()
     config=load()
-    rules=load_rules(config.root/'take_profit_rules.json')
+    rules=load_rules(config.root/config.take_profit_rules_path)
     if args.command=='check':
         print(json.dumps({'mode':config.mode,'cex_sources':len(config.cex),'privacy_cash':bool(config.privacy_pools),
                           'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not config.dry_run,
                           'create_decoders':CREATE_DECODERS,'create_quote_assets':['SOL','SPL Token','Token-2022'],
                           'emergency_sell_routes':['pump_curve_to_quote','stonk_curve_to_quote','stonk_cpmm_to_quote','pump_swap_to_quote'],
-                          'pending_routes':['pump_swap_buy','take_profit_sell_routes','other_quote_swap_venues'],
+                          'pending_routes':['pump_swap_buy','other_quote_swap_venues'],
                           'jupiter_access':'keyless','jupiter_max_rps':0.5,
                           'buy_trigger':config.buy_trigger,'buy_lamports':config.buy_amount,
                           'buy_only_aged_minutes':str(config.buy_only_aged_minutes),
@@ -37,6 +37,8 @@ def main():
                           'funding_workers':config.funding_workers if config.feed_mode=='alchemy_grpc' else 1,
                           'funding_alchemy_rps':config.funding_alchemy_rps,
                           'confirmation_alchemy_fallback':bool(config.alchemy_key and config.funding_history_url!=config.rpc),
+                          'take_profit_enabled':True,
+                          'take_profit_poll_seconds':config.take_profit_poll_seconds,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
         return
     if args.command=='stats':

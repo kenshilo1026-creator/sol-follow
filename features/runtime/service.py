@@ -16,6 +16,7 @@ from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
 from features.strategy.dev_create import CreateSignals
 from features.strategy.market_cap import MarketCapGate
+from features.strategy.take_profit import TakeProfit
 from features.strategy.create_dev_gate import CreateDevGate
 from features.funding.discovery import Discovery, FUNDING_GAP_SECONDS
 from features.funding.activity_filter import qualify_activity, HistoryPending
@@ -48,6 +49,7 @@ class Service:
         self.metrics=Metrics()
         self.funding_flights=WalletFlights()
         self.active_jobs=set()
+        self.exit_flights=WalletFlights()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
         self.dev_holdings=CreateDevGate(config,self.store,self.notices)
@@ -328,7 +330,9 @@ class Service:
                 from features.funding.grpc_feed import HotlistFeed
                 self.hotlist_feed=HotlistFeed(self.config,self.store,self.stream_head_rpc,self.notices,discovery)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
-            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority)
+            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights)
+            self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
+                                       flights=self.exit_flights,reconcile_rpc=self.background_rpc)
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set
@@ -337,7 +341,7 @@ class Service:
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
             if outstanding or positions:
-                self.notices.emit('positions retained; only dev-limit emergency curve exits are automated',
+                self.notices.emit('positions retained for exit management',
                     {'orders':outstanding,'position_mints':[p['mint'] for p in positions]},alert=True)
             self.notices.emit('service started',{'mode':self.config.mode,'cex_sources':len(self.config.cex),
                 'launchpads':ENABLED,'execution_venues':VENUES,'trading_enabled':not self.config.dry_run,
@@ -351,12 +355,15 @@ class Service:
                 'funding_alchemy_rps':self.config.funding_alchemy_rps,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
                 'buy_trigger':self.config.buy_trigger,
+                'take_profit_enabled':True,
+                'take_profit_rules':len(self.take_profit.rules),
+                'take_profit_poll_seconds':self.config.take_profit_poll_seconds,
                 'buy_only_aged_minutes':str(self.config.buy_only_aged_minutes)},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.executor.reconcile(),self.dev_exit.run(),self.quote_sweep.run()]
+                                      self.executor.reconcile(),self.dev_exit.run(),self.take_profit.run(),self.quote_sweep.run()]
                     coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
                                       for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:

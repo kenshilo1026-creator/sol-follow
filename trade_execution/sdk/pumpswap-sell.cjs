@@ -49,11 +49,13 @@ async function prepare(input,{connection,user,mint,quoteMint,baseProgram,quotePr
       throw Error('pumpswap-pool-rejected');
     return new BN(value.amount.toString());
   });
+  const spotIndex=require('./spot-index.cjs').spotIndex(reserves[1].add(pool.virtualQuoteReserves),reserves[0]);
+  if(input.spotOnly)return {spotIndex};
   const details=quote(input,{pool,globalConfig,feeConfig,base,baseReserve:reserves[0],quoteReserve:reserves[1],amount});
   const state={poolKey,poolAccountInfo:rows[0],pool,globalConfig,feeConfig,baseMint:mint,baseMintAccount:base,
     poolBaseAmount:reserves[0],poolQuoteAmount:reserves[1],baseTokenProgram:baseProgram,quoteTokenProgram:quoteProgram,
     user,userBaseTokenAccount:target,userQuoteTokenAccount:out,userBaseAccountInfo:sourceRow,userQuoteAccountInfo:quoteRow};
-  return {...details,state};
+  return {...details,state,spotIndex};
 }
 async function instructions(route,amount,minOut){
   const ixs=await amm.PUMP_AMM_SDK.sellInstructions(route.state,amount,minOut);

@@ -68,6 +68,12 @@ class Executor:
                 or not 0<int(result['minOut'])<=int(result['quotedOut'])):
                 raise ValueError('invalid-built-transaction')
             self.store.update_order(oid,min_out=result['minOut'],quoted_out=result['quotedOut'])
+            # The routed buy spends quoteIn on the final token leg, not its SOL budget.
+            quote_input=int(result['quoteIn'])
+            if quote_input<=0:raise ValueError('invalid-entry-quote')
+            with self.store.db('trading') as c:
+                c.execute('INSERT OR REPLACE INTO buy_quote_inputs VALUES (?,?,?)',
+                          (oid,route.quote_mint,str(quote_input)))
             stage='simulate'
             simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
                 {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])

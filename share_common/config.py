@@ -162,6 +162,8 @@ class Config:
     grpc_endpoint: str = 'https://solana-mainnet.streaming.alchemy.com'
     public_timeout: float = 2.0
     history_rps: int = 2
+    take_profit_poll_seconds: int = 5
+    take_profit_rules_path: str = "take_profit_rules.json"
     funding_workers: int = 4
     funding_alchemy_rps: int = 8
     max_prelaunch_tx: int = 10
@@ -326,6 +328,8 @@ def load(root=ROOT, env=None):
         grpc_endpoint=endpoint,
         public_timeout=integer('SOL_PUBLIC_RPC_TIMEOUT_MS', 2000, 100, 8000)/1000,
         history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
+        take_profit_poll_seconds=integer('SOL_TAKE_PROFIT_POLL_SECONDS',5,1,300),
+        take_profit_rules_path=get('SOL_TAKE_PROFIT_RULES_PATH','take_profit_rules.json'),
         funding_workers=integer('SOL_FUNDING_WORKERS', 4, 1, 8),
         funding_alchemy_rps=integer('SOL_FUNDING_ALCHEMY_RPS', 8, 1, 20),
         max_prelaunch_tx=integer('SOL_MAX_PRELAUNCH_TX',10,1,999),

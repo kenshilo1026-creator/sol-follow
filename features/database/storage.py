@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS position_market_indexes(order_id TEXT PRIMARY KEY, mint TEXT NOT NULL,
+ mode TEXT NOT NULL, quote_mint TEXT NOT NULL, entry_index TEXT NOT NULL, peak_index TEXT NOT NULL,
+ last_index TEXT, registered REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS buy_quote_inputs(order_id TEXT PRIMARY KEY, quote_mint TEXT NOT NULL, amount TEXT NOT NULL);
+
 CREATE TABLE IF NOT EXISTS quote_sweeps(id TEXT PRIMARY KEY, wallet TEXT NOT NULL, mint TEXT NOT NULL,
  program TEXT NOT NULL, amount TEXT NOT NULL, min_slot INTEGER NOT NULL, recipe TEXT,
  state TEXT NOT NULL DEFAULT 'waiting', raw TEXT, signature TEXT, last_height INTEGER,
@@ -454,7 +459,7 @@ class Store:
             c.commit()
         return bool(new)
 
-    def reserve(self, config, mint, pool, amount, side='buy', rule_id='', sources=(), *, check_market_cap=True,allow_pending_dev=True):
+    def reserve(self, config, mint, pool, amount, side='buy', rule_id='', sources=(), *, check_market_cap=True,allow_pending_dev=True,reason=None):
         key = f'{config.strategy}:{config.mode}:{mint}'
         oid = uuid.uuid4().hex
         with self.db('trading') as c:
@@ -477,9 +482,9 @@ class Store:
                 c.commit()
                 return None
             now = time.time()
-            c.execute('INSERT INTO orders(id,signal_key,mode,mint,pool,side,state,amount,created,updated,rule_id) '
-                      "VALUES (?,?,?,?,?,?,'reserved',?,?,?,?)",
-                      (oid, key, config.mode, mint, pool, side, str(amount), now, now, rule_id))
+            c.execute('INSERT INTO orders(id,signal_key,mode,mint,pool,side,state,amount,created,updated,rule_id,reason) '
+                      "VALUES (?,?,?,?,?,?,'reserved',?,?,?,?,?)",
+                      (oid, key, config.mode, mint, pool, side, str(amount), now, now, rule_id, reason))
             c.executemany('INSERT OR IGNORE INTO order_wallets VALUES (?,?,?,?)',
                           [(oid,r['wallet'],r['signature'],r['slot']) for r in sources])
             c.executemany('INSERT OR IGNORE INTO order_sources VALUES (?,?,?)',
@@ -518,6 +523,8 @@ class Store:
             if row['side'] == 'buy':
                 if c.execute('SELECT 1 FROM positions WHERE mint=? AND mode=? AND amount!=\'0\'', (row['mint'],row['mode'])).fetchone():
                     raise ValueError('position-already-exists')
+                from features.strategy.market_index import register_fill
+                register_fill(c,row,tokens,quote,now)
                 exited=c.execute("SELECT amount FROM dev_exits WHERE buy_id=? AND state='finalized'",(oid,)).fetchone()
                 remaining=max(0,tokens-int(exited['amount'])) if exited else tokens
                 c.execute('INSERT OR REPLACE INTO positions VALUES (?,?,?,?,?,?,?,?,?)',

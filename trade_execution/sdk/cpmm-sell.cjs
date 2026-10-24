@@ -60,7 +60,7 @@ async function prepare(input,{connection,state,mint,quote,baseProgram,quoteProgr
   const clock=account(rows[5],new web3.PublicKey('Sysvar1111111111111111111111111111111111111'),40);
   if(clock.readBigInt64LE(32)<BigInt(u64(d,373)))throw Error('cpmm-pool-not-open');
   const epoch=Number(u64(clock,16));
-  risk.checkTokenTax(input,base,epoch);
+
   const oracle=account(rows[4],PROGRAM,4075,'ObservationState');
   if(!key(oracle,11).equals(a.pool))throw Error('cpmm-pool-rejected');
   const vaults=[a.vault0,a.vault1].map((address,i)=>{
@@ -73,13 +73,16 @@ async function prepare(input,{connection,state,mint,quote,baseProgram,quoteProgr
     if(reserve<=0n)throw Error('cpmm-quote-rejected');
     return reserve;
   });
+  const spotIndex=require('./spot-index.cjs').spotIndex(vaults[zero?1:0],vaults[zero?0:1]);
+  if(input.spotOnly)return {spotIndex};
+  risk.checkTokenTax(input,base,epoch);
   const transfer=spl.getTransferFeeConfig(base),value=BigInt(amount.toString());
   const details=quoteExactIn({amount:value,reserveIn:vaults[zero?0:1],reserveOut:vaults[zero?1:0],
     tradeRate:u64(c,12),creatorRate:d[390]?u64(c,108):0n,
     creatorOnInput:d[389]===0||d[389]===(zero?1:2),
     inputTax:transfer?spl.calculateEpochFee(transfer,BigInt(epoch),value):0n});
   const metrics=risk.checkFees(input,details.fees,[details.poolFee]);
-  return {...a,inputVault:zero?a.vault0:a.vault1,outputVault:zero?a.vault1:a.vault0,expected:details.net,metrics};
+  return {...a,inputVault:zero?a.vault0:a.vault1,outputVault:zero?a.vault1:a.vault0,expected:details.net,metrics,spotIndex};
 }
 function instruction({user,mint,quote,baseProgram,quoteProgram,target,out,amount,minOut,route}){
   const addresses=[user,AUTHORITY,route.config,route.pool,target,out,route.inputVault,route.outputVault,

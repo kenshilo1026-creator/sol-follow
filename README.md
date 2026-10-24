@@ -584,3 +584,9 @@ DRY_RUN 的失敗同樣通知並標示 dry。背景預熱本身、非 hotlist �
 本人買額、滑點、流動性、DRY_RUN 與成交核對設定沿用；市值取消，dev token 數量改為買前本地判定。
 實際簽名的 launch user 命中 hotlist 即消耗資格；純 create 也支援。
 完整觸發、去重及分叉恢復規則見 [Create 狙擊模式](docs/dev-create-sniping.md)。
+
+## 自動止盈與止損
+
+服務會監察已確認買入的自身持倉，依根目錄 `take_profit_rules.json` 執行分段止盈、止損、保本與移動止盈。止盈固定啟用，使用 `SOL_TAKE_PROFIT_POLL_SECONDS` 和 `SOL_TAKE_PROFIT_RULES_PATH` 設定；dry-run 不賣出。規則完成與剩餘持倉只在 finalized 成交核對後更新。以成交均價記錄入場 index，使用池子 spot index 觸發止盈；監察滿 30 分鐘後，檢查間隔放慢至 5 倍（預設由 5 秒變成 25 秒），重啟與部分賣出不重設計時。
+
+完整語義、盈虧報價基準、重啟與部署方式見 [自動止盈說明](docs/take-profit.md)。規則檔被 Git 忽略，部署時須另外複製至 VPS 並重啟服務。

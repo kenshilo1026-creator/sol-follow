@@ -87,6 +87,20 @@ for(const [native,existing] of [[false,true],[true,true],[true,false]]){
   test(`graduated Stonk ${native?'SOL':'non-SOL'} exit, existing WSOL ${existing}`,async t=>{
     t.mock.method(global,'fetch',async()=>assert.fail('offline; no Jupiter or external RPC'));
     const f=setup(native,existing),result=await build(f.input,f.connection);
+    const quoted=await build({...f.input,quoteOnly:true},{...f.connection,
+      getLatestBlockhash:async()=>assert.fail('quote must not request blockhash'),
+      simulateTransaction:async()=>assert.fail('quote must not simulate')});
+    assert.equal(quoted.quotedOut,result.quotedOut);assert.equal(quoted.transaction,undefined);
+    const saved=f.rows[f.target.toBase58()];delete f.rows[f.target.toBase58()];
+    const spotInput={...f.input,spotOnly:true,risk:{poolFeeBps:0,totalFeeBps:0,tokenTaxBps:0}};
+    const connection={...f.connection,getLatestBlockhash:async()=>assert.fail('spot blockhash'),
+      simulateTransaction:async()=>assert.fail('spot simulation')};
+    const spot=await build(spotInput,connection),large=await build({...spotInput,amount:'1'},connection);
+    f.rows[f.target.toBase58()]=saved;
+    assert.equal(spot.spotIndex,large.spotIndex);assert.equal(spot.spotIndex,result.spotIndex);
+    assert.equal(spot.venue,result.venue);assert.equal(spot.indexScale,(10n**30n).toString());
+    assert.equal(spot.transaction,undefined);
+
     assert.equal(result.venue,'raydium_cpmm');assert.equal(result.side,'sell');
     assert.equal(result.amount,f.input.amount);assert.equal(result.quoteMint,f.input.quoteMint);
     assert.equal(BigInt(result.minOut),(BigInt(result.quotedOut)*98n+99n)/100n);

@@ -74,6 +74,23 @@ for(const kind of ['pump_native_curve','sol_to_pump_curve','stonk_native_curve',
       minSlot:0,amount:'1000000000',slippagePercent:'2',commitment:'confirmed'};
     const result=await build(input,connection);
     assert.equal(result.side,'sell');assert.equal(result.amount,input.amount);
+    const monitoring=await build({...input,quoteOnly:true},{...connection,
+      async getLatestBlockhash(){throw Error('quote-must-not-build');},
+      async simulateTransaction(){throw Error('quote-must-not-simulate');}});
+    assert.equal(monitoring.quotedOut,result.quotedOut);assert.equal(monitoring.transaction,undefined);
+    const saved=rows[target.toBase58()];delete rows[target.toBase58()];
+    const spotInput={...input,spotOnly:true,risk:{poolFeeBps:0,totalFeeBps:0,tokenTaxBps:0}};
+    const spotConnection={...connection,getLatestBlockhash:async()=>assert.fail('spot blockhash'),
+      simulateTransaction:async()=>assert.fail('spot simulation')};
+    const spot=await build(spotInput,spotConnection),large=await build({...spotInput,amount:'1000000000000'},spotConnection);
+    rows[target.toBase58()]=saved;
+    const state=stonk?require('../../trade_execution/sdk/stonk.cjs').poolState(rows[pool.toBase58()],pool,mint,quote):pump.PUMP_SDK.decodeBondingCurve(rows[pool.toBase58()]);
+    const q=stonk?state.virtualB+state.realB:BigInt(state.virtualQuoteReserves.toString());
+    const b=stonk?state.virtualA-state.realA:BigInt(state.virtualTokenReserves.toString());
+    assert.equal(spot.spotIndex,(q*10n**30n/b).toString());
+    assert.equal(spot.spotIndex,large.spotIndex);assert.equal(spot.spotIndex,result.spotIndex);
+    assert.equal(spot.indexScale,(10n**30n).toString());assert.equal(spot.transaction,undefined);
+
     assert(BigInt(result.risk.feePpm)>0n);
     await assert.rejects(build({...input,risk:{poolFeeBps:0,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
     await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:0,impactBps:200}},connection),/total-fee-limit/);

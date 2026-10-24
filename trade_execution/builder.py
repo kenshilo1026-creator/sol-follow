@@ -61,6 +61,16 @@ async def build_sell(config,request,wallet,amount):
     return await _build(config,SimpleNamespace(request=lambda:request),wallet,sell_amount=amount)
 
 
+async def spot_index(config,request,wallet,amount):
+    from types import SimpleNamespace
+    return await _build(config,SimpleNamespace(request=lambda:{**request,'spotOnly':True}),wallet,sell_amount=1)
+
+
+async def quote_sell(config,request,wallet,amount):
+    from types import SimpleNamespace
+    return await _build(config,SimpleNamespace(request=lambda:{**request,'quoteOnly':True}),wallet,sell_amount=amount)
+
+
 async def build_sweep(config,request,wallet,amount):
     from types import SimpleNamespace
     return await _build(config,SimpleNamespace(request=lambda:request),wallet,sell_amount=amount,side='sweep')

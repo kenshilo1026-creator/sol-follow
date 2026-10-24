@@ -5,12 +5,14 @@ import json
 
 
 def load_rules(path):
+    if not path.exists():return []
     doc=json.loads(path.read_text(encoding='utf-8'))
     if doc.get('gain_definition')!='profit_over_entry_percent' or doc.get('sell_basis')!='current_position':
         raise ValueError('unsupported-take-profit-semantics')
     result=[]
     for item in doc['rules']:
         kind=item.get('type','profit')
+        if kind=='fixed':kind='profit'
         if kind not in ('profit','stop_loss','protect','trailing'):
             raise ValueError('unsupported-take-profit-type')
         required={'profit':['profit_percent'],'stop_loss':['loss_percent'],
@@ -21,6 +23,10 @@ def load_rules(path):
             raise ValueError('invalid-take-profit-value')
         if kind=='trailing' and not 0<values['drawdown_percent']<=100:
             raise ValueError('invalid-trailing-drawdown')
+        if kind=='stop_loss' and not 0<values['loss_percent']<=100:
+            raise ValueError('invalid-stop-loss')
+        if kind=='protect' and values['profit_percent']>=values['activate_profit_percent']:
+            raise ValueError('invalid-profit-protection')
         result.append((hashlib.sha256(json.dumps(item,sort_keys=True).encode()).hexdigest()[:20],kind,values))
     return sorted(result,key=lambda r:0 if r[1] in ('stop_loss','protect','trailing') else 1)
 
