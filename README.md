@@ -1,5 +1,8 @@
 # sol-follow
 
+入金來源 WebSocket：有 Alchemy key 且 `SOL_RPC_WS_URL` 為 Solana 公共預設時，使用 Alchemy 的 `wss://solana-mainnet.streaming.alchemy.com/v2/<key>`；自訂 WebSocket 地址保留，也可用 `SOL_FUNDING_WS_URL` 指定。此訂閱使用 Alchemy 流量配額，交易執行 RPC 不變。啟動／health 的 `funding_ws_provider` 顯示來源，不輸出 key。
+Hotlist gRPC 啟動的 `getSlot` 使用公共 RPC，失敗後嘗試 Alchemy；`stream_head_rpc` 顯示後備統計。連線錯誤附帶 `stage` 或 `reason`／數字錯誤代碼，方便區分 head 查詢、訂閱拒絕及遠端關閉。
+
 畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
 使用獨立研究資料庫，不依賴真實成交；啟動及報告定義見 [畢業研究監控](docs/graduation-research.md)。
 

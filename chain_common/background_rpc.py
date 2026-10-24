@@ -6,7 +6,7 @@ import time
 class BackgroundRpc:
     ALLOWED = {'getSignaturesForAddress', 'getSignatureStatuses', 'getTransaction',
                'getBlockTime', 'getAccountInfo', 'getMultipleAccounts', 'getBalance','getBlockHeight',
-               'getTokenAccountsByOwner'}
+               'getTokenAccountsByOwner','getSlot'}
 
     def __init__(self, public, priority, rps=2, *, max_inflight=4):
         self.public, self.priority = public, priority

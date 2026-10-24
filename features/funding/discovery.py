@@ -10,6 +10,13 @@ FUNDING_GAP_SECONDS = 120
 FUNDING_GAP_PAGES = 3
 
 
+class FeedError(RuntimeError):
+    """Only fixed reason labels and numeric codes may enter diagnostics."""
+    def __init__(self, reason, **codes):
+        super().__init__(reason)
+        self.detail={'reason':reason,**{k:v for k,v in codes.items() if type(v) is int}}
+
+
 async def history_page(rpc, store, address, max_age, notices):
     """One page per turn, at most three pages of a fixed recent funding gap."""
     now = time.time()
@@ -103,16 +110,18 @@ class Discovery:
 
     async def websocket(self):
         backoff = 1
+        source='alchemy-websocket' if self.config.funding_ws_provider=='alchemy' else 'public-websocket'
         while True:
+            read=None
             try:
                 self.refresh()
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                    async with session.ws_connect(self.config.ws, heartbeat=20,
+                    async with session.ws_connect(self.config.funding_ws_url, heartbeat=20,
                                                   timeout=aiohttp.ClientWSTimeout(ws_close=10), max_msg_size=2**20) as ws:
-                        sent, ids, subs = {}, {}, {}
+                        sent, ids, subs, requested = {}, {}, {}, {}
                         counter = 0
                         connected_at = time.monotonic()
-                        self.connected = True
+                        self.connected = False
                         # Legacy WSS has no replay: catch up once per connection.
                         history_requested=set(self.addresses) & self.funding_sources
                         self.store.request_histories(history_requested)
@@ -127,31 +136,49 @@ class Discovery:
                                     counter += 1
                                     await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[subs.pop(address)]})
                                 sent.pop(address,None)
-                            for address in desired-set(sent):
+                            # Limit outstanding acknowledgements instead of bursting
+                            # every address subscription at the server on reconnect.
+                            for address in sorted(desired-set(sent))[:max(0,8-len(ids))]:
                                 counter += 1
                                 ids[counter] = address
+                                requested[counter] = time.monotonic()
                                 sent[address] = counter
                                 await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsSubscribe',
                                     'params':[{'mentions':[address]},{'commitment':'confirmed'}]})
                                 if address not in history_requested:
                                     self.request_history(address)
                                     history_requested.add(address)
-                            try:
-                                msg = await asyncio.wait_for(ws.receive(), timeout=1)
-                            except asyncio.TimeoutError:
+                            if any(time.monotonic()-stamp>15 for stamp in requested.values()):
+                                raise FeedError('subscription-ack-timeout')
+                            self.connected=bool(desired) and desired<=set(subs)
+                            if backoff>1 and self.connected and time.monotonic()-connected_at>=30:
+                                self.notices.emit('feed recovered; history catch-up remains active',
+                                    {'provider':self.config.funding_ws_provider},alert=True,key='feed-recovered')
+                                backoff=1
+                            # Keep one receive alive while refreshing subscriptions;
+                            # idle polling must not cancel aiohttp's heartbeat read.
+                            if read is None:read=asyncio.create_task(ws.receive())
+                            done,_=await asyncio.wait({read},timeout=1)
+                            if not done:
                                 continue
+                            msg=read.result()
+                            read=None
                             if msg.type in (aiohttp.WSMsgType.CLOSED,aiohttp.WSMsgType.CLOSE,aiohttp.WSMsgType.ERROR):
-                                raise RuntimeError('websocket-closed')
+                                raise FeedError('websocket-closed',close_code=getattr(ws,'close_code',None),
+                                                frame_code=msg.data)
                             if msg.type != aiohttp.WSMsgType.TEXT:
                                 continue
                             body = json.loads(msg.data)
                             if (body.get('error') or {}).get('code') in (429,'429'):
-                                report_429('public-websocket','subscription','WS-RPC')
+                                report_429(source,'subscription','WS-RPC')
                             if 'id' in body:
                                 addr = ids.pop(body['id'],None)
+                                requested.pop(body['id'],None)
                                 if addr:
                                     if 'error' in body:
-                                        raise RuntimeError('subscription-rejected')
+                                        raise FeedError('subscription-rejected',rpc_code=body['error'].get('code'))
+                                    if type(body.get('result')) is not int:
+                                        raise FeedError('subscription-invalid-result')
                                     if addr not in desired:
                                         counter += 1
                                         await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[body['result']]})
@@ -162,17 +189,20 @@ class Discovery:
                             if value.get('signature') and value.get('err') is None:
                                 self.received += 1
                                 self.added += self.store.enqueue([value['signature']], live=True)
-                            if backoff>1 and time.monotonic()-connected_at>=30:
-                                self.notices.emit('feed recovered; history catch-up remains active', {}, alert=True)
-                                backoff = 1
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 if isinstance(exc,aiohttp.WSServerHandshakeError) and exc.status==429:
-                    report_429('public-websocket','connect','WS-handshake')
-                self.notices.emit('feed unavailable; history fallback active', {'type':type(exc).__name__, 'retry_s':backoff},
+                    report_429(source,'connect','WS-handshake')
+                detail={'type':type(exc).__name__,'retry_s':backoff,'provider':self.config.funding_ws_provider}
+                if isinstance(exc,FeedError):detail.update(exc.detail)
+                elif isinstance(exc,aiohttp.WSServerHandshakeError):detail.update(reason='websocket-handshake',http_status=exc.status)
+                self.notices.emit('feed unavailable; history fallback active', detail,
                                   alert=True,key='feed-error')
             finally:
+                if read is not None:
+                    read.cancel()
+                    await asyncio.gather(read,return_exceptions=True)
                 self.connected = False
                 self.subscribed.clear()
             await asyncio.sleep(backoff)

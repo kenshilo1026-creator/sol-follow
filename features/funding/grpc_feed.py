@@ -1,4 +1,4 @@
-"""Alchemy hotlist-only executed transaction stream; no paid HTTP calls.
+"""Alchemy hotlist-only stream with public-first/Alchemy-fallback head reads.
 
 The durable inbox is committed before advancing the checkpoint. Hotlist changes
 subscribe to live traffic only; they never queue public history scans.
@@ -161,8 +161,10 @@ class HotlistFeed:
                 await asyncio.sleep(1)
                 continue
             began = time.monotonic()
+            stage = 'getSlot'
             try:
                 start = await self.resume_slot(addresses)
+                stage = 'grpc-subscription'
                 async with channel_for(self.config) as channel:
                     await self.connection(channel,addresses,start)
             except asyncio.CancelledError:
@@ -172,7 +174,7 @@ class HotlistFeed:
                 # a status enum; permission/filter rejection is never hidden.
                 status = exc.code().name if isinstance(exc,grpc.RpcError) else type(exc).__name__
                 self.notices.emit('hotlist Alchemy stream unavailable; retrying live subscription',
-                    {'status':status,'retry_s':backoff},alert=True,key='grpc-error')
+                    {'status':status,'stage':stage,'retry_s':backoff},alert=True,key='grpc-error')
                 self.reconnects += 1
             finally:
                 self.connected = False

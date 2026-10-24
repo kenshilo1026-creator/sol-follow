@@ -10,6 +10,7 @@ from chain_common.background_rpc import BackgroundRpc
 from features.funding.rpc import FundingRpc
 from features.funding.work import WalletFlights, TransactionReads
 from features.funding.confirmation_rpc import ConfirmationRpc, ConfirmationUnavailable
+from features.funding.stream_rpc import StreamHeadRpc
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
@@ -280,6 +281,9 @@ class Service:
                 detail['funding_check_rpc']=self.funding_rpc.snapshot()
             if hasattr(self,'confirmation_rpc'):
                 detail['confirmation_rpc']=self.confirmation_rpc.snapshot()
+            if hasattr(self,'stream_head_rpc'):
+                detail['stream_head_rpc']=self.stream_head_rpc.snapshot()
+            detail['funding_ws_provider']=self.config.funding_ws_provider
             if hasattr(self,'funding_history_rpc'):
                 detail['funding_history_rpc']={'provider':self.config.funding_history_provider,
                                               **self.funding_history_rpc.snapshot()}
@@ -311,6 +315,7 @@ class Service:
                 self.funding_history_rpc if self.config.alchemy_key
                 and self.config.funding_history_url != self.config.rpc else None)
             self.confirmation_rpc=ConfirmationRpc(self.background_rpc,self.funding_rpc.alchemy)
+            self.stream_head_rpc=StreamHeadRpc(self.background_rpc,self.funding_rpc.alchemy)
             genesis=await rpc.call('getGenesisHash',[])
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
@@ -321,7 +326,7 @@ class Service:
             self.discovery=discovery
             if grpc_mode:
                 from features.funding.grpc_feed import HotlistFeed
-                self.hotlist_feed=HotlistFeed(self.config,self.store,rpc,self.notices,discovery)
+                self.hotlist_feed=HotlistFeed(self.config,self.store,self.stream_head_rpc,self.notices,discovery)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
             self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority)
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
@@ -340,6 +345,8 @@ class Service:
                 'hotlist_feed':self.config.feed_mode,'hotlist_commitment':self.config.hotlist_commitment,
                 'http_policy':self.config.http_policy,
                 'funding_history_provider':self.config.funding_history_provider,
+                'funding_ws_provider':self.config.funding_ws_provider,
+                'stream_head_alchemy_fallback':self.stream_head_rpc.alchemy is not None,
                 'funding_workers':self.config.funding_workers if grpc_mode else 1,
                 'funding_alchemy_rps':self.config.funding_alchemy_rps,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,

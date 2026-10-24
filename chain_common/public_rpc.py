@@ -32,11 +32,11 @@ def defer_429_alerts(enabled=True):
 
 def report_429(source,method,transport):
     # Accept only labels, never endpoint URLs, request parameters or error text.
-    source=source if source in ('python','background','node-sdk','public-websocket','alchemy-history') else 'public-rpc'
+    source=source if source in ('python','background','node-sdk','public-websocket','alchemy-history','alchemy-websocket') else 'public-rpc'
     method=method if isinstance(method,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}',method) else 'unknown'
     transport=transport if transport in ('HTTP','JSON-RPC','WS-handshake','WS-RPC') else 'unknown'
     detail={'source':source,'method':method,'transport':transport,'status':429}
-    kind='Alchemy RPC 429' if source=='alchemy-history' else 'public RPC 429'
+    kind='Alchemy RPC 429' if source in ('alchemy-history','alchemy-websocket') else 'public RPC 429'
     sink=_sink.get()
     if sink is None:
         logging.getLogger('sol-follow').warning('[SOL] %s %s',kind,detail)

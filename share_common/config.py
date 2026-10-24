@@ -185,6 +185,21 @@ class Config:
     min_funding_usdc: int = 50_000_000
     max_funding_usdc: int = 800_000_000
     min_funding_age_seconds: int = 0
+    funding_ws: str = field(default='', repr=False)
+
+    @property
+    def funding_ws_url(self):
+        if self.funding_ws:return self.funding_ws
+        if self.alchemy_key and self.ws.rstrip('/') in (
+                'wss://api.mainnet-beta.solana.com','wss://api.mainnet.solana.com'):
+            return 'wss://solana-mainnet.streaming.alchemy.com/v2/'+quote(self.alchemy_key,safe='')
+        return self.ws
+
+    @property
+    def funding_ws_provider(self):
+        from urllib.parse import urlparse
+        host=urlparse(self.funding_ws_url).hostname or ''
+        return 'alchemy' if host.endswith('.alchemy.com') else 'configured'
 
     @property
     def buy_only_aged_minutes(self):
@@ -289,6 +304,7 @@ def load(root=ROOT, env=None):
         raise ValueError('live-requires-SOL_WALLET_ADDRESS-private-key')
     return Config(
         root=root, data=root/'data', dry_run=dry, rpc=rpc, ws=ws,
+        funding_ws=get('SOL_FUNDING_WS_URL','') or '',
         cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
         min_funding=low, max_funding=high,
         min_funding_usdc=usdc_low, max_funding_usdc=usdc_high,
