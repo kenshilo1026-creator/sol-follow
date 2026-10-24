@@ -68,6 +68,9 @@ class Discovery:
         self.received = self.added = 0
         self.addresses = []
         self.locks = {}
+        self.market_watch = None
+        self.market_event = None
+        self.market_addresses = set()
         self.funding_sources = set(config.cex) | set(config.privacy_pools)
 
     def request_history(self,address):
@@ -105,8 +108,27 @@ class Discovery:
 
     def refresh(self):
         # CEX/source coverage is never silently replaced by hotlist subscriptions.
+        self.market_addresses = self.market_watch() if self.market_watch else set()
         self.addresses = list(dict.fromkeys([*self.config.cex, *self.config.privacy_pools,
-                                             *([] if self.sources_only else self.store.hotlist(time.time()))]))
+                                             *([] if self.sources_only else self.store.hotlist(time.time())),
+                                             *sorted(self.market_addresses)]))
+
+    def notification(self,body,subs):
+        params=body.get('params',{})
+        result=params.get('result',{})
+        value=result.get('value',{})
+        if not value.get('signature') or value.get('err') is not None:return
+        address=next((addr for addr,sub in subs.items() if sub==params.get('subscription')),None)
+        if address is None:return  # Late notification from an already removed subscription.
+        self.received += 1
+        if address in self.market_addresses:
+            if self.market_event:
+                self.market_event(address,value['signature'],result.get('context',{}).get('slot'))
+            # Market-only traffic wakes the price worker directly. Never inflate
+            # the durable funding/create inbox with every other trader's swap.
+            if address not in self.funding_sources and (self.sources_only or
+                    address not in self.store.hotlist(time.time())):return
+        self.added += self.store.enqueue([value['signature']],live=True)
 
     async def websocket(self):
         backoff = 1
@@ -185,10 +207,7 @@ class Discovery:
                                     else:
                                         subs[addr] = body['result']
                                     self.subscribed = set(subs)
-                            value = body.get('params',{}).get('result',{}).get('value',{})
-                            if value.get('signature') and value.get('err') is None:
-                                self.received += 1
-                                self.added += self.store.enqueue([value['signature']], live=True)
+                            self.notification(body,subs)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

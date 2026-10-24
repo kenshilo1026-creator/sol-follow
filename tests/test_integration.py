@@ -104,7 +104,7 @@ async def test_websocket_subscribes_all_addresses(config,store):
                 await ws.send_json({'jsonrpc':'2.0','id':body['id'],'result':body['id']})
                 if received==expected:
                     await ws.send_json({'jsonrpc':'2.0','method':'logsNotification',
-                        'params':{'result':{'value':{'signature':'live-websocket-test','err':None}}}})
+                        'params':{'subscription':body['id'],'result':{'value':{'signature':'live-websocket-test','err':None}}}})
                     complete.set()
         return ws
     app=web.Application();app.router.add_get('/ws',websocket)

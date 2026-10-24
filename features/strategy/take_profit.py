@@ -3,6 +3,7 @@ import asyncio
 import base64
 import json
 import time
+from collections import OrderedDict
 from decimal import Decimal
 from pathlib import Path
 from contextlib import suppress
@@ -44,6 +45,38 @@ class TakeProfit:
         path=Path(config.take_profit_rules_path)
         self.rules=load_rules(path if path.is_absolute() else config.root/path) if rules is None else rules
         self.next={}
+        self.wake=asyncio.Event()
+        self.dirty=set()
+        self.event_slots={}
+        self.market_accounts={}
+        self.spot_pools={}
+        self.seen_events=OrderedDict()
+
+    def watch_addresses(self):
+        """Confirmed transaction mentions for our holdings, independent of hotlist expiry."""
+        positions=[] if self.config.dry_run or not self.rules else self.store.rows('trading',
+            "SELECT mint,pool FROM positions WHERE mode=? AND amount!='0'",(self.config.mode,))
+        mints={p['mint'] for p in positions}
+        self.dirty.intersection_update(mints)
+        for mapping in (self.next,self.event_slots,self.spot_pools):
+            for mint in set(mapping)-mints:mapping.pop(mint,None)
+        accounts={}
+        for pos in positions:
+            for account in (pos['mint'],pos['pool'],self.spot_pools.get(pos['mint'])):
+                if account:accounts.setdefault(account,set()).add(pos['mint'])
+        self.market_accounts=accounts
+        return set(accounts)
+
+    def market_event(self,address,signature,slot):
+        if type(slot) is not int or slot<=0 or not isinstance(signature,str) or not signature:return
+        for mint in self.market_accounts.get(address,()):
+            identity=(mint,signature)
+            if identity in self.seen_events:continue
+            self.seen_events[identity]=None
+            while len(self.seen_events)>2048:self.seen_events.popitem(last=False)
+            self.event_slots[mint]=max(slot,self.event_slots.get(mint,0))
+            self.dirty.add(mint)
+            self.wake.set()
 
     def notice(self,kind,row,**detail):
         identity=str(detail.get('order') or row.get('id') or row['mint'])
@@ -207,10 +240,15 @@ class TakeProfit:
     async def position(self,pos):
         if self.emergency(pos['mint']):return
         request,market=self.context(pos)
+        request={**request,'minSlot':max(request['minSlot'],self.event_slots.get(pos['mint'],0))}
         amount=int(pos['amount'])
         result=await self.background_quote(request,amount)
         if result is None:return
         current=self.spot(result,request)
+        # SDK returns the validated current venue pool, including migration.
+        if result.get('pool'):
+            from chain_common.primitives import pubkey
+            self.spot_pools[pos['mint']]=str(pubkey(result['pool']))
         if self.priority.active or self.emergency(pos['mint']):return
         gain=(Decimal(current)/int(market['entry_index'])-1)*100
         previous=(Decimal(market['peak_index'])/int(market['entry_index'])-1)*100
@@ -230,12 +268,13 @@ class TakeProfit:
         pos={**pos,'peak':str(peak),'rules':json.dumps(done)}
         selected=select_rule(self.rules,pos,gain,peak)
         if selected:await self.submit(pos,request,*selected,entry_index=int(market['entry_index']))
+        return True
 
-    async def once(self):
+    async def once(self,*,reconcile=True):
         if self.config.dry_run:return  # No synthetic fills or real sells in dry mode.
         orders=self.store.rows('trading',f"SELECT * FROM orders WHERE side='sell' AND reason=? AND mode=? AND state IN {ACTIVE}",
                                (MARKER,self.config.mode))
-        for order in orders:
+        for order in orders if reconcile else ():
             async with self.flights.hold(order['mint']):
                 if not order['signature']:
                     self.store.fail_order(order['id'],'take-profit-interrupted-before-sign')
@@ -243,26 +282,41 @@ class TakeProfit:
                     try:await self.reconcile(order)
                     except asyncio.CancelledError:raise
                     except Exception as exc:self.notice('take profit deferred',order,reason=type(exc).__name__)
+        self.watch_addresses()
         if not self.rules or self.priority.active:return
         positions=self.store.rows('trading',"SELECT * FROM positions WHERE mode=? AND amount!='0'",(self.config.mode,))
         for pos in positions:
             if self.priority.active:break
-            if time.monotonic()<self.next.get(pos['mint'],0):continue
+            if pos['mint'] not in self.dirty and time.monotonic()<self.next.get(pos['mint'],0):continue
             self.next[pos['mint']]=time.monotonic()+self.poll_interval(pos)
+            self.dirty.discard(pos['mint'])
             async with self.flights.hold(pos['mint']):
                 if self.store.rows('trading',f"SELECT 1 FROM orders WHERE mint=? AND mode=? AND side='sell' AND state IN {ACTIVE}",
                                    (pos['mint'],pos['mode'])):continue
                 # Emergency reconciliation may have changed the amount while we waited.
                 pos=self.store.rows('trading','SELECT * FROM positions WHERE mint=? AND mode=?',(pos['mint'],pos['mode']))[0]
                 if int(pos['amount'])<=0:continue
-                try:await self.position(pos)
+                try:
+                    checked=await self.position(pos)
+                    if not checked and self.priority.active:
+                        # A foreground buy can interrupt the RPC; keep its wake pending.
+                        self.dirty.add(pos['mint'])
                 except asyncio.CancelledError:raise
                 except Exception as exc:
                     self.notice('take profit deferred',pos,reason=reason(exc))
 
     async def run(self):
+        reconcile_due=0
         while True:
-            try:await self.once()
+            self.wake.clear()
+            now=time.monotonic()
+            reconcile=now>=reconcile_due
+            if reconcile:reconcile_due=now+self.config.take_profit_poll_seconds
+            try:await self.once(reconcile=reconcile)
             except asyncio.CancelledError:raise
             except Exception as exc:self.notices.emit('take profit worker deferred',{'type':type(exc).__name__},alert=True,key='tp-worker')
-            await asyncio.sleep(self.config.take_profit_poll_seconds)
+            # Hot tokens never postpone other tokens' timers or order reconciliation.
+            timeout=max(0,reconcile_due-time.monotonic())
+            if self.dirty:timeout=min(timeout,0.05 if self.priority.active else 0)
+            try:await asyncio.wait_for(self.wake.wait(),timeout=timeout)
+            except asyncio.TimeoutError:pass

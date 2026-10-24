@@ -74,7 +74,7 @@ async function prepare(input,{connection,state,mint,quote,baseProgram,quoteProgr
     return reserve;
   });
   const spotIndex=require('./spot-index.cjs').spotIndex(vaults[zero?1:0],vaults[zero?0:1]);
-  if(input.spotOnly)return {spotIndex};
+  if(input.spotOnly)return {spotIndex,pool:a.pool.toBase58()};
   risk.checkTokenTax(input,base,epoch);
   const transfer=spl.getTransferFeeConfig(base),value=BigInt(amount.toString());
   const details=quoteExactIn({amount:value,reserveIn:vaults[zero?0:1],reserveOut:vaults[zero?1:0],

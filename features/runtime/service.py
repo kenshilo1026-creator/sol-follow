@@ -333,6 +333,8 @@ class Service:
             self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights)
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.background_rpc)
+            discovery.market_watch=self.take_profit.watch_addresses
+            discovery.market_event=self.take_profit.market_event
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set

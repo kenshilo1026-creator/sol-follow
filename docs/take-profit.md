@@ -65,8 +65,28 @@ and subsequent valid observations. Completed fixed-profit rules remain completed
 persisted registration time, that position's spot polling interval becomes five
 times the setting: **25 seconds with defaults** (8 seconds becomes 40 seconds).
 Restart and partial selling do not reset the 30-minute clock. Pending signed
-transactions continue reconciliation on the base loop interval. This change adds
-the age-based timer; it does not add RH's event-driven early wakeups.
+transactions continue reconciliation on the base loop interval.
+
+Like RH, a held token's transaction wakes its spot check immediately, bypassing
+that token's timer (including the 25-second aged timer). The existing confirmed
+WebSocket feed additionally subscribes to held mints and their pools independently
+of hotlist membership, including in gRPC mode. It uses the configured funding WS
+provider; no new API key or setting is needed. On graduation, the validated spot
+reader adds the PumpSwap/CPMM pool to the watch list. Subscription changes refresh
+within the feed's two-second refresh cycle, subject to subscription acknowledgements.
+The periodic spot read also discovers migration if its event was missed.
+
+Only successful transaction notifications for held accounts wake the worker.
+Notifications are coalesced per mint and duplicate signatures are bounded/deduplicated;
+events arriving during a check remain pending. The spot RPC uses the event's slot
+as a minimum confirmed context, so it cannot evaluate an older pool snapshot.
+These events are hints to read validated spot, never prices or permission to sell.
+Market-only notifications bypass the funding/create queue. Foreground buys and dev
+exits retain priority; interrupted price checks resume after foreground work.
+An unavailable RPC defers to later events/polls. Other positions' poll timers and
+pending sells' reconciliation continue even when one token trades continuously.
+Disconnected feeds and closed positions rely on polling or stop their subscriptions,
+respectively; dry run does not add holding subscriptions.
 
 ## Execution and recovery
 

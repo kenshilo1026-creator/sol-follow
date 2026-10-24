@@ -97,6 +97,7 @@ for(const [native,existing] of [[false,true],[true,true],[true,false]]){
       simulateTransaction:async()=>assert.fail('spot simulation')};
     const spot=await build(spotInput,connection),large=await build({...spotInput,amount:'1'},connection);
     f.rows[f.target.toBase58()]=saved;
+    assert.equal(spot.pool,f.a.pool.toBase58());
     assert.equal(spot.spotIndex,large.spotIndex);assert.equal(spot.spotIndex,result.spotIndex);
     assert.equal(spot.venue,result.venue);assert.equal(spot.indexScale,(10n**30n).toString());
     assert.equal(spot.transaction,undefined);

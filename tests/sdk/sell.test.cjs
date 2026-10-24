@@ -88,6 +88,7 @@ for(const kind of ['pump_native_curve','sol_to_pump_curve','stonk_native_curve',
     const q=stonk?state.virtualB+state.realB:BigInt(state.virtualQuoteReserves.toString());
     const b=stonk?state.virtualA-state.realA:BigInt(state.virtualTokenReserves.toString());
     assert.equal(spot.spotIndex,(q*10n**30n/b).toString());
+    assert.equal(spot.pool,pool.toBase58());
     assert.equal(spot.spotIndex,large.spotIndex);assert.equal(spot.spotIndex,result.spotIndex);
     assert.equal(spot.indexScale,(10n**30n).toString());assert.equal(spot.transaction,undefined);
 

@@ -50,7 +50,7 @@ async function prepare(input,{connection,user,mint,quoteMint,baseProgram,quotePr
     return new BN(value.amount.toString());
   });
   const spotIndex=require('./spot-index.cjs').spotIndex(reserves[1].add(pool.virtualQuoteReserves),reserves[0]);
-  if(input.spotOnly)return {spotIndex};
+  if(input.spotOnly)return {spotIndex,pool:poolKey.toBase58()};
   const details=quote(input,{pool,globalConfig,feeConfig,base,baseReserve:reserves[0],quoteReserve:reserves[1],amount});
   const state={poolKey,poolAccountInfo:rows[0],pool,globalConfig,feeConfig,baseMint:mint,baseMintAccount:base,
     poolBaseAmount:reserves[0],poolQuoteAmount:reserves[1],baseTokenProgram:baseProgram,quoteTokenProgram:quoteProgram,

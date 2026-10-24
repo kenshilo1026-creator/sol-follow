@@ -44,11 +44,11 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
   // Spot monitoring validates the pool/mints but never needs a wallet balance,
   // an amount-dependent liquidation quote, fees, blockhash or simulation.
   if(input.spotOnly){
-    let spotIndex,venue;
+    let spotIndex,venue,spotPool=pool.toBase58();
     if(isStonk){
       const state=stonk.poolState(rows[2],pool,mint,quote,[0,2]);
       if(state.status===2){
-        ({spotIndex}=await require('./cpmm-sell.cjs').prepare(input,
+        ({spotIndex,pool:spotPool}=await require('./cpmm-sell.cjs').prepare(input,
           {connection,state,mint,quote,baseProgram,quoteProgram,base,quoteInfo,amount}));
         venue='raydium_cpmm';
       }else{spotIndex=reserveIndex(state.virtualB+state.realB,state.virtualA-state.realA);venue='stonk_curve';}
@@ -56,12 +56,12 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
       const curve=pump.PUMP_SDK.decodeBondingCurve(rows[2]);
       if(!pump.normalizeQuoteMint(curve.quoteMint).equals(quote))throw Error('curve-graduated-or-quote-mismatch');
       if(curve.complete){
-        ({spotIndex}=await require('./pumpswap-sell.cjs').prepare(input,
+        ({spotIndex,pool:spotPool}=await require('./pumpswap-sell.cjs').prepare(input,
           {connection,user,mint,quoteMint:quote,baseProgram,quoteProgram,base,target,out,amount}));
         venue='pump_swap';
       }else{spotIndex=reserveIndex(curve.virtualQuoteReserves,curve.virtualTokenReserves);venue='pump_curve';}
     }
-    return {mint:input.mint,quoteMint:input.quoteMint,spotIndex,indexScale:SCALE.toString(),venue};
+    return {mint:input.mint,quoteMint:input.quoteMint,spotIndex,indexScale:SCALE.toString(),venue,pool:spotPool};
   }
   const before=spl.unpackAccount(target,rows[3],baseProgram);
   if(!before.owner.equals(user)||!before.mint.equals(mint)||before.amount<BigInt(amount.toString())||before.isFrozen)throw Error('sell-balance-unavailable');

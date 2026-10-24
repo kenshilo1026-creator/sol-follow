@@ -587,6 +587,6 @@ DRY_RUN 的失敗同樣通知並標示 dry。背景預熱本身、非 hotlist �
 
 ## 自動止盈與止損
 
-服務會監察已確認買入的自身持倉，依根目錄 `take_profit_rules.json` 執行分段止盈、止損、保本與移動止盈。止盈固定啟用，使用 `SOL_TAKE_PROFIT_POLL_SECONDS` 和 `SOL_TAKE_PROFIT_RULES_PATH` 設定；dry-run 不賣出。規則完成與剩餘持倉只在 finalized 成交核對後更新。以成交均價記錄入場 index，使用池子 spot index 觸發止盈；監察滿 30 分鐘後，檢查間隔放慢至 5 倍（預設由 5 秒變成 25 秒），重啟與部分賣出不重設計時。
+服務會監察已確認買入的自身持倉，依根目錄 `take_profit_rules.json` 執行分段止盈、止損、保本與移動止盈。止盈固定啟用，使用 `SOL_TAKE_PROFIT_POLL_SECONDS` 和 `SOL_TAKE_PROFIT_RULES_PATH` 設定；dry-run 不賣出。規則完成與剩餘持倉只在 finalized 成交核對後更新。以成交均價記錄入場 index，使用池子 spot index 觸發止盈；監察滿 30 分鐘後，檢查間隔放慢至 5 倍（預設由 5 秒變成 25 秒），重啟與部分賣出不重設計時。持倉代幣／交易池的 confirmed 交易事件會直接喚醒該代幣的 spot index 檢查，不用等待下一次輪詢；定時檢查仍作補漏。
 
 完整語義、盈虧報價基準、重啟與部署方式見 [自動止盈說明](docs/take-profit.md)。規則檔被 Git 忽略，部署時須另外複製至 VPS 並重啟服務。

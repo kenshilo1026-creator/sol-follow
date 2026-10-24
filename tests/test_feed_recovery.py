@@ -187,7 +187,7 @@ async def test_subscription_batches_complete_and_live_notifications_are_durable(
             if replies.empty() and len(sent)==28:
                 assert discovery.connected and len(discovery.subscribed)==28
                 if discovery.received:raise asyncio.CancelledError
-                body={'params':{'result':{'value':{'signature':'live-notification','err':None}}}}
+                body={'params':{'subscription':101,'result':{'value':{'signature':'live-notification','err':None}}}}
             else:body=await replies.get()
             return SimpleNamespace(type=aiohttp.WSMsgType.TEXT,data=json.dumps(body))
     socket_session(monkeypatch,Socket(),urls)
