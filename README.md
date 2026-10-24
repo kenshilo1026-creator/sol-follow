@@ -8,6 +8,7 @@
 買入模式已改為 **hotlist dev create 狙擊**：合資格、實際簽名的 dev 建立 Pump／Stonk 代幣便觸發一次買入，無須多錢包買入票數，也無須 create 交易附帶 dev buy。
 Create 先消耗 hotlist，再檢查入金年齡、dev 持倉與原子買入風控；市值條件已取消。重播、補查及重啟不追買。詳見 [Create 狙擊模式](docs/dev-create-sniping.md)。
 `SOL_BUY_ONLY_AGED_MINUTES=10` 代表最新合資格入金至少 10 分鐘才可狙擊；`0` 關閉。未達門檻的 create 消耗資格後跳過，不作延遲補買。
+Dry run 的「偵測到 create」Telegram 通知也套用此門檻：未達入金年齡、沒有合資格入金或入金時間不明時不通知；設為 `0` 則維持原有通知行為。
 支援 dev 超標緊急賣出，一般分批止盈／止損仍待實作。
 **沒有修改、import 或共用 RH/BSC 的 runtime、錢包和資料庫。**
 

@@ -133,10 +133,12 @@ class Service:
         funding_items=[] if processed else funding_decode(tx,self.config)
         if not processed:funding_candidates(self.store,tx,self.config,funding_items)
         creation=inspect_creates(tx)
-        # Notify every decoded create in dry mode, independently of hotlist,
-        # quantity gates and order eligibility, including provisional receipts.
+        # Dry create alerts share the entry funding-age gate, but remain
+        # independent of quantity/build gates, including provisional receipts.
         if self.config.dry_run:
             for item in creation.creates:
+                if not self.store.create_alert_allowed(item,time.time(),self.config.min_funding_age_seconds):
+                    continue
                 if self.store.claim_create_alert(item.event):
                     detail={**item.dict(),'commitment':'processed' if processed else 'confirmed'}
                     try:

@@ -1,4 +1,4 @@
-"""Offline dry create notifications independent of entry eligibility."""
+"""Offline dry create notifications gated by funding age, independent of build gates."""
 import asyncio
 from dataclasses import replace
 from decimal import Decimal
@@ -61,8 +61,12 @@ async def test_processed_create_alerts_even_when_quantity_blocks(config,store,qu
 
 
 @pytest.mark.asyncio
-async def test_processed_confirmed_and_restart_share_durable_dedupe(config,store):
+@pytest.mark.parametrize('required',[0,600])
+async def test_processed_confirmed_and_restart_share_durable_dedupe(config,store,required):
+    config=replace(config,min_funding_age_seconds=required)
     case=setup_create(config,store)
+    with store.db('funding') as db:
+        db.execute('UPDATE funding SET time=?',(int(time.time())-1200,))
     await case.service.process(case.row,case.rpc)
     assert len(alerts(case.service.notices))==1
     case.service.proofs.confirmed(case.item.signature,'confirmed')

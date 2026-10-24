@@ -131,15 +131,40 @@ def test_rejected_create_never_buys_later_or_after_restart(config,store):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('processed',[False,True])
-@pytest.mark.parametrize('age,allowed',[(10,False),(1200,True)])
-async def test_service_age_gate_precedes_build_and_keeps_dry_create_alert(config,store,processed,age,allowed):
+@pytest.mark.parametrize('case_name',['missing','unknown-time','expired','same-slot','latest-too-young','other-wallet'])
+async def test_dry_alert_requires_mature_eligible_dev_funding(config,store,processed,case_name):
+    case=setup_create(replace(config,min_funding_age_seconds=600),store,processed=processed)
+    now=int(time.time())
+    with store.db('funding') as db:
+        db.execute('UPDATE funding SET time=?',(now-1200,))
+        if case_name=='missing':db.execute('DELETE FROM funding')
+        elif case_name=='unknown-time':db.execute('UPDATE funding SET time=0')
+        elif case_name=='expired':db.execute('UPDATE funding SET expires=?',(now,))
+        elif case_name=='same-slot':db.execute('UPDATE funding SET slot=?',(case.item.slot,))
+        elif case_name=='other-wallet':db.execute('UPDATE funding SET wallet=?',(address(),))
+        elif case_name=='latest-too-young':db.execute('UPDATE funding SET slot=?',(case.item.slot-2,))
+    if case_name=='latest-too-young':
+        deposit(store,case.item,now-10,now)
+    await case.service.process(case.row,case.rpc)
+    assert not [args for args,kw in case.service.notices.items
+                if args[0]=='dry create detected' and kw.get('alert')]
+    assert store.rows('funding','SELECT * FROM dry_create_alerts')==[]
+    assert not case.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('processed',[False,True])
+@pytest.mark.parametrize('age,allowed',[(10,False),(599,False),(600,True),(1200,True)])
+async def test_service_age_gate_controls_build_and_dry_create_alert(config,store,processed,age,allowed,monkeypatch):
+    now=int(time.time())
+    monkeypatch.setattr('time.time',lambda:now)
     case=setup_create(replace(config,min_funding_age_seconds=600),store,processed=processed)
     with store.db('funding') as db:db.execute('UPDATE funding SET time=?',(int(time.time())-age,))
     await case.service.process(case.row,case.rpc)
     assert bool(case.calls)==allowed
     assert not store.hotlist(time.time())
     alerts=[args for args,kw in case.service.notices.items if args[0]=='dry create detected' and kw.get('alert')]
-    assert len(alerts)==1
+    assert len(alerts)==int(allowed)
     if not allowed:
         assert not store.rows('trading','SELECT * FROM orders')
         assert not store.rows('trading','SELECT * FROM token_dev_holdings')
@@ -147,6 +172,10 @@ async def test_service_age_gate_precedes_build_and_keeps_dry_create_alert(config
         if processed:
             case.service.proofs.confirmed(case.item.signature,'confirmed')
             case.raw.pop('_stream');case.raw['blockTime']=int(time.time())
+        # Later maturity/confirmation must not revive this rejected create alert.
+        monkeypatch.setattr('time.time',lambda:now+601)
         await case.service.process(case.row,case.rpc)
         assert not case.calls
         assert not store.rows('trading','SELECT * FROM orders')
+        assert not [args for args,kw in case.service.notices.items
+                    if args[0]=='dry create detected' and kw.get('alert')]

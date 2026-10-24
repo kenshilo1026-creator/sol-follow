@@ -187,15 +187,32 @@ class Store:
             c.commit()
         return added
 
+    @staticmethod
+    def _create_funding(c,item,now):
+        return c.execute('SELECT event,signature,provider,slot,time FROM funding WHERE wallet=? AND slot<? AND time<=? '
+            'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) '
+            'ORDER BY slot DESC,time DESC,rowid DESC LIMIT 1',
+            (item.user,item.slot,item.time,now,item.user)).fetchone()
+
+    @staticmethod
+    def _funding_mature(funding,now,required):
+        if required<=0:return True
+        stamp=funding['time']
+        return type(stamp)==int and stamp>0 and now-stamp>=required
+
+    def create_alert_allowed(self,item,now,min_funding_age_seconds):
+        """Apply the entry funding-age gate without consuming the dev's hotlist."""
+        if min_funding_age_seconds<=0:return True
+        with self.db('funding') as c:
+            funded=self._create_funding(c,item,now)
+        return funded is not None and self._funding_mature(funded,now,min_funding_age_seconds)
+
     def consume_dev_create(self,item,now,*,processed=False,min_funding_age_seconds=0):
         """Consume once and return the latest eligible funding for the age gate."""
         with self.db('funding') as c:
             c.execute('PRAGMA synchronous=FULL')
             c.execute('BEGIN IMMEDIATE')
-            funded=c.execute('SELECT event,signature,provider,slot,time FROM funding WHERE wallet=? AND slot<? AND time<=? '
-                'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) '
-                'ORDER BY slot DESC,time DESC,rowid DESC LIMIT 1',
-                (item.user,item.slot,item.time,now,item.user)).fetchone()
+            funded=self._create_funding(c,item,now)
             if not funded:
                 c.commit()
                 return False,'dev-not-hotlisted-or-already-consumed',None
@@ -217,9 +234,7 @@ class Store:
         if prior:return False,'previous-token-launch',funding
         # Mirror RH: too-young/unknown funding skips this launch after consuming
         # its hotlist. A job retry or later confirmation never buys it late.
-        stamp=funding['time']
-        if min_funding_age_seconds>0 and (type(stamp)!=int or stamp<=0
-                or not 0<=now-stamp or now-stamp<min_funding_age_seconds):
+        if not self._funding_mature(funding,now,min_funding_age_seconds):
             return False,'funding-age',funding
         return True,'hotlisted-dev-create',funding
 
