@@ -24,7 +24,7 @@ async def test_gap_checkpoint_survives_rpc_failure(store):
     await history_page(RPC(),store,addr,3600,Notices())
     with pytest.raises(RuntimeError):await history_page(RPC(),store,addr,3600,Notices())
     state=store.cursor(addr)
-    assert state['latest']=='0' and state['gaps'][0]['before']=='99'
+    assert state['latest'] is None and state['observed_latest']=='0' and state['gaps'][0]['before']=='99'
     assert len(store.rows('funding','SELECT * FROM jobs'))==100
     class Recover:
         def __init__(self):self.calls=[]

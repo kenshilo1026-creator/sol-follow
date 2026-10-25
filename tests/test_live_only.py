@@ -16,7 +16,7 @@ from trade_execution.route import decode_all
 
 
 @pytest.mark.asyncio
-async def test_source_gap_has_three_page_budget_without_latest_repeats(store):
+async def test_source_gap_retains_continuation_after_three_pages(store):
     now = int(time.time())
     calls = []
     class RPC:
@@ -29,10 +29,11 @@ async def test_source_gap_has_three_page_budget_without_latest_repeats(store):
     assert len(calls) == 3
     assert 'before' not in calls[0]
     assert calls[1]['before'] == '1-99' and calls[2]['before'] == '2-99'
-    assert store.cursor('source')['gaps'] == []
+    assert store.cursor('source')['gaps'][0]['before'] == '3-99'
+    assert store.cursor('source')['latest'] is None
     assert len(store.rows('funding', 'SELECT * FROM jobs')) == 300
     assert all(not store.is_live(row['signature'], 15) for row in store.rows('funding', 'SELECT signature FROM jobs'))
-    assert any(args[0] == 'funding gap page limit reached' for args, _ in notices.items)
+    assert not notices.items
 
 
 @pytest.mark.asyncio

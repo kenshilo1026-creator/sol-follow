@@ -9,7 +9,7 @@ RPC 單筆回傳 `null`、驗證不合格或要求的 slot 尚未可用，只讓
 發送後備只重送已寫入資料庫的相同簽名及 bytes，不重簽；未知結果保留，RPC 接受不等於已成交。模擬的有效鏈上錯誤不會被後備的成功結果蓋過，兩端均保留 commitment、minContextSlot 與 preflight。每個交易端點使用前會核對 mainnet genesis。
 每次買入前先同步登記 dev 與其 token account 的監察，刷新實際 MarketFeed，最多等待 2 秒取得訂閱確認；未接好就停止該筆買入。訂閱確認仍會觸發 dev sell 空窗補查。
 止盈及 dev 賣出使用獨立的公共／Alchemy WebSocket 同時監聽，事件由原有持久化鍵去重；不再與 CEX 入金共用訂閱。任一連線維持完整覆蓋時不發斷線 Telegram；覆蓋不足超過 60 秒才通知。入金／gRPC 斷線與確認／交易 RPC 故障亦先記本地，持續超過 60 秒才告警；真正的交易拒絕、鏈上失敗等交易通知照常。
-gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查仍受下述 120 秒／3 頁範圍限制。
+gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查使用下述固定時間窗口與持久續查游標，每輪 3 頁不再是整個缺口的上限。
 可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。空白時主端沿用 `SOL_RPC_HTTP_URL`，後備使用現有 Alchemy key。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`；health 增加 `execution_rpc`、`execution_reads`、`market_feed`，不輸出端點或 key。
 
 畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
@@ -102,7 +102,7 @@ finalization／processed 訊號的 `getSignatureStatuses` 確認亦先用公共 
 合法的 `null` 狀態仍代表未確認；鏈上失敗、slot 不符及原有撤票規則照常執行。
 `SOL_BACKGROUND_RPC_RPS` 預設為 2（公共 RPC）；`SOL_FUNDING_ALCHEMY_RPS` 預設為 8（Alchemy 共用預算），各自按 endpoint 冷卻。`alchemy_grpc` 模式使用 `SOL_FUNDING_WORKERS=4` 個 funding worker，create 串流保留獨立 worker；同錢包依序檢查，活躍交易不會因 60 秒保留期到期被重複執行。WebSocket 混合交易模式維持單 worker，避免改變買入處理順序。
 `features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
-入金缺口只補查 CEX／Privacy Cash 來源最近 120 秒（或更短的 backfill 設定），每來源每輪最多 3 頁、每頁 100 筆。
+入金缺口只補查 CEX／Privacy Cash 來源：開始時固定最近 120 秒（或更短的 backfill 設定）為時間窗口，每來源每輪最多 3 頁、每頁 100 筆。超過 300 筆保留游標，約 1 秒後續查並讓其他來源先處理；成功續查不累加失敗退避。每頁工作與游標一起落庫，全部補完才推進完成位置，重啟後接續原缺口。RPC 失敗沿用冷卻／退避；窗口不隨等待縮短，但新缺口仍只從最近窗口開始，並不保證補回長時間斷線的全部歷史。資格期限與 create 即時性限制不變，歷史補查不會追買。
 新 hotlist 錢包不掃描歷史；gRPC 重連直接監控新交易，不重播斷線期間的買單。
 Create 狙擊必須有本次程序的即時接收紀錄；補查及重啟恢復的交易只保存資料，不追補買入。
 入金資格仍檢查地址交易筆數上限及已支援的發幣紀錄；不再限制入金前 30 天的簽名活動。

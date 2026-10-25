@@ -87,11 +87,23 @@ without printing endpoints or credentials. It does not prove live Alchemy access
 
 There is no round-robin `getSignaturesForAddress` scan when idle. Only configured
 CEX/Privacy Cash source addresses receive startup/reconnection gap requests.
-Each gap covers at most the last 120 seconds (or the shorter configured backfill
-age), with one page of 100 signatures per turn and at most three pages per source.
-Pagination resumes its saved cursor instead of fetching the newest page again.
-Unknown timestamps are not fetched as part of this short window. A full page at
-the budget limit is logged as incomplete coverage; long outages are not backfilled.
+Each new gap fixes its cutoff at the preceding 120 seconds (or the shorter
+configured backfill age). A source gets at most three pages of 100 signatures per
+turn, then yields for about one second if unfinished. This is a scheduling budget,
+not a 300-signature coverage cap. Successful continuation resets failure attempts;
+RPC failures retain the shared cooldown and exponential backoff.
+
+Each page atomically commits jobs and its before/until cursor. observed_latest
+records the gap head; latest advances only when the gap is fully scanned. Saved
+cutoffs never slide forward or expire while paging, and restarts resume the same
+gap. Previous-format pending cursors retain their original until anchor and head.
+Unknown timestamps are excluded from jobs but do not alone end pagination.
+Malformed or non-progressing responses fail without moving the cursor.
+
+A new gap still starts with the recent window, so this does not promise complete
+coverage of long outages or time spent outside that window between separate gaps.
+Existing qualification and queue expiry deadlines remain in force; completing
+signature enumeration is not proof that every candidate entered the hotlist.
 
 New hotlist addresses only update the live subscription. Existing queued address
 scans for non-source wallets are discarded without RPC calls. On gRPC reconnect,

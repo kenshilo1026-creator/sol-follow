@@ -418,11 +418,16 @@ class Store:
                       'revision=revision+1,due=excluded.due', [(address,time.time()) for address in addresses])
             c.commit()
 
-    def finish_history(self, row, *, retry=False):
+    def finish_history(self, row, *, retry=False, more=False):
         with self.db('funding') as c:
             if retry:
                 c.execute('UPDATE history_requests SET due=?,attempts=attempts+1 WHERE address=? AND revision=?',
                           (time.time()+min(60,2**min(row['attempts'],6)),row['address'],row['revision']))
+            elif more:
+                # Successful continuation is work, not a failed attempt. Yield
+                # to other addresses, preserving reconnect revisions via CAS.
+                c.execute('UPDATE history_requests SET due=?,attempts=0 WHERE address=? AND revision=?',
+                          (time.time()+1,row['address'],row['revision']))
             else:
                 c.execute('DELETE FROM history_requests WHERE address=? AND revision=?',(row['address'],row['revision']))
 

@@ -21,45 +21,52 @@ class FeedError(RuntimeError):
 
 
 async def history_page(rpc, store, address, max_age, notices):
-    """One page per turn, at most three pages of a fixed recent funding gap."""
+    """Commit one page and return whether this fixed gap still needs work."""
     now = time.time()
     max_age = min(max_age, FUNDING_GAP_SECONDS)
     state = store.cursor(address)
     pending = state.get('gaps', [])
     gap = pending[0] if pending else None
-    # Older versions had unbounded cursors. Start a fresh short window instead.
-    if gap and ('cutoff' not in gap or 'pages' not in gap):
-        gap = None
-    if gap and (gap['cutoff'] < now-2*max_age or gap['pages'] >= FUNDING_GAP_PAGES):
-        state['gaps'] = []
-        store.save_cursor(address, state, [])
-        return
+    # The previous format advanced latest on page one. Recover its original
+    # completed anchor from until, keeping the saved continuation even after
+    # three pages or a restart. Missing legacy bounds get one fixed window.
+    until = gap.get('until') if gap else state.get('latest')
+    head = gap.get('head', state.get('latest')) if gap else None
+    cutoff = gap.get('cutoff', now-max_age) if gap else now-max_age
+    started = gap.get('started', cutoff+max_age) if gap else now
     options = {'limit': 100, 'commitment': 'confirmed'}
     if gap:
         options['before'] = gap['before']
-        if gap.get('until'):
-            options['until'] = gap['until']
-    elif state.get('latest'):
-        options['until'] = state['latest']
+    if until:
+        options['until'] = until
     rows = await rpc.call('getSignaturesForAddress', [address, options])
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or len(rows) > 100:
         raise ValueError('invalid-signatures-response')
-    cutoff = max(gap['cutoff'], now-max_age) if gap else now-max_age
-    # Unknown timestamps cannot establish that a signature belongs to this gap.
+    signatures = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get('signature'), str) or not row['signature']:
+            raise ValueError('invalid-signatures-response')
+        signatures.append(row['signature'])
+    if (len(set(signatures)) != len(signatures) or
+            (gap and gap['before'] in signatures)):
+        raise ValueError('non-progressing-signatures-response')
+    # Unknown timestamps cannot establish eligibility, but do not end paging.
     eligible = [r['signature'] for r in rows if r.get('err') is None
-                and isinstance(r.get('blockTime'), int) and cutoff <= r['blockTime'] <= now+30]
-    pages = gap['pages']+1 if gap else 1
-    crossed = any(isinstance(r.get('blockTime'), int) and r['blockTime'] < cutoff for r in rows)
-    more = len(rows) == 100 and not crossed
-    until = gap.get('until') if gap else state.get('latest')
+                and type(r.get('blockTime')) is int and cutoff <= r['blockTime'] <= started+30]
+    pages = gap.get('pages', 0)+1 if gap else 1
+    crossed = any(type(r.get('blockTime')) is int and r['blockTime'] < cutoff for r in rows)
+    more = len(rows) == 100 and not crossed and until not in signatures
     if not gap and rows:
-        state['latest'] = rows[0]['signature']
-    state['gaps'] = ([dict(before=rows[-1]['signature'], until=until, cutoff=cutoff, pages=pages)]
-                     if more and pages < FUNDING_GAP_PAGES else [])
+        head = rows[0]['signature']
+    if head:
+        state['observed_latest'] = head
+    state['latest'] = until if more else (head or until)
+    state['gaps'] = ([dict(before=rows[-1]['signature'], until=until, head=head,
+                          cutoff=cutoff, started=started, pages=pages)] if more else [])
+    # Jobs and continuation commit atomically. Failed RPC/DB work never advances
+    # the completed anchor, and history receipts never acquire live status.
     store.save_cursor(address, state, eligible)
-    if more and pages >= FUNDING_GAP_PAGES:
-        notices.emit('funding gap page limit reached', {'address': address, 'seconds': max_age,
-                     'pages': pages}, key='funding-gap-limit', interval=60)
+    return more
 
 
 class Discovery:
@@ -92,7 +99,13 @@ class Discovery:
             return
         lock=self.locks.setdefault(address,asyncio.Lock())
         async with lock:
-            await history_page(self.rpc,self.store,address,min(self.config.backfill_age,FUNDING_GAP_SECONDS),self.notices)
+            for _ in range(FUNDING_GAP_PAGES):
+                more = await history_page(self.rpc,self.store,address,
+                                          min(self.config.backfill_age,FUNDING_GAP_SECONDS),self.notices)
+                if not more:
+                    return False
+                await asyncio.sleep(0)
+            return True
 
     async def urgent_history(self):
         while True:
@@ -107,8 +120,8 @@ class Discovery:
                 await asyncio.sleep(0)
                 continue
             try:
-                await self.page(row['address'])
-                self.store.finish_history(row,retry=bool(self.store.cursor(row['address']).get('gaps')))
+                more = await self.page(row['address'])
+                self.store.finish_history(row,more=more)
                 self.history_health.recovered()
             except asyncio.CancelledError:
                 raise
