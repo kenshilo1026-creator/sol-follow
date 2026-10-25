@@ -52,6 +52,16 @@ def normalize(update, block_time=None):
             result['parsed'] = {'type':'transferChecked','info':{
                 'source':accounts[0], 'mint':accounts[1], 'destination':accounts[2],
                 'authority':accounts[3], 'tokenAmount':{'amount':str(amount),'decimals':raw[9]}}}
+        # ATA creation emits these before a dev's first purchase. Preserve the
+        # owner proof just as jsonParsed does, rather than treating known account
+        # initialization as an opaque token movement. Unknown/malformed bytes
+        # remain unparsed so the quantity gate still refuses uncertain evidence.
+        if program in (TOKEN, TOKEN_2022):
+            if raw == b'\x16' and len(accounts) == 1:
+                result['parsed'] = {'type':'initializeImmutableOwner','info':{'account':accounts[0]}}
+            elif len(raw) == 33 and raw[0] == 18 and len(accounts) == 2:
+                result['parsed'] = {'type':'initializeAccount3','info':{
+                    'account':accounts[0], 'mint':accounts[1], 'owner':_key(raw[1:])}}
         return result
 
     message = dict(accountKeys=keys, recentBlockhash=_key(msg.recent_blockhash),
