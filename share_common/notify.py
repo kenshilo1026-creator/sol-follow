@@ -67,6 +67,14 @@ def message(kind, detail):
     if kind=='confirmation RPC unavailable':
         return (f"⚠️ [SOL] 交易確認查詢失敗\n方法: {detail['method']}"
                 "\n公共 RPC 與 Alchemy 均未能取得有效結果，保留待確認紀錄，稍後重試。")
+    if kind=='trading RPC unavailable':
+        return (f"⚠️ [SOL] 交易 RPC 持續失敗超過 1 分鐘\n通道: {detail['lane']}"
+                f"\n方法: {detail['method']}\n主、後備均未取得有效結果；已簽名交易保留待確認。")
+    if kind=='market feed unavailable':
+        return ("⚠️ [SOL] 賣出監聽覆蓋不足超過 1 分鐘"
+                f"\n未覆蓋地址: {detail['uncovered']}\n持續重連及補查，賣出偵測可能延遲。")
+    if kind=='market feed recovered':
+        return '[SOL] 賣出監聽已恢復'
     if kind in ('public RPC 429','Alchemy RPC 429'):
         provider='Alchemy' if kind=='Alchemy RPC 429' else '公共'
         return (f"⚠️ [SOL] {provider} RPC 429 限流\n來源: {detail['source']}"

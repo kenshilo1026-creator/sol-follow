@@ -33,6 +33,10 @@ class ConfirmationRpc(FundingRpc):
 
     def unavailable(self, method):
         if self.alchemy is not None:
-            report_confirmation_unavailable(method)
+            now=self.clock()
+            outage=self.outages.setdefault(method,{'since':now,'notified':False})
+            alert=now-outage['since']>60 and not outage['notified']
+            report_confirmation_unavailable(method,alert=alert)
+            if alert:outage['notified']=True
             return ConfirmationUnavailable('confirmation-rpc-unavailable')
         return RpcError('confirmation-rpc-unavailable')

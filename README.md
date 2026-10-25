@@ -1,7 +1,16 @@
 # sol-follow
 
-入金來源 WebSocket：有 Alchemy key 且 `SOL_RPC_WS_URL` 為 Solana 公共預設時，使用 Alchemy 的 `wss://solana-mainnet.streaming.alchemy.com/v2/<key>`；自訂 WebSocket 地址保留，也可用 `SOL_FUNDING_WS_URL` 指定。此訂閱使用 Alchemy 流量配額，交易執行 RPC 不變。啟動／health 的 `funding_ws_provider` 顯示來源，不輸出 key。
+入金來源 WebSocket：有 Alchemy key 且 `SOL_RPC_WS_URL` 為 Solana 公共預設時，使用 Alchemy 的 `wss://solana-mainnet.streaming.alchemy.com/v2/<key>`；自訂 WebSocket 地址保留，也可用 `SOL_FUNDING_WS_URL` 指定。斷線時輪替嘗試原有 `SOL_RPC_WS_URL`。啟動／health 的 `funding_ws_provider` 顯示首選來源，不輸出 key；個別連線日誌的 `provider` 顯示該次實際來源。
 Hotlist gRPC 啟動的 `getSlot` 使用公共 RPC，失敗後嘗試 Alchemy；`stream_head_rpc` 顯示後備統計。連線錯誤附帶 `stage` 或 `reason`／數字錯誤代碼，方便區分 head 查詢、訂閱拒絕及遠端關閉。
+RPC 單筆回傳 `null`、驗證不合格或要求的 slot 尚未可用，只讓該工作走後備／重試，不會暫停供應商其他查詢。429、網路／服務故障仍保留冷卻。health 另列 `*_result_unavailable`、`*_errors`、`*_cooldown_skips`、`last_failure`；本地搜尋 `RPC read deferred` 可查看不含 key 的原因。`unavailable` 是失敗呼叫次數，包含同一工作的重試，並非失敗交易數。
+入金 RPC 的雙供應商失敗先只記日誌；同一方法持續失敗超過 60 秒，在下一次失敗時才發 Telegram，每輪故障通知一次。任一供應商成功取得有效結果即重設該方法的計時；短暫失敗及恢復不發 Telegram。
+
+買賣的 Python RPC、Node 建單 HTTP、交易對帳均支援公共 RPC → Alchemy 後備。入金、交易發送、交易對帳及訊號確認各有獨立連線池／工作佇列；同一端點的真實 429 共用冷卻，所有通道會避開該端點並嘗試後備。冷卻以雜湊端點名稱保存於 data/rpc-cooldowns，Python 與短期／常駐 Node 建單程序均讀取；單筆 null、錯誤參數或未索引不會寫入共用冷卻。預設沿用現有公共 RPC 和 Alchemy key，毋須新增供應商。**這是程式隔離，不是供應商配額隔離**：相同 IP／Alchemy 帳戶仍可能共用上限。
+發送後備只重送已寫入資料庫的相同簽名及 bytes，不重簽；未知結果保留，RPC 接受不等於已成交。模擬的有效鏈上錯誤不會被後備的成功結果蓋過，兩端均保留 commitment、minContextSlot 與 preflight。每個交易端點使用前會核對 mainnet genesis。
+每次買入前先同步登記 dev 與其 token account 的監察，刷新實際 MarketFeed，最多等待 2 秒取得訂閱確認；未接好就停止該筆買入。訂閱確認仍會觸發 dev sell 空窗補查。
+止盈及 dev 賣出使用獨立的公共／Alchemy WebSocket 同時監聽，事件由原有持久化鍵去重；不再與 CEX 入金共用訂閱。任一連線維持完整覆蓋時不發斷線 Telegram；覆蓋不足超過 60 秒才通知。入金／gRPC 斷線與確認／交易 RPC 故障亦先記本地，持續超過 60 秒才告警；真正的交易拒絕、鏈上失敗等交易通知照常。
+gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查仍受下述 120 秒／3 頁範圍限制。
+可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。空白時主端沿用 `SOL_RPC_HTTP_URL`，後備使用現有 Alchemy key。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`；health 增加 `execution_rpc`、`execution_reads`、`market_feed`，不輸出端點或 key。
 
 畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
 使用獨立研究資料庫，不依賴真實成交；啟動及報告定義見 [畢業研究監控](docs/graduation-research.md)。
@@ -80,16 +89,16 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 ```
 
 目前本地 `.env` 是 `DRY_RUN=true`、N=3、窗口 120 秒、買額 0.01 SOL；這些是可調初值。
-正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；報價、模擬、買入送單及一般 HTTP 查詢使用此公共 RPC。
+正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；交易 HTTP 預設公共優先、Alchemy 後備。
 在本專案 `.env` 加入 `ALCHEMY_API_KEY` 並設定 `SOL_FEED_MODE=alchemy_grpc`，
 hotlist 交易使用 Alchemy 完整交易串流。只要有此 key，CEX／Privacy Cash 來源地址的
 `getSignaturesForAddress` 補查亦使用 Alchemy HTTP（即使 feed 是 websocket）。
 沿用 `SOL_ALCHEMY_API_KEY` 別名；沒有 key 時來源補查使用原有公共 RPC。
-Alchemy 來源補查失敗只保留任務重試，不轉回公共 RPC。入金交易詳情及收款錢包資格檢查先用公共 RPC，失敗時嘗試 Alchemy；交易執行仍使用公共 RPC。
+Alchemy 來源補查失敗會嘗試公共 RPC，兩邊失敗則保留任務重試。入金交易詳情及收款錢包資格檢查先用公共 RPC，失敗時嘗試 Alchemy。
 有 Alchemy 後備的入金查詢，單一供應商的 429 只保留日誌／審計；後備成功不發 Telegram。
-兩邊都未取得有效結果才發「入金 RPC 查詢失敗」，同一方法每 60 秒最多一次。未配置後備及其他 RPC 通知維持原有行為。
+同一方法兩邊都未取得有效結果持續超過 60 秒，才發「入金 RPC 查詢失敗」，每輪故障一次。
 finalization／processed 訊號的 `getSignatureStatuses` 確認亦先用公共 RPC，失敗時用 Alchemy 後備。
-後備成功不發 Telegram；兩邊失敗才發「交易確認查詢失敗」，每 60 秒最多一次，待確認資料保留重試。
+後備成功不發 Telegram；兩邊持續失敗超過 60 秒才發「交易確認查詢失敗」，每輪故障一次，待確認資料保留重試。
 合法的 `null` 狀態仍代表未確認；鏈上失敗、slot 不符及原有撤票規則照常執行。
 `SOL_BACKGROUND_RPC_RPS` 預設為 2（公共 RPC）；`SOL_FUNDING_ALCHEMY_RPS` 預設為 8（Alchemy 共用預算），各自按 endpoint 冷卻。`alchemy_grpc` 模式使用 `SOL_FUNDING_WORKERS=4` 個 funding worker，create 串流保留獨立 worker；同錢包依序檢查，活躍交易不會因 60 秒保留期到期被重複執行。WebSocket 混合交易模式維持單 worker，避免改變買入處理順序。
 `features.app check` 的 `funding_history_provider` 顯示實際選用來源；不輸出帶 key 的 URL。
@@ -159,13 +168,13 @@ ALT 同樣訂閱更新；停用的表拒絕使用，新增地址須遵守下一 
 
 `getLatestBlockhash` 使用共用背景快取，預設 `SOL_BLOCKHASH_REFRESH_MS=1000`、
 `SOL_BLOCKHASH_CACHE_TTL_MS=5000`；同一建單的兩次模擬共用同一 hash。
-買入不因 hash 缺失而即時查 RPC；快取過期、距觀察到的 slot 超過 32 或失效便拒絕該次建單。
+快取過期、距觀察到的 slot 超過 32 或失效時，建單會按需查主／後備 HTTP 取得新 hash；兩邊失敗才拒絕建單。買入仍須通過原有訊號時效限制。
 背景 blockhash HTTP 更新仍保留；取消的是帳戶的定時 HTTP 輪詢。
 
-交易期間，歷史補查、預熱、Jupiter 背景尋路、訂單對帳及 blockhash 更新會暫停發起新請求。
+交易期間，入金歷史補查、預熱、Jupiter 背景尋路及背景 blockhash 更新會暫停發起新請求；獨立的交易對帳繼續運作。
 已送出的請求可以完成，WebSocket 更新繼續接收。Node 建單完成後，退避持續至 Python 模擬／送單結束。
 背景預熱佇列最多 128 個，重啟預熱最近 32 個；舊代幣身分／路徑永久保留，冷門代幣可能需要重新補齊帳戶。
-沒有把所有曾見過的地址永久訂閱，也沒有改用 Alchemy HTTP。
+沒有把所有曾見過的地址永久訂閱；HTTP 主端失敗時可使用 Alchemy 後備。
 health 的 `quote_cache` 顯示帳戶及 blockhash hits／misses。
 
 快取完整時，建單及送單路徑省去原本兩次即時 blockhash 查詢；仍保留 SDK 模擬、Python 模擬及
@@ -425,6 +434,7 @@ tar -C /home/ubuntu/sol-follow -czf "$HOME/sol-follow-backups/data-$(date -u +%Y
 直接解碼 hotlist 買入，沒有 `getTransaction`／`getBlockTime` 等待。
 有 Alchemy key 時預設 processed；legacy websocket 只能用 confirmed。
 CEX 入金資格仍使用 confirmed 證據。processed 是節點已執行、尚未確認，並非執行前 pending。
+常駐 create 備援走 confirmed logs + confirmed getTransaction，仍可在此模式觸發合資格的新 create；備援證據會明確記為 confirmed，較遲到達的 processed 副本不會降級它。
 
 `SOL_FOLLOW_MAX_TARGET_BUY_SOL=5` 限制目標錢包每次買入的 calldata 付款預算，
 等於 5 SOL 可跟買、大於便跳過；本人的買額仍由 `SOL_BUY_AMOUNT_SOL` 控制。

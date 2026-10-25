@@ -2,8 +2,11 @@
 import asyncio
 import json
 import time
+from urllib.parse import urlparse
 import aiohttp
-from chain_common.public_rpc import report_429
+from chain_common.public_rpc import report_429, defer_429_alerts
+from chain_common.availability import Availability
+from chain_common.endpoint_cooldown import EndpointCooldowns
 
 
 FUNDING_GAP_SECONDS = 120
@@ -63,6 +66,7 @@ class Discovery:
     def __init__(self, config, store, rpc, notices, sources_only=False):
         self.config, self.store, self.rpc, self.notices = config, store, rpc, notices
         self.sources_only = sources_only
+        self.changed = asyncio.Event()
         self.connected = False
         self.subscribed = set()
         self.received = self.added = 0
@@ -73,6 +77,11 @@ class Discovery:
         self.market_subscribed = None
         self.market_addresses = set()
         self.funding_sources = set(config.cex) | set(config.privacy_pools)
+        self.ws_urls=tuple(dict.fromkeys([config.funding_ws_url,config.ws]))
+        self.feed_health=Availability(notices,'feed')
+        self.history_health=Availability(notices,'history')
+        self.endpoint_cooldown=EndpointCooldowns(config.data / 'rpc-cooldowns')
+        self.failure_message='feed unavailable; history fallback active'
 
     def request_history(self,address):
         if address in self.funding_sources:
@@ -100,12 +109,13 @@ class Discovery:
             try:
                 await self.page(row['address'])
                 self.store.finish_history(row,retry=bool(self.store.cursor(row['address']).get('gaps')))
+                self.history_health.recovered()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.store.finish_history(row,retry=True)
-                self.notices.emit('event catch-up deferred; durable request retained',
-                                  {'type':type(exc).__name__,'address':row['address']},alert=True,key='history-defer')
+                self.history_health.failure('event catch-up deferred; durable request retained',
+                                  {'type':type(exc).__name__,'address':row['address']})
 
     def refresh(self):
         # CEX/source coverage is never silently replaced by hotlist subscriptions.
@@ -133,13 +143,25 @@ class Discovery:
 
     async def websocket(self):
         backoff = 1
-        source='alchemy-websocket' if self.config.funding_ws_provider=='alchemy' else 'public-websocket'
+        endpoint=0
         while True:
+            url=self.ws_urls[endpoint]
+            now=time.monotonic()
+            ready=[i for i in range(len(self.ws_urls))
+                   if self.endpoint_cooldown.get(self.ws_urls[(endpoint+i)%len(self.ws_urls)])<=now]
+            if not ready:
+                delay=min(self.endpoint_cooldown.get(u)-now for u in self.ws_urls)
+                await asyncio.sleep(max(0.05,min(60,delay)))
+                continue
+            endpoint=(endpoint+ready[0])%len(self.ws_urls)
+            url=self.ws_urls[endpoint]
+            provider='alchemy' if (urlparse(url).hostname or '').endswith('.alchemy.com') else 'configured'
+            source='alchemy-websocket' if provider=='alchemy' else 'public-websocket'
             read=None
             try:
                 self.refresh()
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                    async with session.ws_connect(self.config.funding_ws_url, heartbeat=20,
+                    async with session.ws_connect(url, heartbeat=20,
                                                   timeout=aiohttp.ClientWSTimeout(ws_close=10), max_msg_size=2**20) as ws:
                         sent, ids, subs, requested = {}, {}, {}, {}
                         counter = 0
@@ -175,14 +197,20 @@ class Discovery:
                                 raise FeedError('subscription-ack-timeout')
                             self.connected=bool(desired) and desired<=set(subs)
                             if backoff>1 and self.connected and time.monotonic()-connected_at>=30:
-                                self.notices.emit('feed recovered; history catch-up remains active',
-                                    {'provider':self.config.funding_ws_provider},alert=True,key='feed-recovered')
+                                self.feed_health.recovered('feed recovered; history catch-up remains active',
+                                    {'provider':provider})
                                 backoff=1
                             # Keep one receive alive while refreshing subscriptions;
                             # idle polling must not cancel aiohttp's heartbeat read.
                             if read is None:read=asyncio.create_task(ws.receive())
-                            done,_=await asyncio.wait({read},timeout=1)
-                            if not done:
+                            changed=asyncio.create_task(self.changed.wait())
+                            try:
+                                done,_=await asyncio.wait({read,changed},timeout=1,return_when=asyncio.FIRST_COMPLETED)
+                            finally:
+                                changed.cancel()
+                                await asyncio.gather(changed,return_exceptions=True)
+                            self.changed.clear()
+                            if read not in done:
                                 continue
                             msg=read.result()
                             read=None
@@ -193,7 +221,8 @@ class Discovery:
                                 continue
                             body = json.loads(msg.data)
                             if (body.get('error') or {}).get('code') in (429,'429'):
-                                report_429(source,'subscription','WS-RPC')
+                                self.endpoint_cooldown[url]=time.monotonic()+10
+                                with defer_429_alerts():report_429(source,'subscription','WS-RPC')
                             if 'id' in body:
                                 addr = ids.pop(body['id'],None)
                                 requested.pop(body['id'],None)
@@ -214,12 +243,15 @@ class Discovery:
                 raise
             except Exception as exc:
                 if isinstance(exc,aiohttp.WSServerHandshakeError) and exc.status==429:
-                    report_429(source,'connect','WS-handshake')
-                detail={'type':type(exc).__name__,'retry_s':backoff,'provider':self.config.funding_ws_provider}
+                    try:delay=max(1,min(120,float((exc.headers or {}).get('Retry-After','10'))))
+                    except (TypeError,ValueError):delay=10
+                    self.endpoint_cooldown[url]=time.monotonic()+delay
+                    with defer_429_alerts():report_429(source,'connect','WS-handshake')
+                detail={'type':type(exc).__name__,'retry_s':backoff,'provider':provider}
                 if isinstance(exc,FeedError):detail.update(exc.detail)
                 elif isinstance(exc,aiohttp.WSServerHandshakeError):detail.update(reason='websocket-handshake',http_status=exc.status)
-                self.notices.emit('feed unavailable; history fallback active', detail,
-                                  alert=True,key='feed-error')
+                self.feed_health.failure(self.failure_message, detail)
+                endpoint=(endpoint+1)%len(self.ws_urls)
             finally:
                 if read is not None:
                     read.cancel()

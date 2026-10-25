@@ -70,7 +70,7 @@ async def test_service_boot_and_cancel_with_local_rpc(config,store,monkeypatch):
     None,
 ])
 async def test_service_rejects_non_mainnet_before_starting(config, store, monkeypatch, caplog, genesis):
-    from chain_common.rpc import Rpc
+    from chain_common.rpc import Rpc, RpcError
     calls = []
 
     async def call(self, method, params):
@@ -80,12 +80,12 @@ async def test_service_rejects_non_mainnet_before_starting(config, store, monkey
 
     monkeypatch.setattr(Rpc, 'call', call)
     service = Service(config, store)
-    with pytest.raises(ValueError, match='only-solana-mainnet-beta-is-supported'):
+    with pytest.raises(RpcError, match='execution-rpc-unavailable'):
         await service.run()
     assert calls == ['getGenesisHash']
     assert not hasattr(service, 'discovery')
     assert not hasattr(service, 'executor')
-    assert 'RPC genesis hash does not match Solana mainnet-beta' in caplog.text
+    assert 'mainnet RPC verification unavailable or wrong chain' in caplog.text
 
 
 @pytest.mark.asyncio

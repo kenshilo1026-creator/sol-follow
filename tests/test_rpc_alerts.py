@@ -112,7 +112,7 @@ async def test_websocket_handshake_429_reports(config,store,monkeypatch):
     with rpc_notices(notices):
         with pytest.raises(asyncio.CancelledError):await Discovery(config,store,None,notices).websocket()
     kind,detail,alert=notices.queue.get_nowait()
-    assert kind=='public RPC 429' and detail['transport']=='WS-handshake' and alert
+    assert kind=='public RPC 429' and detail['transport']=='WS-handshake' and not alert
 
 
 def test_ipc_never_forwards_urls_or_provider_error_text(config,store):
@@ -181,4 +181,31 @@ async def test_websocket_json_rpc_429_reports(config,store,monkeypatch):
     with rpc_notices(notices):
         with pytest.raises(asyncio.CancelledError):await discovery.websocket()
     kind,detail,alert=notices.queue.get_nowait()
-    assert kind=='public RPC 429' and detail['transport']=='WS-RPC' and alert
+    assert kind=='public RPC 429' and detail['transport']=='WS-RPC' and not alert
+
+
+def test_sdk_managed_fallback_suppresses_429_and_delays_combined_failure(config,store,monkeypatch):
+    notices=Notices(config,store)
+    now=[0.0]
+    monkeypatch.setattr('chain_common.public_rpc.time.monotonic',lambda:now[0])
+    with rpc_notices(notices):
+        sdk_event({'event':'public-rpc-429','method':'getAccountInfo','transport':'HTTP','fallbackManaged':True})
+        for stamp in (0,60,61,90):
+            now[0]=stamp
+            sdk_event({'event':'execution-rpc-unavailable','method':'getAccountInfo'})
+        sdk_event({'event':'execution-rpc-recovered','method':'getAccountInfo'})
+        now[0]=100
+        sdk_event({'event':'execution-rpc-unavailable','method':'getAccountInfo'})
+    rows=[]
+    while not notices.queue.empty():rows.append(notices.queue.get_nowait())
+    alerts=[r for r in rows if r[2]]
+    assert len(alerts)==1 and alerts[0][0]=='trading RPC unavailable'
+
+
+def test_alchemy_execution_429_is_named_correctly_and_kept_local(config,store):
+    notices=Notices(config,store)
+    with rpc_notices(notices):
+        sdk_event({'event':'public-rpc-429','method':'simulateTransaction','transport':'HTTP',
+                   'source':'alchemy-execution','fallbackManaged':True})
+    kind,detail,alert=notices.queue.get_nowait()
+    assert kind=='Alchemy RPC 429' and detail['source']=='alchemy-execution' and not alert

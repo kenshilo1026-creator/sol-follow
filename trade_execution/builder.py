@@ -118,7 +118,9 @@ def child_environment():
 
 
 def payload_for(config, request, wallet):
-    return {**request, 'rpc':config.rpc, 'ws':config.ws, 'wallet':wallet,
+    return {**request, 'rpc':config.execution_rpc_url, 'rpcFallback':config.execution_fallback_url,
+            'rpcCooldownDir':str((config.data / 'rpc-cooldowns').resolve()),
+            'rpcTimeoutMs':int(config.execution_timeout*1000), 'ws':config.execution_ws_url, 'wallet':wallet,
             'amount':str(config.buy_amount), 'slippagePercent':format(config.slippage_percent,'f'),
             'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
             'risk':{'poolFeeBps':config.max_pool_fee_bps, 'totalFeeBps':config.max_total_fee_bps,

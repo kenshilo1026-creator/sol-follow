@@ -26,6 +26,12 @@ class Processed:
         rows = self.store.rows('funding', 'SELECT * FROM processed_signals WHERE signature=?', (signature,))
         return rows[0] if rows else None
 
+    def create_backup(self, signature, slot=None):
+        row = self.row(signature)
+        return bool(row and row['reason']=='create-backup-confirmed'
+                    and row['state'] in ('confirmed','finalized') and row['live']
+                    and (slot is None or row['slot']==slot))
+
     def usable(self, signature, now=None, slot=None, require_processed=False):
         row = self.row(signature)
         if not row:
@@ -76,7 +82,7 @@ class Processed:
             if row['state'] not in ('confirmed', 'finalized'):
                 db.execute('DELETE FROM stream_payloads WHERE signature=?', (signature,))
                 db.execute("UPDATE jobs SET state='pending',due=?,reason='confirmed-follow-up' WHERE signature=?", (time.time(), signature))
-            db.execute("UPDATE processed_signals SET state=?,due=?,reason='' WHERE signature=?", (state, time.time()+5, signature))
+            db.execute("UPDATE processed_signals SET state=?,due=?,reason=CASE WHEN reason='create-backup-confirmed' THEN reason ELSE '' END WHERE signature=?", (state, time.time()+5, signature))
             db.commit()
 
     async def reconcile_once(self, rpc, signals, notices, max_age):

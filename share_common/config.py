@@ -188,6 +188,27 @@ class Config:
     max_funding_usdc: int = 800_000_000
     min_funding_age_seconds: int = 0
     funding_ws: str = field(default='', repr=False)
+    execution_http: str = field(default='', repr=False)
+    execution_fallback_http: str = field(default='', repr=False)
+    execution_ws: str = field(default='', repr=False)
+    execution_timeout: float = 4.0
+
+    @property
+    def execution_rpc_url(self):
+        return self.execution_http or self.rpc
+
+    @property
+    def execution_fallback_url(self):
+        url = self.execution_fallback_http or (self.funding_history_url if self.alchemy_key else '')
+        return url if url != self.execution_rpc_url else ''
+
+    @property
+    def execution_ws_url(self):
+        return self.execution_ws or self.ws
+
+    @property
+    def market_ws_urls(self):
+        return tuple(dict.fromkeys([self.execution_ws_url, self.funding_ws_url]))
 
     @property
     def funding_ws_url(self):
@@ -278,6 +299,12 @@ def load(root=ROOT, env=None):
     for url, schemes in ((rpc, {'https', 'http'}), (ws, {'wss', 'ws'})):
         if urlparse(url).scheme not in schemes or not urlparse(url).hostname:
             raise ValueError('invalid-rpc-url')
+    for name, schemes in (('SOL_EXECUTION_RPC_HTTP_URL', {'https','http'}),
+                          ('SOL_EXECUTION_RPC_FALLBACK_HTTP_URL', {'https','http'}),
+                          ('SOL_EXECUTION_RPC_WS_URL', {'wss','ws'})):
+        value = get(name, '') or ''
+        if value and (urlparse(value).scheme not in schemes or not urlparse(value).hostname):
+            raise ValueError('invalid-execution-rpc-url')
     programs, pools = addresses('SOL_HOTLIST_SOURCE_CONTRACT'), addresses('SOL_PRIVACY_POOL_ADDRESSES')
     if any(a != PRIVACY for a in programs) or any(a != pda([b'tree_token'], PRIVACY) for a in pools):
         raise ValueError('unsupported-source-program-or-pool')
@@ -307,6 +334,10 @@ def load(root=ROOT, env=None):
     return Config(
         root=root, data=root/'data', dry_run=dry, rpc=rpc, ws=ws,
         funding_ws=get('SOL_FUNDING_WS_URL','') or '',
+        execution_http=get('SOL_EXECUTION_RPC_HTTP_URL','') or '',
+        execution_fallback_http=get('SOL_EXECUTION_RPC_FALLBACK_HTTP_URL','') or '',
+        execution_ws=get('SOL_EXECUTION_RPC_WS_URL','') or '',
+        execution_timeout=integer('SOL_EXECUTION_RPC_TIMEOUT_MS',4000,100,8000)/1000,
         cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
         min_funding=low, max_funding=high,
         min_funding_usdc=usdc_low, max_funding_usdc=usdc_high,

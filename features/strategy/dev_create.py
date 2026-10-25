@@ -46,12 +46,13 @@ class CreateSignals:
         trade=route.trade
         processed=self.config.hotlist_commitment=='processed'
         proof=self.proofs.row(item.signature)
+        backup=self.proofs.create_backup(item.signature,item.slot)
         if (tx.meta.get('err') is not None or not self.proofs.usable(item.signature,now,item.slot,
                                                                     require_processed=processed)
-                or processed and (not proof or proof['state']!='pending')):
+                or processed and not backup and (not proof or proof['state']!='pending')):
             trade_record(self.store,trade,'dev-create','blocked','source-proof-unusable')
             return None
-        claimed,reason,funding=self.store.consume_dev_create(item,now,processed=processed,
+        claimed,reason,funding=self.store.consume_dev_create(item,now,processed=processed and not backup,
             min_funding_age_seconds=self.config.min_funding_age_seconds)
         age_detail={}
         if funding:

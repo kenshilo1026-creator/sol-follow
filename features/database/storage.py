@@ -379,11 +379,16 @@ class Store:
             now = time.time()
             added = c.execute("INSERT OR IGNORE INTO jobs(signature,state,first_seen,due,slot) VALUES (?,'pending',?,?,?)",
                               (sig,now,now,raw['slot'])).rowcount
+            keep_confirmed=False
             if raw.get('_stream',{}).get('commitment')=='processed':
                 from features.funding.processed import Processed
-                Processed.record(c,raw,now)
+                proof=Processed.record(c,raw,now)
+                keep_confirmed=(proof['reason']=='create-backup-confirmed'
+                                and proof['state'] in ('confirmed','finalized'))
             state = c.execute('SELECT state FROM jobs WHERE signature=?',(sig,)).fetchone()['state']
-            if state == 'pending':
+            # A late processed copy must never downgrade the verified backup
+            # payload and cause Service to reject it as a non-pending proof.
+            if state == 'pending' and not keep_confirmed:
                 c.execute('INSERT OR REPLACE INTO stream_payloads VALUES (?,?)',(sig,json.dumps(raw)))
             c.commit()
         self.new_jobs += added

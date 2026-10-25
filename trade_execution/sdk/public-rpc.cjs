@@ -3,9 +3,12 @@
 const {AsyncLocalStorage}=require('node:async_hooks');
 const sinks=new AsyncLocalStorage();
 const withReporter=(report,work)=>sinks.run(report,work);
-function reporter(){const sink=sinks.getStore();return (method,transport)=>{
-  if(sink)sink({event:'public-rpc-429',method:/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(method)?method:'unknown',transport});
+function reporter(){const sink=sinks.getStore();return (method,transport,fallbackManaged=false,source)=>{
+  if(sink)sink({event:'public-rpc-429',method:/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(method)?method:'unknown',transport,
+    ...(fallbackManaged?{fallbackManaged:true}:{}),
+    ...(['execution','alchemy-execution'].includes(source)?{source}:{})});
 };}
+function executionReporter(){const sink=sinks.getStore();return event=>{if(sink)sink(event);};}
 function rpcFetch(report,fetcher=fetch){
   return async(url,options)=>{
     let method='unknown';
@@ -36,4 +39,4 @@ function watchWebsocket(ws,report){
     catch(error){if([429,'429'].includes(error?.code))report(method,'WS-RPC');throw error;}
   };
 }
-module.exports={withReporter,reporter,rpcFetch,watchWebsocket};
+module.exports={withReporter,reporter,executionReporter,rpcFetch,watchWebsocket};

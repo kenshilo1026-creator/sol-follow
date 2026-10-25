@@ -94,10 +94,12 @@ function connectionFor(input) {
   if (!Number.isSafeInteger(input.minSlot) || input.minSlot < 0) throw Error('invalid-slot');
   if (!Array.isArray(input.lookupTables) || input.lookupTables.length > 8) throw Error('invalid-tables');
   const report=publicRpc.reporter();
+  const managed=input.rpcTimeoutMs!==undefined||!!input.rpcFallback;
   const connection=new web3.Connection(input.rpc, {
     commitment:input.commitment||'confirmed', disableRetryOnRateLimit:true,
     ...(input.ws?{wsEndpoint:input.ws}:{}),
-    fetch:publicRpc.rpcFetch(report),
+    fetch:managed?require('./execution-rpc.cjs').executionFetch({primary:input.rpc,fallback:input.rpcFallback,
+      timeoutMs:input.rpcTimeoutMs||4000,cooldownDir:input.rpcCooldownDir,report,event:publicRpc.executionReporter()}):publicRpc.rpcFetch(report),
     // Apply the signal slot to SDK account reads as well as our own reads.
     fetchMiddleware: (url, options, next) => {
       const body = JSON.parse(options.body);
@@ -110,7 +112,7 @@ function connectionFor(input) {
       next(url, options);
     }
   });
-  publicRpc.watchWebsocket(connection._rpcWebSocket,report);
+  publicRpc.watchWebsocket(connection._rpcWebSocket,(method,transport)=>report(method,transport,managed));
   return connection;
 }
 

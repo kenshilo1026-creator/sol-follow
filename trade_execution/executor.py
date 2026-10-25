@@ -30,7 +30,7 @@ class Executor:
         proofs=Processed(self.store)
         processed=self.config.hotlist_commitment=='processed'
         trigger=proofs.row(route.trade.signature) if processed else None
-        if processed and (not trigger or trigger['state']!='pending'):
+        if processed and not proofs.create_backup(route.trade.signature,route.trade.slot) and (not trigger or trigger['state']!='pending'):
             return False
         return (0 <= time.time()-route.trade.time <= self.config.signal_age
                 and (oid is None or proofs.order_usable(oid,require_processed=processed)))

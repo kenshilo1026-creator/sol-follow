@@ -110,7 +110,15 @@ class AccountCache {
       getMultipleAccountsInfo:async(keys,c)=>(await cache.get(keys,config(c),cacheOnly,wait)).value,
       getAccountInfoAndContext:async(k,c)=>{const r=await cache.get([k],config(c),cacheOnly,wait);return {context:r.context,value:r.value[0]};},
       getAccountInfo:async(k,c)=>(await cache.get([k],config(c),cacheOnly,wait)).value[0],
-      getLatestBlockhash:c=>blockhashCache?Promise.resolve(blockhashCache.pick(minSlot)):rpc.getLatestBlockhash(config(c)),
+      getLatestBlockhash:async c=>{
+        if(blockhashCache){
+          try{return blockhashCache.pick(minSlot);}
+          catch(error){if(error.message!=='blockhash-cache-miss')throw error;}
+        }
+        // A websocket disconnect invalidates the cache, not the HTTP route.
+        // A fresh bounded primary/fallback read can still build an exit.
+        await wait();return rpc.getLatestBlockhash(config(c));
+      },
       simulateTransaction:(tx,c)=>rpc.simulateTransaction(tx,config(c)),
       getAddressLookupTable:(key,c)=>cache.table(key,config(c),cacheOnly,wait),
       getEpochInfo:async()=>{

@@ -7,6 +7,7 @@ import asyncio
 import time
 from urllib.parse import urlparse
 import grpc
+from chain_common.availability import Availability
 from chain_common.primitives import b58encode
 from chain_common.transaction import Unsupported
 from chain_common.yellowstone import geyser_pb2 as pb
@@ -56,6 +57,7 @@ class HotlistFeed:
         self.last_slot = int(store.stream_state('grpc_slot',0))
         self.live_floor = self.last_slot+1
         self.anchor = None
+        self.health=Availability(notices,'grpc')
 
     def addresses(self):
         return set(self.store.hotlist(time.time()))
@@ -116,6 +118,7 @@ class HotlistFeed:
             self.subscribed = set(addresses)
             last_update = time.monotonic()
             last_write = time.monotonic()
+            connected_at = time.monotonic()
             # Do not cancel call.read() just to refresh filters: cancelling an
             # aio gRPC read cancels the whole stream.
             read = asyncio.create_task(call.read())
@@ -128,6 +131,8 @@ class HotlistFeed:
                             raise RuntimeError('grpc-ended')
                         last_update = time.monotonic()
                         self.connected = True
+                        if self.health.since is not None and time.monotonic()-connected_at>=30:
+                            self.health.recovered('hotlist stream recovered')
                         if update.WhichOneof('update_oneof') == 'ping':
                             await call.write(pb.SubscribeRequest(ping=pb.SubscribeRequestPing(id=1)))
                         else:
@@ -173,8 +178,8 @@ class HotlistFeed:
                 # gRPC details/debug strings can contain credentials. Emit only
                 # a status enum; permission/filter rejection is never hidden.
                 status = exc.code().name if isinstance(exc,grpc.RpcError) else type(exc).__name__
-                self.notices.emit('hotlist Alchemy stream unavailable; retrying live subscription',
-                    {'status':status,'stage':stage,'retry_s':backoff},alert=True,key='grpc-error')
+                self.health.failure('hotlist Alchemy stream unavailable; retrying live subscription',
+                    {'status':status,'stage':stage,'retry_s':backoff})
                 self.reconnects += 1
             finally:
                 self.connected = False

@@ -91,8 +91,8 @@ async def test_head_429_is_local_and_only_combined_failure_alerts(config,store,m
         monkeypatch.setattr('features.funding.grpc_feed.asyncio.sleep',stop)
         with rpc_notices(notices),pytest.raises(asyncio.CancelledError):await feed.run()
         alerts=[args for args,kw in notices.items if kw.get('alert')]
-        assert len(alerts)==1
-        assert alerts[0][1]['stage']=='getSlot'
+        assert alerts==[]  # A short outage remains local until it exceeds 60s.
+        assert notices.items[-1][0][1]['stage']=='getSlot'
         assert reader.snapshot()['unavailable']==1
 
 
@@ -103,6 +103,9 @@ async def test_runtime_head_uses_alchemy_during_shared_public_cooldown(config,st
     service.priority.cooldown[service.config.rpc]=time.monotonic()+60
     async def result(self):return {'result':1000}
     monkeypatch.setattr(reply,'json',result)
+    assert await service.stream_head_rpc.call('getSlot',[])==1000
+    assert calls[-1][0]==service.config.funding_history_url  # Shared 429 bypasses public in every lane.
+    service.stream_head_rpc.public.priority.cooldown[service.config.rpc]=time.monotonic()+60
     assert await service.stream_head_rpc.call('getSlot',[])==1000
     assert calls[-1][0]==service.config.funding_history_url
 
@@ -156,8 +159,8 @@ async def test_idle_polling_keeps_single_receive_and_bounds_subscription_burst(c
             try:await asyncio.Future()
             finally:cancelled.append(True)
     socket_session(monkeypatch,Socket(),urls)
-    async def poll(tasks,timeout):
-        polls.append(next(iter(tasks)))
+    async def poll(tasks,timeout,**kwargs):
+        polls.append(next(t for t in tasks if t.get_coro().__name__=="receive"))
         await asyncio.sleep(0)
         if len(polls)==3:raise asyncio.CancelledError
         return set(),tasks
@@ -211,7 +214,7 @@ async def test_missing_subscription_ack_reconnects_instead_of_false_healthy(conf
         async def send_json(self,body):pass
         async def receive(self):await asyncio.Future()
     socket_session(monkeypatch,Socket(),[])
-    async def poll(tasks,timeout):
+    async def poll(tasks,timeout,**kwargs):
         clock[0]+=16
         return set(),tasks
     async def stop(*args):raise asyncio.CancelledError

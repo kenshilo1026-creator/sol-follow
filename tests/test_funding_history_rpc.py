@@ -1,4 +1,4 @@
-"""Source pagination uses Alchemy without moving other HTTP reads or execution."""
+"""Alchemy-first source pagination and public-first execution both have fallback."""
 from dataclasses import replace
 import json
 import time
@@ -30,7 +30,7 @@ def test_history_provider_uses_local_key_without_changing_execution(tmp_path,env
     assert cfg.http_policy==('alchemy-source-history-public-funding-alchemy-fallback' if key else 'configured-public-only')
     payload=payload_for(cfg,{},address())
     assert payload['rpc']==cfg.rpc
-    assert 'alchemy.com' not in json.dumps(payload)
+    assert payload['rpcFallback']==(cfg.funding_history_url if key else '')
     if key:
         assert key not in repr(cfg)
 
@@ -69,7 +69,7 @@ async def wired_service(config,store,monkeypatch,key):
             reply=Response()
             reply.result=('5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
                           if json['method']=='getGenesisHash' else
-                          [dict(signature='gap-funding',err=None,blockTime=int(time.time()))])
+                          [dict(signature='gap-funding',slot=100,err=None,blockTime=int(time.time()))])
             return reply
     def discovery(*args,**kwargs):
         captured.append(Discovery(*args,**kwargs))
@@ -88,8 +88,9 @@ async def wired_service(config,store,monkeypatch,key):
 async def test_discovery_routing_keeps_details_public_and_history_nonlive(config,store,monkeypatch,key,source_kind):
     service,discovery,calls,_=await wired_service(config,store,monkeypatch,key)
     cfg=service.config
-    assert discovery.rpc is service.funding_history_rpc
-    assert (discovery.rpc is service.background_rpc)==(not key)
+    assert discovery.rpc is service.source_history_rpc
+    assert discovery.rpc.public is service.background_rpc
+    assert (discovery.rpc.alchemy is service.funding_history_rpc)==bool(key)
     assert discovery.sources_only==bool(key)
     source=next(iter(cfg.cex)) if source_kind=='cex' else cfg.privacy_pools[0]
     await discovery.page(source)
@@ -107,33 +108,32 @@ async def test_discovery_routing_keeps_details_public_and_history_nonlive(config
 
 
 @pytest.mark.asyncio
-async def test_alchemy_429_is_isolated_retains_request_and_never_falls_back(config,store,monkeypatch):
+async def test_both_history_providers_fail_retains_request_and_keeps_alert_local(config,store,monkeypatch):
     service,discovery,calls,response=await wired_service(config,store,monkeypatch,'fixture-secret')
     source=next(iter(service.config.cex))
     discovery.request_history(source)
     response.status=429
     with rpc_notices(service.notices):
-        with pytest.raises(RpcError,match='HTTP-429'):
+        with pytest.raises(RpcError,match='funding-rpc-unavailable'):
             await discovery.page(source)
-    assert len(calls)==2  # Public genesis, then Alchemy pagination only.
-    assert calls[-1][0]==service.config.funding_history_url
+    assert len(calls)==3  # Public genesis, Alchemy history, public fallback.
+    assert calls[-2][0]==service.config.funding_history_url
+    assert calls[-1][0]==service.config.rpc
     assert store.rows('funding','SELECT address FROM history_requests')==[{'address':source}]
     assert store.cursor(source)=={}
     assert store.rows('funding','SELECT * FROM jobs')==[]
     kind,detail,alert=service.notices.queue.get_nowait()
-    assert kind=='Alchemy RPC 429' and alert and detail['source']=='alchemy-history'
+    assert kind=='Alchemy RPC 429' and not alert and detail['source']=='alchemy-history'
     assert 'fixture-secret' not in message(kind,detail)
     assert 'Alchemy RPC 429' in message(kind,detail)
-    assert service.config.rpc not in service.priority.cooldown
-    # The independent public client can still work during Alchemy's cooldown.
+    assert service.config.rpc in service.execution_rpc.providers[0].priority.cooldown
     response.status=200
-    await service.background_rpc.transaction('other-job')
-    assert calls[-1][0]==service.config.rpc
     prior=len(calls)
-    with pytest.raises(RpcError,match='endpoint-cooling'):
+    with pytest.raises(RpcError,match='funding-rpc-unavailable'):
         await discovery.page(source)
     assert len(calls)==prior
     service.priority.cooldown.clear()
+    service.source_history_rpc.cooldown.clear()
     await discovery.page(source)
     assert store.rows('funding','SELECT signature FROM jobs')==[{'signature':'gap-funding'}]
 
@@ -144,3 +144,26 @@ async def test_public_cooldown_does_not_block_alchemy_history(config,store,monke
     service.priority.cooldown[service.config.rpc]=time.monotonic()+30
     await discovery.page(next(iter(service.config.cex)))
     assert calls[-1][0]==service.config.funding_history_url
+
+
+@pytest.mark.asyncio
+async def test_source_history_alchemy_failure_recovers_on_public_without_live_buy(config,store,monkeypatch):
+    from chain_common.public_rpc import report_429
+    service,discovery,_,_=await wired_service(config,store,monkeypatch,'fixture-secret')
+    attempts=[]
+    async def limited(method,params):
+        attempts.append('alchemy')
+        report_429('alchemy-history',method,'HTTP')
+        raise RpcError('HTTP-429')
+    async def healthy(method,params):
+        attempts.append('public')
+        return [{'signature':'funding-gap','slot':100,'err':None,'blockTime':int(time.time())}]
+    monkeypatch.setattr(service.funding_history_rpc,'call',limited)
+    monkeypatch.setattr(service.background_rpc,'call',healthy)
+    with rpc_notices(service.notices):
+        await discovery.page(next(iter(service.config.cex)))
+    assert attempts==['alchemy','public']
+    assert store.rows('funding','SELECT signature FROM jobs')==[{'signature':'funding-gap'}]
+    assert not store.is_live('funding-gap',15)
+    while not service.notices.queue.empty():
+        assert service.notices.queue.get_nowait()[2] is False

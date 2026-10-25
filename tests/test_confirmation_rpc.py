@@ -77,12 +77,15 @@ async def test_recovered_429_is_local_only_including_followup_cooldown(config,st
 @pytest.mark.parametrize('value',[None,response(),response({**status(),'err':False})])
 async def test_both_unavailable_alerts_once_and_never_invents_results(config,store,value):
     reader,public,alchemy=reader_with_replies(Reply(),Reply(200,{'result':value}))
+    now=[0.0]
+    reader.clock=lambda:now[0]
     notices=Notices(config,store)
     with rpc_notices(notices):
-        for _ in range(2):
+        for stamp in (0,61):
+            now[0]=stamp
             with pytest.raises(ConfirmationUnavailable,match='^confirmation-rpc-unavailable$'):
                 await reader.call('getSignatureStatuses',PARAMS)
-    assert public.calls==alchemy.calls==1
+    assert public.calls==1 and alchemy.calls==2
     alerts=[(kind,detail) for kind,detail,alert in queued(notices) if alert]
     assert len(alerts)==1 and alerts[0][0]=='confirmation RPC unavailable'
     assert 'Alchemy' in message(*alerts[0]) and 'fixture-secret' not in message(*alerts[0])
@@ -107,12 +110,13 @@ async def test_cancellation_does_not_alert_or_attempt_another_provider(config,st
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('key',['','fixture-secret'])
-async def test_runtime_status_reader_shares_budgets_but_not_funding_failure_state(config,store,monkeypatch,key):
+async def test_runtime_status_reader_isolates_budgets_and_funding_failure_state(config,store,monkeypatch,key):
     from tests.test_funding_history_rpc import wired_service
     service,_,calls,reply=await wired_service(config,store,monkeypatch,key)
     reader=service.confirmation_rpc
-    assert reader.public is service.background_rpc
-    assert reader.alchemy is service.funding_rpc.alchemy
+    assert reader.public is not service.background_rpc
+    assert reader.public.priority is not service.priority
+    assert bool(reader.alchemy)==bool(key)
     assert reader is not service.funding_rpc
     service.funding_rpc.cooldown['public']=time.monotonic()+60
     async def json_result(self):return {'result':response(status())}
@@ -120,6 +124,8 @@ async def test_runtime_status_reader_shares_budgets_but_not_funding_failure_stat
     assert await reader.call('getSignatureStatuses',PARAMS)==response(status())
     assert calls[-1][0]==service.config.rpc  # Funding validation failures do not stall status reads.
     service.priority.cooldown[service.config.rpc]=time.monotonic()+60
+    # Unlike per-reader failures above, a real endpoint limit is shared.
+    assert reader.public.priority.cooldown is service.priority.cooldown
     if key:
         assert await reader.call('getSignatureStatuses',PARAMS)==response(status())
         assert calls[-1][0]==service.config.funding_history_url
@@ -141,7 +147,7 @@ async def test_finalization_recovery_or_single_outage_alert_preserves_chain_chec
         with pytest.raises(asyncio.CancelledError):await service.finalized(reader)
     assert bool(store.rows('funding','SELECT * FROM chain_checks')) is (not recovered)
     alerts=[kind for kind,_,alert in queued(service.notices) if alert]
-    assert alerts==([] if recovered else ['confirmation RPC unavailable'])
+    assert alerts==[]  # Transient combined failure is local until >60s.
 
 
 @pytest.mark.asyncio
@@ -169,5 +175,5 @@ async def test_processed_recovery_keeps_existing_confirmation_and_revocation_rul
     assert proof.row('fund')['state']==expected
     assert proof.usable('fund')==(mode=='confirmed')
     alerts=[kind for kind,_,alert in queued(service.notices) if alert]
-    if mode=='unavailable':assert alerts==['confirmation RPC unavailable']
+    if mode=='unavailable':assert alerts==[]
     elif mode in ('confirmed','missing'):assert alerts==[]

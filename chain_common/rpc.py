@@ -10,9 +10,9 @@ class RpcError(RuntimeError):
 
 
 class Priority:
-    def __init__(self):
+    def __init__(self, cooldown=None):
         self.active = 0
-        self.cooldown = {}
+        self.cooldown = {} if cooldown is None else cooldown
 
 
 class Rpc:
@@ -21,9 +21,10 @@ class Rpc:
         self.timeout = timeout
         self.source = source
         self.calls = self.errors = self.limited = 0
+        self.local_cooldown = 0
 
     async def call(self, method, params):
-        if time.monotonic() < self.priority.cooldown.get(self.url, 0):
+        if time.monotonic() < max(self.local_cooldown, self.priority.cooldown.get(self.url, 0)):
             raise RpcError('endpoint-cooling')
         self.calls += 1
         try:
@@ -44,11 +45,15 @@ class Rpc:
                 body = await response.json()
                 if 'error' in body:
                     code = body['error'].get('code', 'unknown')
-                    if code in (429, '429'):
+                    message = str(body['error'].get('message','')).lower()
+                    limited = code in (429, '429') or any(s in message for s in ('too many requests','rate limit'))
+                    if limited:
                         self.limited += 1
                         report_429(self.source,method,'JSON-RPC')
-                    if code in (-32005, 429, '429'):
+                    if limited:
                         self.priority.cooldown[self.url] = time.monotonic()+10
+                    elif code == -32005:
+                        self.local_cooldown = time.monotonic()+10
                     raise RpcError(f'{method}:RPC-{code}')
                 if 'result' not in body:
                     raise RpcError('RPC-missing-result')

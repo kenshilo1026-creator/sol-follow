@@ -2,10 +2,11 @@
 import asyncio
 import logging
 import time
+from urllib.parse import urlparse
 from features.audit.writer import record, trade_record, funding_candidates, skipped_transaction
 from solders.pubkey import Pubkey
 import aiohttp
-from chain_common.rpc import Priority, Rpc
+from chain_common.rpc import Priority, Rpc, RpcError
 from chain_common.background_rpc import BackgroundRpc
 from features.funding.rpc import FundingRpc
 from features.funding.work import WalletFlights, TransactionReads
@@ -33,6 +34,7 @@ from trade_execution.cache import CachedBuilder
 from trade_execution import VENUES
 from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.executor import Executor, MARKER
+from trade_execution.rpc import ExecutionRpc
 from trade_execution.dev_exit import DevExit
 from trade_execution.quote_sweep import QuoteSweep
 
@@ -42,7 +44,8 @@ class Service:
         self.config=config
         self.store=store or Store(config.data)
         self.notices=Notices(config,self.store)
-        self.priority=Priority()
+        from chain_common.endpoint_cooldown import EndpointCooldowns
+        self.priority=Priority(EndpointCooldowns(config.data / "rpc-cooldowns"))
         self.signals=CreateSignals(self.store,config)
         self.proofs=Processed(self.store)
         self.completed=self.expired=self.received=0
@@ -171,11 +174,12 @@ class Service:
         # Ordinary buys/sells never contribute votes or initiate an entry.
         pending=[]
         live=self.store.is_live(tx.signature,self.config.signal_age)
+        backup=self.proofs.create_backup(tx.signature,tx.slot)
         # Preserve the original cache's verified swap hints; this is decoding/
         # prewarming only and cannot call the retired wallet-vote strategy.
-        if live and (self.config.hotlist_commitment!='processed' or processed):
+        if live and (self.config.hotlist_commitment!='processed' or processed or backup):
             for observed in decode_buy_routes(tx):self.quote_builder.observe(observed)
-        if self.config.hotlist_commitment!='processed' or processed:
+        if self.config.hotlist_commitment!='processed' or processed or backup:
             for item in creation.creates:
                 route=self.signals.prepare(item,tx,live)
                 if route is not None:pending.append((route,item))
@@ -186,8 +190,18 @@ class Service:
             self.quote_builder.observe(route)
             oid=self.signals.reserve(route)
             if oid:
-                discovery=getattr(self,'discovery',None)
-                if discovery is not None:discovery.refresh()
+                market=getattr(self,'market_feed',None)
+                if market is not None:
+                    from chain_common.primitives import ata
+                    required={route.trade.wallet,ata(route.trade.wallet,route.trade.mint,route.request()["tokenProgram"])}
+                    if not await market.arm(required):
+                        self.store.fail_order(oid,'dev-sell-monitor-unavailable')
+                        self.notices.emit('buy rejected',{'order':oid,'mint':route.trade.mint,
+                            'reason':'dev-sell-monitor-unavailable'},alert=True)
+                        continue
+                else:
+                    discovery=getattr(self,'discovery',None)
+                    if discovery is not None:discovery.refresh()
                 executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
                 await executor.buy(oid,route)
         if processed:
@@ -286,12 +300,23 @@ class Service:
                 detail['funding_check_rpc']=self.funding_rpc.snapshot()
             if hasattr(self,'confirmation_rpc'):
                 detail['confirmation_rpc']=self.confirmation_rpc.snapshot()
+            if hasattr(self,'execution_rpc'):
+                detail['execution_rpc']=self.execution_rpc.snapshot()
+                detail['execution_reads']=self.execution_reads.snapshot()
+            if hasattr(self,'market_feed'):
+                detail['market_feed']=self.market_feed.snapshot()
+            if hasattr(self,'create_feed'):
+                feed=self.create_feed
+                detail['create_backup']={'connected':feed.connected,'subscribed':len(feed.subscribed),
+                    'received':feed.received,'verified':feed.added,'pending':len(feed.pending)}
             if hasattr(self,'stream_head_rpc'):
                 detail['stream_head_rpc']=self.stream_head_rpc.snapshot()
             detail['funding_ws_provider']=self.config.funding_ws_provider
             if hasattr(self,'funding_history_rpc'):
                 detail['funding_history_rpc']={'provider':self.config.funding_history_provider,
                                               **self.funding_history_rpc.snapshot()}
+            if hasattr(self,'source_history_rpc'):
+                detail['source_history_rpc']=self.source_history_rpc.snapshot()
             self.notices.emit('health',detail)
             self.completed=self.expired=discovery.received=discovery.added=0
             self.store.new_jobs=self.store.revisited_jobs=0
@@ -309,8 +334,28 @@ class Service:
         # Separate connection pools keep background pagination from occupying
         # execution sockets. Source-address pagination uses Alchemy when a key
         # is configured, with its own rate budget and endpoint-specific cooldown.
-        async with aiohttp.ClientSession(timeout=timeout) as session, aiohttp.ClientSession() as background_session:
-            rpc=Rpc(session,self.config.rpc,self.priority)
+        async with (aiohttp.ClientSession(timeout=timeout) as session,
+                    aiohttp.ClientSession() as background_session,
+                    aiohttp.ClientSession(timeout=timeout) as read_session,
+                    aiohttp.ClientSession(timeout=timeout) as proof_session):
+            # Work queues/activity stay isolated; actual endpoint 429 deadlines are
+            # shared by every HTTP lane and the SDK subprocesses.
+            def execution_lane(pool, name, reads=None):
+                cooldown=Priority(self.priority.cooldown)
+                primary=Rpc(pool,self.config.execution_rpc_url,cooldown,
+                            timeout=self.config.execution_timeout,source='alchemy-execution'
+                            if (urlparse(self.config.execution_rpc_url).hostname or '').endswith('.alchemy.com') else 'execution')
+                fallback=(Rpc(pool,self.config.execution_fallback_url,cooldown,
+                              timeout=self.config.execution_timeout,source='alchemy-execution'
+                              if (urlparse(self.config.execution_fallback_url).hostname or '').endswith('.alchemy.com') else 'execution')
+                          if self.config.execution_fallback_url else None)
+                if name=='execution-reads':
+                    primary=BackgroundRpc(primary,cooldown,self.config.history_rps)
+                    if fallback is not None:
+                        fallback=BackgroundRpc(fallback,cooldown,self.config.funding_alchemy_rps)
+                return ExecutionRpc(primary,fallback,notices=self.notices,lane=name,reads=reads)
+            self.execution_reads=execution_lane(read_session,'execution-reads')
+            rpc=self.execution_rpc=execution_lane(session,'execution',self.execution_reads)
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,
                 timeout=self.config.public_timeout,source="background"),self.priority,self.config.history_rps)
             self.funding_history_rpc=(BackgroundRpc(Rpc(background_session,self.config.funding_history_url,self.priority,
@@ -319,30 +364,45 @@ class Service:
             self.funding_rpc=FundingRpc(self.background_rpc,
                 self.funding_history_rpc if self.config.alchemy_key
                 and self.config.funding_history_url != self.config.rpc else None)
-            self.confirmation_rpc=ConfirmationRpc(self.background_rpc,self.funding_rpc.alchemy)
-            self.stream_head_rpc=StreamHeadRpc(self.background_rpc,self.funding_rpc.alchemy)
-            genesis=await rpc.call('getGenesisHash',[])
+            self.source_history_rpc=FundingRpc(self.background_rpc,self.funding_rpc.alchemy,prefer_alchemy=True)
+            proof_priority=Priority(self.priority.cooldown)
+            proof_public=Rpc(proof_session,self.config.rpc,proof_priority,
+                             timeout=self.config.public_timeout,source='confirmation')
+            proof_alchemy=(Rpc(proof_session,self.config.funding_history_url,proof_priority,
+                              timeout=self.config.public_timeout,source='alchemy-confirmation')
+                           if self.funding_rpc.alchemy is not None else None)
+            self.confirmation_rpc=ConfirmationRpc(proof_public,proof_alchemy)
+            self.stream_head_rpc=StreamHeadRpc(proof_public,proof_alchemy)
+            try:
+                genesis=await rpc.call('getGenesisHash',[])
+            except RpcError:
+                logging.error('[SOL] startup rejected: mainnet RPC verification unavailable or wrong chain')
+                raise
             # Solana sdk/src/genesis_config.rs: ClusterType::MainnetBeta.
             if genesis!='5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d':
                 logging.error('[SOL] startup rejected: RPC genesis hash does not match Solana mainnet-beta')
                 raise ValueError('only-solana-mainnet-beta-is-supported')
             grpc_mode=self.config.feed_mode=='alchemy_grpc'
-            discovery=Discovery(self.config,self.store,self.funding_history_rpc,self.notices,sources_only=grpc_mode)
+            discovery=Discovery(self.config,self.store,self.source_history_rpc,self.notices,sources_only=grpc_mode)
             self.discovery=discovery
             if grpc_mode:
                 from features.funding.grpc_feed import HotlistFeed
                 self.hotlist_feed=HotlistFeed(self.config,self.store,self.stream_head_rpc,self.notices,discovery)
-            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.background_rpc)
+                from features.funding.create_feed import CreateFeed
+                self.create_rpc=FundingRpc(proof_public,proof_alchemy)
+                self.create_feed=CreateFeed(self.config,self.store,self.create_rpc,self.notices)
+            self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.execution_reads)
             self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights)
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
-                                       flights=self.exit_flights,reconcile_rpc=self.background_rpc)
-            self.dev_sell=DevSell(self.config,self.store,rpc,self.notices,self.dev_exit)
-            discovery.market_watch=lambda:self.take_profit.watch_addresses() | self.dev_sell.watch_addresses()
+                                       flights=self.exit_flights,reconcile_rpc=self.execution_reads)
+            self.dev_sell=DevSell(self.config,self.store,self.execution_reads,self.notices,self.dev_exit)
+            from features.strategy.market_feed import MarketFeed
             def market_event(address,signature,slot):
                 self.dev_sell.market_event(address,signature,slot)
                 self.take_profit.market_event(address,signature,slot)
-            discovery.market_event=market_event
-            discovery.market_subscribed=self.dev_sell.subscribed
+            self.market_feed=MarketFeed(self.config,self.store,self.execution_reads,self.notices,
+                lambda:self.take_profit.watch_addresses() | self.dev_sell.watch_addresses(),
+                market_event,self.dev_sell.subscribed)
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set
@@ -364,6 +424,9 @@ class Service:
                 'funding_workers':self.config.funding_workers if grpc_mode else 1,
                 'funding_alchemy_rps':self.config.funding_alchemy_rps,
                 'confirmation_alchemy_fallback':self.confirmation_rpc.alchemy is not None,
+                'execution_rpc_fallback':bool(self.config.execution_fallback_url),
+                'execution_rpc_isolated':True,
+                'market_feed_connections':len(self.market_feed.feeds),
                 'buy_trigger':self.config.buy_trigger,
                 'take_profit_enabled':True,
                 'take_profit_rules':len(self.take_profit.rules),
@@ -371,13 +434,13 @@ class Service:
                 'buy_only_aged_minutes':str(self.config.buy_only_aged_minutes)},alert=True)
             try:
                 async with asyncio.TaskGroup() as group:
-                    coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),
+                    coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),self.market_feed.run(),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
                                       self.executor.reconcile(),self.dev_exit.run(),self.dev_sell.run(),self.dev_sell.catch_up(),self.take_profit.run(),self.quote_sweep.run()]
                     coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
                                       for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:
-                        coroutines.extend([self.hotlist_feed.run(),self.worker(rpc,True),
+                        coroutines.extend([self.hotlist_feed.run(),self.create_feed.run(),self.worker(rpc,True),
                             self.proofs.run(self.confirmation_rpc,self.signals,self.notices,self.config.backfill_age)])
                     for coroutine in coroutines:
                         group.create_task(coroutine)

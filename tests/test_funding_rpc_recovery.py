@@ -17,7 +17,7 @@ from share_common.config import load
 from tests.helpers import address, transaction
 from tests.test_funding_history_rpc import (
     test_discovery_routing_keeps_details_public_and_history_nonlive,
-    test_alchemy_429_is_isolated_retains_request_and_never_falls_back,
+    test_both_history_providers_fail_retains_request_and_keeps_alert_local,
     test_public_cooldown_does_not_block_alchemy_history,
 )
 
@@ -110,7 +110,7 @@ async def test_valid_negative_results_do_not_trigger_recovery(method,params,valu
 
 @pytest.mark.asyncio
 async def test_both_fail_and_cooling_never_returns_zero_history_or_leaks_secret():
-    now=[0.0]; public=Client(RpcError('https://example/secret')); alchemy=Client(None)
+    now=[0.0]; public=Client(RpcError('https://example/secret')); alchemy=Client(RpcError('HTTP-500'))
     reader=FundingRpc(public,alchemy,clock=lambda:now[0])
     for _ in range(2):
         with pytest.raises(RpcError,match='^funding-rpc-unavailable$'):
@@ -213,7 +213,7 @@ async def test_runtime_funding_reader_is_separate_from_public_execution(config,s
     service,discovery,calls,response=await wired_service(config,store,monkeypatch,key)
     assert service.funding_rpc.public is service.background_rpc
     assert service.funding_rpc.alchemy is (service.funding_history_rpc if key else None)
-    assert discovery.rpc is service.funding_history_rpc
+    assert discovery.rpc is service.source_history_rpc
     async def json_result(self):
         return {'result':parsed()}
     monkeypatch.setattr(response,'json',json_result)
@@ -231,4 +231,5 @@ async def test_runtime_funding_reader_is_separate_from_public_execution(config,s
     prior=len(calls)
     with pytest.raises(RpcError,match='endpoint-cooling'):
         await service.background_rpc.transaction('fund')
-    assert len(calls)==prior  # Execution/reconciliation has no Alchemy recovery.
+    assert len(calls)==prior  # The single-provider funding adapter remains cooled.
+    assert service.execution_rpc.providers[0].priority is not service.priority

@@ -37,6 +37,12 @@ def main():
                           'funding_workers':config.funding_workers if config.feed_mode=='alchemy_grpc' else 1,
                           'funding_alchemy_rps':config.funding_alchemy_rps,
                           'confirmation_alchemy_fallback':bool(config.alchemy_key and config.funding_history_url!=config.rpc),
+                          'execution_rpc_fallback':bool(config.execution_fallback_url),
+                          'execution_rpc_isolated':True,
+                          'execution_rpc_timeout_ms':int(config.execution_timeout*1000),
+                          'execution_shares_funding_endpoint':any(url in (config.rpc,config.funding_history_url)
+                              for url in (config.execution_rpc_url,config.execution_fallback_url) if url),
+                          'market_feed_connections':len(config.market_ws_urls),
                           'take_profit_enabled':True,
                           'take_profit_poll_seconds':config.take_profit_poll_seconds,
                           'take_profit_rules':len(rules),'database':str(config.data)},indent=2))
