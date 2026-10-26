@@ -15,6 +15,24 @@ from chain_common.yellowstone import geyser_pb2 as pb
 from chain_common.yellowstone.normalize import normalize
 
 
+# Stream health is independent of the trading signal deadline. Block timestamps
+# are whole seconds and are not a measurement of transport latency.
+STALE_BLOCK_SECONDS = 10
+STALE_PERSIST_SECONDS = 3
+STALE_HARD_SECONDS = 30
+
+
+def failure_reason(exc):
+    # Never expose arbitrary exception text: endpoints and credentials may occur
+    # in transport errors. Only our exact, fixed local reason codes are safe.
+    if isinstance(exc,RuntimeError) and len(exc.args)==1:
+        reason=exc.args[0]
+        if isinstance(reason,str) and reason in {
+            'grpc-stale-block-time','grpc-ended','grpc-idle-timeout',
+        }:return reason
+    return 'grpc-transport-error' if isinstance(exc,grpc.RpcError) else 'local-error'
+
+
 def subscription(addresses, from_slot=None, chunk_size=10000, commitment="confirmed"):
     request = pb.SubscribeRequest(commitment=pb.PROCESSED if commitment=="processed" else pb.CONFIRMED)
     if commitment=="processed":
@@ -58,6 +76,7 @@ class HotlistFeed:
         self.last_slot = int(store.stream_state('grpc_slot',0))
         self.live_floor = self.last_slot+1
         self.anchor = None
+        self.stale_since = None
         self.health=Availability(notices,'grpc')
 
     def addresses(self):
@@ -66,6 +85,7 @@ class HotlistFeed:
     async def resume_slot(self, addresses):
         commitment=self.config.hotlist_commitment
         self.anchor=None
+        self.stale_since=None
         head = await self.rpc.call('getSlot',[{'commitment':commitment}])
         self.live_floor=max(head,self.last_slot)+1
         # Live-only buying deliberately skips trades during disconnection.
@@ -76,9 +96,17 @@ class HotlistFeed:
         block=update.block_meta
         if not block.HasField('block_time') or block.block_time.timestamp<=0:return
         lag=time.time()-block.block_time.timestamp
-        if lag>self.config.signal_age:
+        if lag<=STALE_BLOCK_SECONDS:
+            self.stale_since=None
+            return
+        now=time.monotonic()
+        if self.stale_since is None:self.stale_since=now
+        duration=now-self.stale_since
+        if lag>STALE_HARD_SECONDS or duration>=STALE_PERSIST_SECONDS:
             self.notices.emit('hotlist stream stale; reconnecting',
-                {'slot':block.slot,'lag_seconds':round(lag,3),'maximum_seconds':self.config.signal_age},
+                {'slot':block.slot,'lag_seconds':round(lag,3),
+                 'maximum_seconds':STALE_BLOCK_SECONDS,'stale_for_seconds':round(duration,3),
+                 'hard_maximum_seconds':STALE_HARD_SECONDS},
                 alert=True,key='grpc-stale',interval=60)
             raise RuntimeError('grpc-stale-block-time')
 
@@ -194,24 +222,27 @@ class HotlistFeed:
                 continue
             began = time.monotonic()
             stage = 'getSlot'
+            retry_delay = backoff
             try:
                 start = await self.resume_slot(addresses)
                 stage = 'grpc-subscription'
                 async with channel_for(self.config) as channel:
                     await self.connection(channel,addresses,start)
+                retry_delay = 1 if time.monotonic()-began > 30 else backoff
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                # gRPC details/debug strings can contain credentials. Emit only
-                # a status enum; permission/filter rejection is never hidden.
                 status = exc.code().name if isinstance(exc,grpc.RpcError) else type(exc).__name__
+                reason = failure_reason(exc)
+                retry_delay = 1 if time.monotonic()-began > 30 else backoff
+                # A local stale-stream restart should not create a minute-long
+                # blind period. Transport/rate-limit failures retain full backoff.
+                if reason=='grpc-stale-block-time':retry_delay=min(5,retry_delay)
                 self.health.failure('hotlist Alchemy stream unavailable; retrying live subscription',
-                    {'status':status,'stage':stage,'retry_s':backoff})
+                    {'status':status,'reason':reason,'stage':stage,'retry_s':retry_delay})
                 self.reconnects += 1
             finally:
                 self.connected = False
                 self.subscribed.clear()
-            if time.monotonic()-began > 30:
-                backoff = 1
-            await asyncio.sleep(backoff)
-            backoff = min(60,backoff*2)
+            await asyncio.sleep(retry_delay)
+            backoff = min(60,retry_delay*2)

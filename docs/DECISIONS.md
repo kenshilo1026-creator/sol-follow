@@ -530,12 +530,11 @@ per-transaction attribution is an inference. A cleanup message occurred during
 the old pre-build subscription wait. Transaction priority now covers that wait;
 maintenance also rechecks priority between each database checkpoint/vacuum.
 
-Subsequent VPS health evidence identifies the dominant upstream problem:
+Subsequent VPS health evidence identifies a stream freshness problem:
 at 14:09:39 HKT the stream's monotonic last_slot was 461555503, while this
 create was at 461556944 (1,441 slots ahead). Thus the client had not accepted
 that create from gRPC even about 20 seconds after its confirmed detection.
-The connection was receiving data but was not at the live head. Reconnect on
-block metadata older than the configured signal-age window. Drop non-live
+The connection was receiving data but was not at the live head. Use the independent stream-health thresholds described below for reconnection. Drop non-live
 transactions before durable queue admission/HTTP decode fallback, instead of
 feeding recovery work from a stale hotlist stream. CEX funding discovery and
 confirmed create backup retain their separate admission/recovery paths.
@@ -543,3 +542,34 @@ Health includes non-live drops, live floor and block timestamp lag. Reconnection
 cannot guarantee the provider will supply fresh data; repeated stale streams
 remain ineligible and emit a throttled stale-stream alert. This does not delete
 or reclassify existing queued jobs.
+
+
+## 2026-10-26: separate stream reconnection from trade expiry
+
+VPS reports of block timestamp lag 2.139s and 2.085s triggered immediate
+reconnection when SOL_SIGNAL_MAX_AGE_SECONDS was 2. Reusing the trading window
+for connection health was too sensitive: integer chain timestamps also include
+clock/timestamp offset and block metadata delivery timing, not only network lag.
+Keep all existing trading freshness checks unchanged. Reconnect only after
+block metadata lag stays above 10 seconds across observations for at least
+3 monotonic seconds, or immediately on a block older than 30 seconds. A fresh
+block clears the timer, as does a new connection. The existing idle timeout
+still covers silence. These are conservative health heuristics, not a measured
+transport latency or a guarantee that reconnecting fixes the source of lag.
+Alerts retain their existing throttling. No additional RPC or environment
+change is required. A 2-second trading deadline can still reject signals even
+while the stream remains connected; the health tolerance does not allow buys
+on older evidence.
+
+
+## 2026-10-26: explain gRPC failures and bound local stale retries
+
+The generic RuntimeError notification obscured whether the client detected an
+old block, an ended stream or an idle timeout. Include only an allowlisted local
+reason code, never arbitrary exception text or gRPC details. Transport errors
+still include the gRPC status enum. Compute the retry delay before logging so
+retry_s matches the actual sleep, including after a long-lived connection.
+Local stale-block restarts back off 1, 2, 4, then at most 5 seconds. Other
+failures, including RESOURCE_EXHAUSTED, retain the 60-second backoff cap.
+This improves diagnostics and limits stale-reconnect downtime; it does not
+identify or fix the underlying provider/network/local-processing cause.

@@ -163,3 +163,113 @@ def test_nonlive_grpc_does_not_create_http_recovery_jobs(config,store,monkeypatc
     feed.accept(wire(raw))
     assert feed.dropped==2 and feed.added==0
     assert not store.rows('funding','SELECT * FROM jobs')
+
+
+@pytest.mark.parametrize('lag',[2.085,2.139,3,10])
+def test_stream_jitter_does_not_relax_trade_deadline(config,store,monkeypatch,lag):
+    from features.funding.grpc_feed import HotlistFeed
+    from chain_common.yellowstone import geyser_pb2 as pb
+    notices=Notices()
+    feed=HotlistFeed(replace(config,signal_age=2),store,None,notices,None)
+    now=10000+lag
+    monkeypatch.setattr(time,'time',lambda:now)
+    update=pb.SubscribeUpdate()
+    update.block_meta.slot=100
+    update.block_meta.block_time.timestamp=10000
+    feed.check_freshness(update)
+    feed.accept(update)
+    assert not notices.items
+    assert feed.stale_since is None
+    assert not feed.live_slot(101,now)  # Still cannot buy an expired signal.
+
+
+def test_stream_staleness_requires_persistence_and_resets_on_recovery(config,store,monkeypatch):
+    from features.funding.grpc_feed import HotlistFeed
+    from chain_common.yellowstone import geyser_pb2 as pb
+    feed=HotlistFeed(replace(config,signal_age=2),store,None,Notices(),None)
+    clock=[10000.,0.]
+    monkeypatch.setattr(time,'time',lambda:clock[0])
+    monkeypatch.setattr(time,'monotonic',lambda:clock[1])
+    update=pb.SubscribeUpdate()
+    update.block_meta.slot=100
+    update.block_meta.block_time.timestamp=9989
+    feed.check_freshness(update)
+    clock[1]=2.9
+    feed.check_freshness(update)
+    update.block_meta.block_time.timestamp=9999
+    feed.check_freshness(update)
+    assert feed.stale_since is None
+    update.block_meta.block_time.timestamp=9989
+    clock[1]=3
+    feed.check_freshness(update)
+    clock[1]=5.9
+    feed.check_freshness(update)
+    clock[1]=6
+    with pytest.raises(RuntimeError,match='grpc-stale-block-time'):
+        feed.check_freshness(update)
+
+
+@pytest.mark.asyncio
+async def test_stream_stale_timer_resets_on_reconnect(config,store):
+    from features.funding.grpc_feed import HotlistFeed
+    class Rpc:
+        async def call(self,*args):return 100
+    feed=HotlistFeed(config,store,Rpc(),Notices(),None)
+    feed.stale_since=123
+    await feed.resume_slot(set())
+    assert feed.stale_since is None
+
+
+@pytest.mark.parametrize('message,expected',[
+    ('grpc-stale-block-time','grpc-stale-block-time'),
+    ('grpc-ended','grpc-ended'),
+    ('grpc-idle-timeout','grpc-idle-timeout'),
+    ('https://example.invalid/private-key','local-error'),
+    ('grpc-ended private-key','local-error'),
+])
+def test_grpc_failure_reason_never_exposes_arbitrary_messages(message,expected):
+    from features.funding.grpc_feed import failure_reason
+    assert failure_reason(RuntimeError(message))==expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason,expected',[
+    ('grpc-stale-block-time',[1,2,4,5,5,5,5,5]),
+    ('grpc-ended',[1,2,4,8,16,32,60,60]),
+    ('transport',[1,2,4,8,16,32,60,60]),
+    ('long-lived',[1,2,4,8,16,32,60,1]),
+])
+async def test_grpc_retry_reports_actual_wait_and_caps_only_stale(config,store,monkeypatch,reason,expected):
+    import grpc
+    from features.funding import grpc_feed
+    feed=grpc_feed.HotlistFeed(config,store,None,Notices(),None)
+    waits=[]; reports=[]; clock=[0.]
+    class Channel:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+    class RateLimited(grpc.RpcError):
+        def code(self):return grpc.StatusCode.RESOURCE_EXHAUSTED
+    async def resume(*args):return None
+    async def connection(*args):
+        if reason=='long-lived' and len(waits)==7:clock[0]+=31
+        if reason=='transport':raise RateLimited()
+        raise RuntimeError('grpc-ended' if reason=='long-lived' else reason)
+    async def sleep(delay):
+        waits.append(delay)
+        assert reports[-1]['retry_s']==delay
+        if len(waits)==len(expected):raise asyncio.CancelledError()
+        clock[0]+=delay
+    monkeypatch.setattr(feed,'addresses',lambda:{'wallet'})
+    monkeypatch.setattr(feed,'resume_slot',resume)
+    monkeypatch.setattr(feed,'connection',connection)
+    monkeypatch.setattr(feed.health,'failure',lambda kind,detail:reports.append(detail))
+    monkeypatch.setattr(grpc_feed,'channel_for',lambda cfg:Channel())
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(asyncio,'sleep',sleep)
+    with pytest.raises(asyncio.CancelledError):await feed.run()
+    assert waits==expected
+    assert not feed.connected
+    assert feed.reconnects==len(expected)
+    if reason=='transport':
+        assert reports[-1]['status']=='RESOURCE_EXHAUSTED'
+        assert reports[-1]['reason']=='grpc-transport-error'
