@@ -49,7 +49,7 @@ class CreateSignals:
         backup=self.proofs.create_backup(item.signature,item.slot)
         if (tx.meta.get('err') is not None or not self.proofs.usable(item.signature,now,item.slot,
                                                                     require_processed=processed)
-                or processed and not backup and (not proof or proof['state']!='pending')):
+                or processed and not self.proofs.create_usable(item.signature,item.slot)):
             trade_record(self.store,trade,'dev-create','blocked','source-proof-unusable')
             return None
         claimed,reason,funding=self.store.consume_dev_create(item,now,processed=processed and not backup,

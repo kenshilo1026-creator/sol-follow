@@ -29,6 +29,7 @@ class Maintenance:
         self.pressured=False
 
     async def pass_once(self):
+        if self.priority.active:return 0
         cfg=self.config
         now=time.time()
         size=usage(self.store)
@@ -64,6 +65,7 @@ class Maintenance:
             await asyncio.sleep(0)
         if not self.priority.active:
             for name in ('audit','funding','trading'):
+                if self.priority.active:break
                 try:
                     with self.store.db(name) as c:
                         deadline=time.monotonic()+0.04

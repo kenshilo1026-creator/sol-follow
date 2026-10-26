@@ -201,6 +201,7 @@ async def test_replay_overlap_and_expired_gap(config,store):
 def test_checkpoint_does_not_advance_when_inbox_commit_fails(config,store,monkeypatch):
     d=Discovery(config,store,None,Notices());f=HotlistFeed(config,store,None,Notices(),d)
     raw=json.loads((FIX/'pump_non_sol_buy.json').read_text())
+    f.anchor=(raw['slot'],time.time(),time.time())
     def fail(*args):raise OSError('disk')
     monkeypatch.setattr(store,'stream_transaction',fail)
     with pytest.raises(OSError):f.accept(wire(raw))
@@ -219,6 +220,7 @@ async def test_real_grpc_transport_dynamic_filter_and_durable_receive(config,sto
     from tests.test_signals import fund
     seen=[];ready=asyncio.Event();changed=asyncio.Event()
     raw=json.loads((FIX/'pump_non_sol_buy.json').read_text())
+    raw['blockTime']=int(time.time())
     wallet=raw['transaction']['message']['accountKeys'][0]['pubkey']
     fund(store,wallet,time.time())
     second=address()

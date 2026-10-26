@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlparse
 import grpc
 from chain_common.availability import Availability
+from features.audit.feed_trace import observed
 from chain_common.primitives import b58encode
 from chain_common.transaction import Unsupported
 from chain_common.yellowstone import geyser_pb2 as pb
@@ -53,7 +54,7 @@ class HotlistFeed:
         self.config,self.store,self.rpc,self.notices,self.catchup = config,store,rpc,notices,catchup
         self.connected = False
         self.subscribed = set()
-        self.received = self.added = self.bytes_received = self.reconnects = 0
+        self.received = self.added = self.bytes_received = self.reconnects = self.dropped = 0
         self.last_slot = int(store.stream_state('grpc_slot',0))
         self.live_floor = self.last_slot+1
         self.anchor = None
@@ -69,6 +70,22 @@ class HotlistFeed:
         self.live_floor=max(head,self.last_slot)+1
         # Live-only buying deliberately skips trades during disconnection.
         return None
+
+    def check_freshness(self, update):
+        if update.WhichOneof('update_oneof')!='block_meta':return
+        block=update.block_meta
+        if not block.HasField('block_time') or block.block_time.timestamp<=0:return
+        lag=time.time()-block.block_time.timestamp
+        if lag>self.config.signal_age:
+            self.notices.emit('hotlist stream stale; reconnecting',
+                {'slot':block.slot,'lag_seconds':round(lag,3),'maximum_seconds':self.config.signal_age},
+                alert=True,key='grpc-stale',interval=60)
+            raise RuntimeError('grpc-stale-block-time')
+
+    def live_slot(self, slot, now):
+        a=self.anchor
+        return bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
+                    and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
 
     def accept(self, update):
         self.bytes_received += update.ByteSize()
@@ -86,9 +103,11 @@ class HotlistFeed:
                 self.store.block_time(slot,block.block_time.timestamp)
                 self.anchor=(slot,block.block_time.timestamp,time.time())
         elif kind == 'transaction':
+            received_at=time.time()
             value = update.transaction
             slot = value.slot
             self.received += 1
+            live=self.live_slot(slot,received_at)
             try:
                 raw = normalize(value,self.store.block_time(slot))
             except (Unsupported,ValueError,IndexError) as exc:
@@ -96,15 +115,22 @@ class HotlistFeed:
                 # RPC instead of dropping the event or fabricating its contents.
                 if len(value.transaction.signature) != 64:
                     raise Unsupported('stream-invalid-signature') from None
-                self.added += self.store.enqueue([b58encode(value.transaction.signature)])
+                signature=b58encode(value.transaction.signature)
+                observed(self.store,signature,'grpc-'+self.config.hotlist_commitment,'received',slot,received_at,
+                         normalized=False,live=live,dropped=not live,error=type(exc).__name__)
+                if live:self.added += self.store.enqueue([signature])
+                else:self.dropped += 1
                 self.notices.emit('stream transaction requires public RPC decoding',
                     {'slot':slot,'type':type(exc).__name__},key='grpc-normalize')
             else:
                 now=time.time(); a=self.anchor
-                live=bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
-                          and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
-                raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live}
-                self.added += self.store.stream_transaction(raw)
+                observed(self.store,raw['transaction']['signatures'][0],'grpc-'+self.config.hotlist_commitment,
+                         'received',slot,received_at,normalized=True,live=live,dropped=not live,
+                         live_floor=self.live_floor,anchor_slot=a[0] if a else None,
+                         anchor_age_s=now-a[2] if a else None)
+                raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live,'source':'grpc'}
+                if live:self.added += self.store.stream_transaction(raw)
+                else:self.dropped += 1
         if slot > self.last_slot:
             # Only reached once the incoming transaction (if any) is durable.
             self.store.set_stream_state('grpc_slot',int(slot))
@@ -136,6 +162,7 @@ class HotlistFeed:
                         if update.WhichOneof('update_oneof') == 'ping':
                             await call.write(pb.SubscribeRequest(ping=pb.SubscribeRequestPing(id=1)))
                         else:
+                            self.check_freshness(update)
                             self.accept(update)
                         read = asyncio.create_task(call.read())
                     if time.monotonic()-last_update > 30:

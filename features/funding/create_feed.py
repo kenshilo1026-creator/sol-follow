@@ -11,6 +11,7 @@ import time
 
 from chain_common.transaction import Tx
 from chain_common.availability import Availability
+from features.audit.feed_trace import observed
 from features.funding.discovery import Discovery
 from launchpads.create import inspect
 
@@ -43,6 +44,7 @@ class CreateFeed(Discovery):
         if len(self.pending)>=2048:
             self.notices.emit('create backup overloaded',{},key='create-backup-overload',interval=60)
             return
+        observed(self.store,sig,'create-confirmed','received',slot,now)
         self.seen[sig]=now
         self.pending[sig]={'slot':slot,'seen':now,'due':now,'address':address}
         self.received+=1
@@ -55,6 +57,7 @@ class CreateFeed(Discovery):
                 self.pending.pop(sig,None);continue
             if event['due']>now:continue
             try:
+                fetch_started=time.monotonic()
                 raw=await self.rpc.transaction(sig,commitment='confirmed')
                 if raw is None:raise ValueError('create-backup-not-indexed')
                 tx=Tx(raw)
@@ -65,6 +68,9 @@ class CreateFeed(Discovery):
                 creates=inspect(tx).creates
                 eligible=any(c.user==event['address'] and c.user in tx.signers and c.user in hotlist for c in creates)
                 if eligible and 0<=now-event['seen']<=self.config.signal_age and 0<=now-tx.time<=self.config.signal_age:
+                    observed(self.store,sig,'create-confirmed','verified',tx.slot,now,
+                             receipt_ms=round((time.monotonic()-fetch_started)*1000,3),
+                             since_log_ms=round((now-event['seen'])*1000,3))
                     self.commit(raw,event)
                 self.pending.pop(sig,None)
             except asyncio.CancelledError:raise

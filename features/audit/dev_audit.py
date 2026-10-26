@@ -7,9 +7,17 @@ import math
 from pathlib import Path
 import sqlite3
 import time
+from features.audit.feed_trace import compare
 
 ROOT=Path(__file__).resolve().parents[2]
 REASONS={
+ 'dev-entry-not-permitted':'Dev 入場或賣出保護條件不允許買入',
+ 'source-proof-not-pending':'來源交易不符合 processed 買入條件',
+ 'signal-time-in-future':'訊號時間超前本機時鐘',
+ 'order-source-unusable':'訂單來源交易證據失效',
+ 'signal-expired':'訊號超過有效秒數',
+ 'dev-sell-monitor-unavailable':'賣出監控尚未成功訂閱',
+ 'create-prepared':'發幣解析及入場準備完成',
  'failed-transaction':'鏈上交易失敗，不作入場或跟買',
  'processed-not-live-or-invalid':'processed 訊號不是即時或已失效',
  'chain-time-outside-coverage':'交易時間超出補查範圍',
@@ -134,6 +142,12 @@ def report(data,command,hours=24,limit=200,wallet=None,all_states=False,now=None
                 (since,wallet),limit,'time DESC'))
         sigs=list(dict.fromkeys(r['signature'] for r in result['funding']+result['decisions'] if r.get('signature')))
         events=list(dict.fromkeys(r['event'] for r in result['funding']+result['decisions'] if r.get('event')))
+        with connect(data/'audit.sqlite3') as c:
+            result['feed_events']=decode_details(rows(c,'decisions',
+                "stage='feed' AND signature IN ("+','.join('?'*len(sigs))+")",sigs,limit,'time ASC,id ASC')) if sigs else []
+        result['feed_comparison']=compare(result['feed_events'])
+        if not result['feed_events']:
+            result['notes'].append('No retained per-feed observations: arrival order cannot be reconstructed from source_proofs alone.')
         with connect(data/'funding.sqlite3') as c:
             result['source_proofs']=rows(c,'processed_signals','signature IN ('+','.join('?'*len(sigs))+')',sigs,limit) if sigs else []
             result['jobs']=rows(c,'jobs','signature IN ('+','.join('?'*len(sigs))+')',sigs,limit) if sigs else []
@@ -161,7 +175,7 @@ def display(result):
             print(row['time_hk'],row['stage'],row['outcome'],row['explanation'],
                   'token='+row['mint'],'tx='+row['signature'])
             if row['detail']:print('  ',json.dumps(row['detail'],ensure_ascii=False))
-        for key in ('removal','funding','jobs','source_proofs','activity_checks','market_caps','legacy_notices','execution_notices'):
+        for key in ('removal','funding','jobs','source_proofs','activity_checks','market_caps','legacy_notices','execution_notices','feed_events','feed_comparison'):
             if result[key]:print(key+':',json.dumps(result[key],ensure_ascii=False))
     print('跟買訂單:',len(result['orders']))
     for row in result['orders']:

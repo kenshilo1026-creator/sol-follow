@@ -32,6 +32,12 @@ class Processed:
                     and row['state'] in ('confirmed','finalized') and row['live']
                     and (slot is None or row['slot']==slot))
 
+    def create_usable(self, signature, slot):
+        row=self.row(signature)
+        return bool(row and row['live'] and row['slot']==slot
+                    and row['state'] in ('pending','confirmed','finalized')
+                    and self.usable(signature,slot=slot,require_processed=True))
+
     def usable(self, signature, now=None, slot=None, require_processed=False):
         row = self.row(signature)
         if not row:

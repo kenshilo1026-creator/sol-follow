@@ -97,7 +97,8 @@ def test_processed_filter_and_replay_anchor(config,store,monkeypatch):
     f.anchor=(raw['slot']-1,now-100,now)
     raw['transaction']['signatures'][0]=b58encode(bytes([7])*64)
     f.accept(wire(raw))
-    assert not store.stream_payload(raw['transaction']['signatures'][0])['_stream']['live']
+    assert store.stream_payload(raw['transaction']['signatures'][0]) is None
+    assert f.dropped==1
     update=pb.SubscribeUpdate();update.slot.slot=raw['slot'];update.slot.status=pb.SLOT_DEAD
     previous=f.last_slot;f.accept(update)
     assert not Processed(store).usable(sig) and f.last_slot==previous

@@ -50,7 +50,8 @@ async def test_backup_alone_arms_dev_before_one_buy_in_processed_mode(config,sto
         for f in market.feeds:f.subscribed=set(worker.watches);f.connected=True
     ack=asyncio.create_task(acknowledge());buys=[]
     class Engine:
-        async def buy(self,oid,route):
+        async def buy(self,oid,route,*,readiness=None):
+            assert await readiness
             assert item.user in worker.watches
             worker.market_event(item.user,'early-dev-sale',item.slot+1)
             assert store.rows('trading','SELECT signature FROM dev_sell_events')==[{'signature':'early-dev-sale'}]
@@ -108,7 +109,9 @@ async def test_missing_dev_subscription_prevents_buy(config,store):
         async def arm(self,required):return await market.arm(required,timeout=0)
     service.market_feed=Unavailable()
     class Engine:
-        async def buy(self,*args):raise AssertionError('unprotected buy')
+        async def buy(self,oid,route,*,readiness=None):
+            assert not await readiness
+            store.fail_order(oid,'dev-sell-monitor-unavailable')
     service.executor=Engine()
     await service.process({'signature':item.signature},rpc)
     assert item.user in worker.watches

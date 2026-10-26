@@ -490,3 +490,56 @@ with local launch receipt exposure replacing the old wallet snapshot. Nine
 public mainnet transactions and boundary/transfer/replay tests verify this.
 Market cap remains disabled; signing, fees, slippage, simulation and existing
 order reconciliation are unchanged.
+
+
+## 2026-10-26: overlap create preparation with exit subscription setup
+
+RH's `_arm_dev_sell_watch` registers local state and starts a background feed;
+it does not synchronously await a per-token subscription ACK. Sol-follow's
+market feeds have explicit wallet/ATA subscriptions, so retain the coverage
+condition before signing/submission, but start arming concurrently with build
+and simulation. Previously the entire build waited behind `market.arm`.
+Cancel and join the arming task on every execution exit, including rejection
+and cancellation. Existing SDK/bootstrap blockhash warmup remains active;
+minOut, simulation, submission preflight and dev-sale protections remain.
+No speculative mint, unsigned source transaction or fresh order is invented.
+The earliest existing execution evidence is a live processed transaction.
+
+Live processed create evidence may become confirmed/finalized during prepare.
+This upgrade no longer rejects a create merely for being non-pending. Require
+matching slot, live evidence, usable source mappings and signal age at each
+execution boundary. Invalid/dead/uncertain evidence still rejects; confirmed
+HTTP history alone cannot create a processed entry. Legacy buy-vote semantics
+remain unchanged. Record distinct failure reasons, source proof snapshots,
+signal age/limit and cumulative monotonic execution timings in local audit.
+
+Per-feed first observations are recorded in the existing retained decisions
+table for gRPC (including normalization failure/non-live classification),
+confirmed create logs and verified backup receipts. `dev_audit wallet` now
+includes `feed_events` and `feed_comparison`. Positive
+`confirmed_minus_grpc_ms` means gRPC arrived first. Missing one source means
+insufficient evidence, never proof that it was not received. Mutable
+`processed_signals.seen/reason` cannot reconstruct historical feed ordering;
+the October 26 sample needs retained VPS logs to establish that ordering.
+No live latency reduction or same-slot inclusion is claimed from offline tests.
+
+The supplied VPS journal also shows a public endpoint cooldown, a null Alchemy
+getTransaction response and a deferred create backup immediately before the
+sample's confirmed launch decode. Those RPC lines lack a signature, so their
+per-transaction attribution is an inference. A cleanup message occurred during
+the old pre-build subscription wait. Transaction priority now covers that wait;
+maintenance also rechecks priority between each database checkpoint/vacuum.
+
+Subsequent VPS health evidence identifies the dominant upstream problem:
+at 14:09:39 HKT the stream's monotonic last_slot was 461555503, while this
+create was at 461556944 (1,441 slots ahead). Thus the client had not accepted
+that create from gRPC even about 20 seconds after its confirmed detection.
+The connection was receiving data but was not at the live head. Reconnect on
+block metadata older than the configured signal-age window. Drop non-live
+transactions before durable queue admission/HTTP decode fallback, instead of
+feeding recovery work from a stale hotlist stream. CEX funding discovery and
+confirmed create backup retain their separate admission/recovery paths.
+Health includes non-live drops, live floor and block timestamp lag. Reconnection
+cannot guarantee the provider will supply fresh data; repeated stale streams
+remain ineligible and emit a throttled stale-stream alert. This does not delete
+or reclassify existing queued jobs.

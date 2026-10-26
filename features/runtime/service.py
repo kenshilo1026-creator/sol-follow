@@ -106,6 +106,7 @@ class Service:
         return added
 
     async def process(self,row,rpc):
+        process_started=time.monotonic()
         raw=self.store.stream_payload(row['signature'])
         if raw is None:
             raw=await rpc.transaction(row['signature'])
@@ -126,7 +127,7 @@ class Service:
         parse_started=time.monotonic()
         processed=raw.get('_stream',{}).get('commitment')=='processed'
         proof=self.proofs.row(row['signature']) if processed else None
-        if processed and (not proof or proof['state']!='pending' or not self.proofs.usable(row['signature'],slot=raw['slot'])):
+        if processed and not self.proofs.create_usable(row['signature'],raw['slot']):
             skipped_transaction(self.store,raw,self.config,'processed-not-live-or-invalid')
             self.store.finish_processed(row['signature'],'processed-not-live-or-invalid',raw['slot'])
             self.completed+=1
@@ -190,20 +191,27 @@ class Service:
             self.quote_builder.observe(route)
             oid=self.signals.reserve(route)
             if oid:
+                trade_record(self.store,route.trade,'preparation','ready','create-prepared',
+                    {'order':oid,'process_ms':round((time.monotonic()-process_started)*1000,3),
+                     'source':raw.get('_stream',{}).get('source','grpc' if processed else 'http'),
+                     'commitment':'processed' if processed else 'confirmed'})
                 market=getattr(self,'market_feed',None)
+                readiness=None
                 if market is not None:
                     from chain_common.primitives import ata
                     required={route.trade.wallet,ata(route.trade.wallet,route.trade.mint,route.request()["tokenProgram"])}
-                    if not await market.arm(required):
-                        self.store.fail_order(oid,'dev-sell-monitor-unavailable')
-                        self.notices.emit('buy rejected',{'order':oid,'mint':route.trade.mint,
-                            'reason':'dev-sell-monitor-unavailable'},alert=True)
-                        continue
+                    readiness=asyncio.create_task(market.arm(required))
                 else:
                     discovery=getattr(self,'discovery',None)
                     if discovery is not None:discovery.refresh()
                 executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
-                await executor.buy(oid,route)
+                try:
+                    if readiness is None:await executor.buy(oid,route)
+                    else:await executor.buy(oid,route,readiness=readiness)
+                finally:
+                    if readiness is not None:
+                        if not readiness.done():readiness.cancel()
+                        await asyncio.gather(readiness,return_exceptions=True)
         if processed:
             self.store.finish_processed(row['signature'],'processed-provisional',tx.slot)
         else:
@@ -293,7 +301,9 @@ class Service:
                 feed=self.hotlist_feed
                 detail['hotlist_stream']={'connected':feed.connected,'addresses':len(feed.subscribed),
                     'received':feed.received,'new_jobs':feed.added,'protobuf_bytes':feed.bytes_received,
-                    'last_slot':feed.last_slot,'reconnects':feed.reconnects}
+                    'last_slot':feed.last_slot,'reconnects':feed.reconnects,'dropped_nonlive':feed.dropped,
+                    'live_floor':feed.live_floor,
+                    'block_time_lag_s':round(time.time()-feed.anchor[1],3) if feed.anchor else None}
             if hasattr(self,'background_rpc'):
                 detail['background_public_rpc']=self.background_rpc.snapshot()
             if hasattr(self,'funding_rpc'):

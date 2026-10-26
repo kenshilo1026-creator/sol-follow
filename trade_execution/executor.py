@@ -22,26 +22,44 @@ class Executor:
         self.builder=builder
         self.reconcile_rpc=reconcile_rpc or rpc
 
-    def fresh(self, route, oid=None):
+    def rejection(self, route, oid=None):
         allowed=(create_permitted(self.store,route,self.config.max_dev_holding_tokens) if route.trade.side=='create'
                  else dev_permitted(self.store,route.trade.mint,self.config.max_dev_holding_tokens))
-        if not allowed:
-            return False
+        if not allowed:return 'dev-entry-not-permitted'
         proofs=Processed(self.store)
         processed=self.config.hotlist_commitment=='processed'
         trigger=proofs.row(route.trade.signature) if processed else None
-        if processed and not proofs.create_backup(route.trade.signature,route.trade.slot) and (not trigger or trigger['state']!='pending'):
-            return False
-        return (0 <= time.time()-route.trade.time <= self.config.signal_age
-                and (oid is None or proofs.order_usable(oid,require_processed=processed)))
+        if processed:
+            if route.trade.side=='create':
+                # Confirmation upgrades live evidence; it must not cancel an
+                # already prepared processed create while the monitor arms.
+                if not proofs.create_usable(route.trade.signature,route.trade.slot):
+                    return 'source-proof-unusable'
+            elif not proofs.create_backup(route.trade.signature,route.trade.slot) and (not trigger or trigger['state']!='pending'):
+                return 'source-proof-not-pending'
+        age=time.time()-route.trade.time
+        if age<0:return 'signal-time-in-future'
+        if age>self.config.signal_age:return 'signal-expired'
+        if oid is not None and not proofs.order_usable(oid,require_processed=processed):
+            return 'order-source-unusable'
+        return None
 
-    async def buy(self, oid, route):
+    def fresh(self, route, oid=None):
+        return self.rejection(route,oid) is None
+
+    async def buy(self, oid, route, *, readiness=None):
         row=self.store.order(oid)
         if row['state']!='reserved' or row['mode']!=self.config.mode:
             return
         with self.store.db('trading') as c:
             c.execute('INSERT OR IGNORE INTO order_routes VALUES (?,?)',(oid,json.dumps(route.request())))
         self.store.update_order(oid,reason=MARKER)
+        began=time.monotonic()
+        timings={}
+        def mark(name):timings[name]=round((time.monotonic()-began)*1000,3)
+        def require_fresh():
+            reason=self.rejection(route,oid)
+            if reason:raise ValueError(reason)
         signed=False
         stage='precheck'
         signature=None
@@ -49,8 +67,8 @@ class Executor:
         try:
             if self.store.rows('trading',"SELECT 1 FROM positions WHERE mint=? AND mode=? AND amount!='0'",(row['mint'],row['mode'])):
                 raise ValueError('position-already-exists')
-            if not self.fresh(route,oid):
-                raise ValueError('signal-expired')
+            require_fresh()
+            mark('precheck_ms')
             # A dry run may simulate with the observed funded address when no
             # local public wallet is configured. It never reads that wallet's key.
             wallet=self.config.wallet_address or route.trade.wallet
@@ -58,8 +76,8 @@ class Executor:
                 await self.builder.set_priority(self.priority.active)
             stage='build'
             result=await self.builder(self.config,route,wallet)
-            if not self.fresh(route,oid):
-                raise ValueError('signal-expired-after-build')
+            mark('built_ms')
+            require_fresh()
             wire=base64.b64decode(result['transaction'],validate=True)
             tx=VersionedTransaction.from_bytes(wire)
             if (len(wire)>1232 or tx.message.header.num_required_signatures!=1
@@ -77,17 +95,23 @@ class Executor:
             stage='simulate'
             simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
                 {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])
+            mark('simulated_ms')
             if simulation['value']['err'] is not None:
                 raise ValueError('simulation-rejected')
-            if not self.fresh(route,oid):
-                raise ValueError('signal-expired-after-simulation')
+            require_fresh()
+            # Prepare while subscription ACKs arrive; recheck before signing.
+            stage='monitor'
+            if readiness is not None and not await readiness:
+                raise ValueError('dev-sell-monitor-unavailable')
+            mark('monitor_ready_ms')
+            require_fresh()
             if self.config.dry_run:
                 with self.store.db('trading') as c:
                     c.execute('BEGIN IMMEDIATE')
                     c.execute("UPDATE orders SET state='dry-simulated',updated=? WHERE id=?",(time.time(),oid))
                     c.execute("UPDATE signals SET state='dry-simulated' WHERE order_id=?",(oid,))
                     c.commit()
-                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid})
+                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid,'timing_ms':timings})
                 self.notices.emit('buy dry simulation passed',{'order':oid,'mint':row['mint'],
                     'min_out':result['minOut'],'quote_spend':result['quoteIn'],'simulation_wallet':wallet},alert=True)
                 return
@@ -99,8 +123,7 @@ class Executor:
                 raise ValueError('wallet-private-key-required')
             if str(keypair.pubkey())!=wallet:
                 raise ValueError('wallet-keypair-mismatch')
-            if not self.fresh(route,oid):
-                raise ValueError('signal-expired-before-signing')
+            require_fresh()
             tx=VersionedTransaction(tx.message,[keypair])
             raw=base64.b64encode(bytes(tx)).decode()
             signature=str(tx.signatures[0])
@@ -113,26 +136,30 @@ class Executor:
                           (raw,signature,int(result['lastHeight']),time.time(),oid))
                 c.commit()
             signed=True
-            if not self.fresh(route,oid):
-                raise ValueError('signal-invalid-before-send')
+            mark('signed_ms')
+            require_fresh()
             stage='submit'
+            mark('submit_started_ms')
             response=await self.rpc.call('sendTransaction',[raw,{'encoding':'base64','skipPreflight':False,
                 'preflightCommitment':self.config.hotlist_commitment,'maxRetries':0,'minContextSlot':route.trade.slot}])
             if response!=signature:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
-            trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature})
+            trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']},alert=True)
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            mark('failed_ms')
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:
-                self.store.fail_order(oid,'build-or-simulation-rejected:'+type(exc).__name__)
+                self.store.fail_order(oid,failure_reason(exc))
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
-                         {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature})
+                         {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
+                          'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
+                          'source_proof':Processed(self.store).row(route.trade.signature)})
             self.notices.emit('buy deferred' if signed else 'buy rejected',
                 {'order':oid,**buy_context(self.config,route),'stage':stage,'reason':failure_reason(exc),
                  'type':type(exc).__name__,'signed':signed,'signature':signature,
