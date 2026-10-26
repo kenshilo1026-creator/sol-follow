@@ -298,12 +298,7 @@ class Service:
                     'timing':self.metrics.snapshot(),'quote_cache':self.quote_builder.stats,
                     'oldest_s':round(time.time()-rows['oldest']) if rows['oldest'] else 0}
             if hasattr(self,'hotlist_feed'):
-                feed=self.hotlist_feed
-                detail['hotlist_stream']={'connected':feed.connected,'addresses':len(feed.subscribed),
-                    'received':feed.received,'new_jobs':feed.added,'protobuf_bytes':feed.bytes_received,
-                    'last_slot':feed.last_slot,'reconnects':feed.reconnects,'dropped_nonlive':feed.dropped,
-                    'live_floor':feed.live_floor,
-                    'block_time_lag_s':round(time.time()-feed.anchor[1],3) if feed.anchor else None}
+                detail['hotlist_stream']=self.hotlist_feed.snapshot()
             if hasattr(self,'background_rpc'):
                 detail['background_public_rpc']=self.background_rpc.snapshot()
             if hasattr(self,'funding_rpc'):

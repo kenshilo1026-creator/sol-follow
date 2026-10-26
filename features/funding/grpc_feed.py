@@ -6,6 +6,8 @@ subscribe to live traffic only; they never queue public history scans.
 import asyncio
 import time
 from urllib.parse import urlparse
+from collections import Counter
+from share_common.metrics import Metrics
 import grpc
 from chain_common.availability import Availability
 from features.audit.feed_trace import observed
@@ -78,6 +80,12 @@ class HotlistFeed:
         self.anchor = None
         self.stale_since = None
         self.health=Availability(notices,'grpc')
+        self.drop_reasons=Counter()
+        self.delivery=Metrics()
+        self.last_transaction_slot=None
+        self.last_delivery_at=None
+        self.last_source_age=None
+        self.source_clock_ahead=0
 
     def addresses(self):
         return set(self.store.hotlist(time.time()))
@@ -110,12 +118,57 @@ class HotlistFeed:
                 alert=True,key='grpc-stale',interval=60)
             raise RuntimeError('grpc-stale-block-time')
 
-    def live_slot(self, slot, now):
+    def live_reason(self, slot, now):
         a=self.anchor
-        return bool(a and slot>=self.live_floor and a[0]<=slot<=a[0]+8
-                    and 0<=now-a[2]<=2 and -2<=now-a[1]<=self.config.signal_age)
+        if not a:return 'missing-block-anchor'
+        if slot<self.live_floor:return 'before-live-floor'
+        if slot<a[0]:return 'before-anchor-slot'
+        if slot>a[0]+8:return 'ahead-of-anchor-window'
+        if now<a[2]:return 'anchor-receipt-in-future'
+        if now-a[2]>2:return 'anchor-receipt-expired'
+        if now-a[1]<-2:return 'block-time-in-future'
+        if now-a[1]>self.config.signal_age:return 'block-time-expired'
+        return 'live'
+
+    def live_slot(self, slot, now):
+        return self.live_reason(slot,now)=='live'
+
+    def snapshot(self):
+        now=time.time()
+        return {'connected':self.connected,'addresses':len(self.subscribed),
+            'received':self.received,'new_jobs':self.added,'protobuf_bytes':self.bytes_received,
+            'last_slot':self.last_slot,'reconnects':self.reconnects,'dropped_nonlive':self.dropped,
+            'live_floor':self.live_floor,'drop_reasons':dict(self.drop_reasons),
+            'block_time_lag_s':round(now-self.anchor[1],3) if self.anchor else None,
+            'anchor_slot':self.anchor[0] if self.anchor else None,
+            'anchor_received_age_s':round(now-self.anchor[2],3) if self.anchor else None,
+            'last_transaction_slot':self.last_transaction_slot,
+            'last_delivery_age_s':round(now-self.last_delivery_at,3) if self.last_delivery_at is not None else None,
+            'last_source_age_s':round(self.last_source_age,3) if self.last_source_age is not None else None,
+            'source_clock_ahead':self.source_clock_ahead,'delivery_timing':self.delivery.snapshot()}
 
     def accept(self, update):
+        began=time.monotonic()
+        now=time.time()
+        kind=update.WhichOneof('update_oneof')
+        if kind in ('transaction','block_meta'):
+            self.last_delivery_at=now
+            self.last_source_age=None
+            if update.HasField('created_at') and update.created_at.seconds>0:
+                stamp=update.created_at.seconds+update.created_at.nanos/1e9
+                self.last_source_age=now-stamp
+                # This includes upstream queues, transport and client scheduling;
+                # the provider timestamp is not a pure network latency clock.
+                if self.last_source_age>=0:
+                    self.delivery.add(kind+'_source_age',self.last_source_age)
+                else:self.source_clock_ahead+=1
+        try:
+            self._accept(update)
+        finally:
+            if kind in ('transaction','block_meta'):
+                self.delivery.add(kind+'_local_accept',time.monotonic()-began)
+
+    def _accept(self, update):
         self.bytes_received += update.ByteSize()
         kind = update.WhichOneof('update_oneof')
         slot = 0
@@ -135,7 +188,10 @@ class HotlistFeed:
             value = update.transaction
             slot = value.slot
             self.received += 1
-            live=self.live_slot(slot,received_at)
+            self.last_transaction_slot=slot
+            live_reason=self.live_reason(slot,received_at)
+            live=live_reason=='live'
+            if not live:self.drop_reasons[live_reason]+=1
             try:
                 raw = normalize(value,self.store.block_time(slot))
             except (Unsupported,ValueError,IndexError) as exc:
@@ -145,7 +201,7 @@ class HotlistFeed:
                     raise Unsupported('stream-invalid-signature') from None
                 signature=b58encode(value.transaction.signature)
                 observed(self.store,signature,'grpc-'+self.config.hotlist_commitment,'received',slot,received_at,
-                         normalized=False,live=live,dropped=not live,error=type(exc).__name__)
+                         normalized=False,live=live,dropped=not live,live_reason=live_reason,error=type(exc).__name__)
                 if live:self.added += self.store.enqueue([signature])
                 else:self.dropped += 1
                 self.notices.emit('stream transaction requires public RPC decoding',
@@ -154,8 +210,10 @@ class HotlistFeed:
                 now=time.time(); a=self.anchor
                 observed(self.store,raw['transaction']['signatures'][0],'grpc-'+self.config.hotlist_commitment,
                          'received',slot,received_at,normalized=True,live=live,dropped=not live,
+                         live_reason=live_reason,source_age_s=self.last_source_age,
                          live_floor=self.live_floor,anchor_slot=a[0] if a else None,
-                         anchor_age_s=now-a[2] if a else None)
+                         anchor_age_s=now-a[2] if a else None,
+                         block_time_lag_s=now-a[1] if a else None)
                 raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live,'source':'grpc'}
                 if live:self.added += self.store.stream_transaction(raw)
                 else:self.dropped += 1

@@ -573,3 +573,20 @@ Local stale-block restarts back off 1, 2, 4, then at most 5 seconds. Other
 failures, including RESOURCE_EXHAUSTED, retain the 60-second backoff cap.
 This improves diagnostics and limits stale-reconnect downtime; it does not
 identify or fix the underlying provider/network/local-processing cause.
+
+
+## 2026-10-26: measure non-live exclusions before changing eligibility
+
+The VPS clock reports NTP synchronization. After the stale reconnect at
+10:55:55 UTC, subsequent health samples show block time gaps near 1.75 seconds
+and steady slot progress, but 223 of the next 619 received transactions were
+classified non-live. These are all watched transactions, not necessarily
+creates, and the old aggregate counter cannot identify the reason.
+Expose the exact first failing live predicate in bounded reason counters and
+the existing per-transaction audit. Preserve every admission boundary. Health
+also distinguishes last transaction slot, anchor slot/receipt age, provider
+created_at-to-local-accept age (when provided), and local normalize/audit/store
+duration. Timing samples are bounded to 1000 per fixed category. Provider age
+includes clock offset, upstream delivery and local scheduling; it is not pure
+network latency. Missing timestamps remain unknown and future timestamps have
+a separate count. Add no RPC, no subscription, and no new Telegram alert.
