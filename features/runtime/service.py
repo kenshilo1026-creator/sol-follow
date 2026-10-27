@@ -105,6 +105,7 @@ class Service:
 
     async def process(self,row,rpc):
         process_started=time.monotonic()
+        queue_wait_ms=round(max(0,time.time()-row.get('first_seen',time.time()))*1000,3)
         raw=self.store.stream_payload(row['signature'])
         if raw is None:
             raw=await rpc.transaction(row['signature'])
@@ -191,6 +192,7 @@ class Service:
             if oid:
                 trade_record(self.store,route.trade,'preparation','ready','create-prepared',
                     {'order':oid,'process_ms':round((time.monotonic()-process_started)*1000,3),
+                     'queue_wait_ms':queue_wait_ms,
                      'source':raw.get('_stream',{}).get('source','grpc' if processed else 'http'),
                      'commitment':'processed' if processed else 'confirmed'})
                 market=getattr(self,'market_feed',None)
@@ -224,13 +226,19 @@ class Service:
             # Let feeds, health, and cancellation run even with a full backlog.
             await asyncio.sleep(0)
             try:
+                # Clear before the synchronous DB read: no producer can slip
+                # between the empty check and clearing a newly arrived event.
+                if streamed:self.store.stream_ready.clear()
                 rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed,excluded=self.active_jobs)
             except Exception as exc:
                 self.notices.emit('funding queue unavailable',{'type':type(exc).__name__},alert=True,key='queue-error')
                 await asyncio.sleep(0.5)
                 continue
             if not rows:
-                await asyncio.sleep(0.05 if streamed else 0.2)
+                if streamed:
+                    try:await asyncio.wait_for(self.store.stream_ready.wait(),timeout=0.05)
+                    except asyncio.TimeoutError:pass  # Existing delayed/retry jobs still become due.
+                else:await asyncio.sleep(0.2)
                 continue
             row=rows[0]
             self.active_jobs.add(row['signature'])

@@ -590,3 +590,45 @@ duration. Timing samples are bounded to 1000 per fixed category. Provider age
 includes clock offset, upstream delivery and local scheduling; it is not pure
 network latency. Missing timestamps remain unknown and future timestamps have
 a separate count. Add no RPC, no subscription, and no new Telegram alert.
+
+
+## 2026-10-27: single verified buy simulation and immediate stream wakeup
+
+The supplied audit for GVEQKeEm2MeSVYQP3FM39xMnqqTdPaxLQaQrwbodpump shows
+live processed receipt at 16:04:57.406 HKT, source timestamp age 47ms and
+preparation ready at 57.572. Cumulative executor build/simulate/monitor markers
+were 133.678/256.821/260.678ms. Stage differences include local checks/writes,
+not pure RPC time; overlapping monitor setup may absorb some saved time.
+Read-only chain checks found our 3ae4Tx... buy in slot 461996209, whereas the
+2QRWS3... competitor buy was in source slot 461996206. Both charged 5000
+lamports network fee, but the competitor also transferred 44,718,696 lamports
+to Jito's documented tip account 3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT.
+It used a durable nonce and a custom program. These facts do not establish its
+data source, broadcast timing or bundle composition. No tip or fee increase
+is introduced here, and no same-slot outcome is promised.
+
+RH prepares a transaction once, locally registers exits and submits the signed
+bytes. Apply preparation reuse to SOL while retaining its actual exit coverage
+gate. The local SDK returns the unsigned message it successfully simulated,
+execution context slot, commitment and consumed units, after its route-specific
+net-output/account checks. Python accepts reuse only when all message accounts,
+instructions, ALT references, blockhash, header and unsigned signatures match;
+the sole allowed change is the existing 1.4M simulation CU limit shrinking to
+the validated 20-percent-padded measured budget. This is a trusted local builder
+result, not a remotely verifiable proof. Missing/invalid results fall back to
+Python simulation. A failed SDK simulation or output check still aborts build.
+After a successful SDK or Python simulation, buys send with skipPreflight=true.
+The simulation is a snapshot: state can change before landing, and a transaction
+that then fails on-chain may consume a network fee. All existing minOut, token
+tax, dev/fork/freshness, monitor readiness, full signed persistence and ambiguous
+send reconciliation rules remain. Sell execution is not changed.
+
+Stream payload commit now signals an asyncio event, waking the buy worker
+without waiting for its 50ms poll. Clear before the synchronous queue read;
+signal only after commit, retaining the timed fallback for due retries.
+Execution audit adds simulation_source, monitor_wait_ms and submit_ack_ms;
+preparation audit adds queue_wait_ms. These distinguish duplicate work removed
+from remaining coverage, local storage and network delays on the next VPS run.
+
+References: https://solana.com/docs/rpc/http/sendtransaction and
+https://github.com/jito-labs/jito-docs/blob/main/docs/source/lowlatencytxnsend.md.

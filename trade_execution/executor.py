@@ -7,6 +7,7 @@ from features.audit.writer import trade_record
 from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from trade_execution.builder import build
+from trade_execution.simulation import reusable as reusable_simulation
 from features.funding.processed import Processed
 from features.strategy.dev_holdings import permitted as dev_permitted
 from features.strategy.create_dev_gate import permitted as create_permitted
@@ -56,6 +57,7 @@ class Executor:
         self.store.update_order(oid,reason=MARKER)
         began=time.monotonic()
         timings={}
+        simulation_source=None
         def mark(name):timings[name]=round((time.monotonic()-began)*1000,3)
         def require_fresh():
             reason=self.rejection(route,oid)
@@ -93,16 +95,22 @@ class Executor:
                 c.execute('INSERT OR REPLACE INTO buy_quote_inputs VALUES (?,?,?)',
                           (oid,route.quote_mint,str(quote_input)))
             stage='simulate'
-            simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
-                {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])
+            if reusable_simulation(result,tx,slot=route.trade.slot,commitment=self.config.hotlist_commitment):
+                simulation_source='sdk-reused'
+            else:
+                simulation_source='python-fallback'
+                simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
+                    {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])
+                if simulation['value']['err'] is not None:
+                    raise ValueError('simulation-rejected')
             mark('simulated_ms')
-            if simulation['value']['err'] is not None:
-                raise ValueError('simulation-rejected')
             require_fresh()
             # Prepare while subscription ACKs arrive; recheck before signing.
             stage='monitor'
+            monitor_began=time.monotonic()
             if readiness is not None and not await readiness:
                 raise ValueError('dev-sell-monitor-unavailable')
+            timings['monitor_wait_ms']=round((time.monotonic()-monitor_began)*1000,3)
             mark('monitor_ready_ms')
             require_fresh()
             if self.config.dry_run:
@@ -111,7 +119,7 @@ class Executor:
                     c.execute("UPDATE orders SET state='dry-simulated',updated=? WHERE id=?",(time.time(),oid))
                     c.execute("UPDATE signals SET state='dry-simulated' WHERE order_id=?",(oid,))
                     c.commit()
-                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid,'timing_ms':timings})
+                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid,'timing_ms':timings,'simulation_source':simulation_source})
                 self.notices.emit('buy dry simulation passed',{'order':oid,'mint':row['mint'],
                     'min_out':result['minOut'],'quote_spend':result['quoteIn'],'simulation_wallet':wallet},alert=True)
                 return
@@ -140,12 +148,16 @@ class Executor:
             require_fresh()
             stage='submit'
             mark('submit_started_ms')
-            response=await self.rpc.call('sendTransaction',[raw,{'encoding':'base64','skipPreflight':False,
+            # A successful SDK/fallback simulation already checked this plan.
+            # Preserve slot, freshness and durable-signature gates; omit duplicate preflight.
+            response=await self.rpc.call('sendTransaction',[raw,{'encoding':'base64','skipPreflight':True,
                 'preflightCommitment':self.config.hotlist_commitment,'maxRetries':0,'minContextSlot':route.trade.slot}])
+            mark('submit_ack_ms')
             if response!=signature:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
-            trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings})
+            trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings,
+                          'simulation_source':simulation_source,'skip_preflight':True})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']},alert=True)
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
@@ -159,6 +171,7 @@ class Executor:
                 self.store.fail_order(oid,failure_reason(exc))
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
+                          'simulation_source':simulation_source,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
                           'source_proof':Processed(self.store).row(route.trade.signature),**fees})
             self.notices.emit('buy deferred' if signed else 'buy rejected',

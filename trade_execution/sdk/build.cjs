@@ -130,13 +130,20 @@ async function finish(connection,input,user,ixs,check) {
   if(input.prewarm)return {warmed:true};
   const block=await connection.getLatestBlockhash(input.commitment||'confirmed');
   let tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units:1400000}),...ixs],tables);
-  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',
+  const simulatedTransaction=Buffer.from(tx.serialize()).toString('base64');
+  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',minContextSlot:input.minSlot,
     ...(check?{accounts:{encoding:'base64',addresses:check.addresses}}:{})});
-  if (simulated.value.err || !simulated.value.unitsConsumed) throw Error('simulation-rejected');
+  if (simulated.value.err || !Number.isSafeInteger(simulated.value.unitsConsumed)
+      || simulated.value.unitsConsumed<=0 || simulated.value.unitsConsumed>1400000) throw Error('simulation-rejected');
   if(check)check.verify(simulated.value.accounts);
-  const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*1.2));
+  const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*6/5));
   tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units}),...ixs],tables);
-  return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units};
+  return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units,
+    // Python verifies the simulated message against the final unsigned message.
+    // Only the padded compute-unit limit may differ; all swap/minOut/accounts
+    // and the blockhash must match. Missing RPC context uses Python fallback.
+    simulation:{version:1,transaction:simulatedTransaction,slot:simulated.context?.slot,
+      commitment:input.commitment||'confirmed',unitsConsumed:simulated.value.unitsConsumed,err:null}};
 }
 
 async function buildNative(input,injectedConnection) {
@@ -262,7 +269,7 @@ async function build(input, injectedConnection) {
     amount:amount.toString(),quotedOut:expected.toString(),minOut:minOut.toString(),
     quoteIn:quoteIn.toString(),quoteOut:quote.outAmount.toString(),risk:metrics};
 }
-module.exports = {build,minimums,exactQuoteInstruction,exactNativeInstruction,safeMint,compile,connectionFor,REASONS};
+module.exports = {build,finish,minimums,exactQuoteInstruction,exactNativeInstruction,safeMint,compile,connectionFor,REASONS};
 if (require.main === module) {
   let input='';
   process.stdin.setEncoding('utf8');

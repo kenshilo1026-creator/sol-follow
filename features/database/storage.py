@@ -1,6 +1,7 @@
 """Independent WAL databases. No network operation occurs inside a transaction."""
 from contextlib import contextmanager
 from collections import OrderedDict
+import asyncio
 import json
 from pathlib import Path
 import sqlite3
@@ -107,6 +108,7 @@ class Store:
     def __init__(self, directory):
         self.directory = Path(directory)
         # Live receipt evidence is deliberately not restored after a restart.
+        self.stream_ready = asyncio.Event()
         self.live_receipts = OrderedDict()
         self.new_jobs = 0
         self.revisited_jobs = 0
@@ -394,6 +396,8 @@ class Store:
         self.new_jobs += added
         if raw.get('_stream', {}).get('live'):
             self.mark_live(sig)
+        # Same-loop producers wake the streamed worker only after durable commit.
+        if state=='pending':self.stream_ready.set()
         return added
 
     def stream_payload(self, signature):
