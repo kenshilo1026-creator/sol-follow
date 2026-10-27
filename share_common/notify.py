@@ -9,6 +9,27 @@ import aiohttp
 log = logging.getLogger('sol-follow')
 
 
+def health_log(detail):
+    """Compact journal output; the audit queue retains the full diagnostics."""
+    result = {key: detail[key] for key in ('pending', 'oldest_s', 'completed', 'expired') if key in detail}
+    result['funding_ws'] = detail.get('ws_connected', False)
+    stream = detail.get('hotlist_stream')
+    if stream is not None:
+        result.update(hotlist=stream.get('addresses', 0), stream=stream.get('connected', False))
+    backup = detail.get('create_backup')
+    if backup is not None:
+        result['backup'] = backup.get('connected', False)
+    result['rpc_429'] = {
+        'background': detail.get('background_public_rpc', {}).get('rate_limited', 0),
+        'execution': detail.get('execution_rpc', {}).get('rate_limited', detail.get('rpc_429', 0)),
+        'reads': detail.get('execution_reads', {}).get('rate_limited', 0),
+    }
+    market = detail.get('market_feed', {})
+    if market.get('watched') or market.get('uncovered'):
+        result['sell_uncovered'] = market.get('uncovered', 0)
+    return result
+
+
 BUY_TITLES = {
     'take profit submitted':'止盈／止損：賣單已送出',
     'take profit finalized':'止盈／止損：賣出已完成',
@@ -115,6 +136,8 @@ class Notices:
         if kind == 'hotlist-add':
             log_detail = {'wallet': detail.get('wallet'), 'tx': detail.get('signature'),
                           'source': detail.get('provider') or detail.get('source')}
+        elif kind == 'health':
+            log_detail = health_log(detail)
         log.log(logging.WARNING if alert else logging.INFO, '[SOL] %s %s', kind, log_detail)
         try:
             self.queue.put_nowait((kind, detail, alert))

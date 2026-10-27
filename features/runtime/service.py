@@ -91,8 +91,6 @@ class Service:
             allowed,reason=await qualify_activity(item,rpc,self.store,self.config.max_prelaunch_tx)
             if not allowed:
                 decision('blocked',reason)
-                logging.getLogger(__name__).info('Funding admission rejected provider=%s wallet=%s signature=%s reason=%s',
-                                                 item.provider,item.wallet,item.signature,reason)
                 return False
         added=self.store.admit(item,self.config.hotlist_ttl,time.time())
         if added:
