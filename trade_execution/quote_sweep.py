@@ -9,6 +9,7 @@ from chain_common.primitives import WSOL
 from chain_common.transaction import Tx
 from features.database.quote_cache import SeenTokens
 from trade_execution.builder import build_sweep, BuildError
+from features.notifications.buy_failures import fee_context
 
 
 def recipe_for(store,request):
@@ -90,7 +91,6 @@ class QuoteSweep:
                 or int(result['amount'])!=int(job['amount']) or not 0<int(result['minOut'])<=int(result['quotedOut'])):
             raise ValueError('invalid-sweep-transaction')
         metrics=result['risk']
-        if not 0<=int(metrics['feePpm'])<=self.config.max_total_fee_bps*100:raise BuildError('total-fee-limit')
         if not 0<=int(metrics['impactPpm'])<=self.config.max_price_impact_bps*100:raise BuildError('price-impact-limit')
         def fresh():
             if not 0<=time.time()*1000-result['quoteTime']<=5000:raise BuildError('sweep-quote-expired')
@@ -183,7 +183,8 @@ class QuoteSweep:
             except Exception as exc:
                 reason=str(exc) if isinstance(exc,BuildError) else type(exc).__name__
                 self.next[job['id']]=time.monotonic()+30
-                self.notice('quote sweep deferred',job,reason=reason)
+                self.notice('quote sweep deferred',job,reason=reason,quote_mint=job['mint'],
+                            **fee_context(exc,self.config))
             # Do not overlap two conversions of the same quote balance.
             pending=self.store.rows('trading',"SELECT 1 FROM quote_sweeps WHERE signature IS NOT NULL AND state!='finalized' LIMIT 1")
             if pending:return

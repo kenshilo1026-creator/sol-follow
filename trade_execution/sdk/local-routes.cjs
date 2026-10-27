@@ -39,7 +39,7 @@ async function mints(connection,keys,safeMint){
   const rows=await connection.getMultipleAccountsInfo(keys);
   return rows.map((row,i)=>{
     if(!row||row.executable||![spl.TOKEN_PROGRAM_ID,spl.TOKEN_2022_PROGRAM_ID].some(p=>p.equals(row.owner)))throw Error('token-program');
-    safeMint(spl.unpackMint(keys[i],row,row.owner));return row.owner;
+    const mint=spl.unpackMint(keys[i],row,row.owner);safeMint(mint,true);return {program:row.owner,mint};
   });
 }
 async function adapter(step,args){
@@ -53,7 +53,9 @@ async function adapter(step,args){
     const data=await ctx.fetcher.getPool(pool,orca.IGNORE_CACHE);
     if(!data||![data.tokenMintA,data.tokenMintB].some(m=>m.equals(inputMint))
       ||![data.tokenMintA,data.tokenMintB].some(m=>m.toBase58()===step.outputMint))throw Error('cached-route-rejected');
-    const programs=await mints(connection,[data.tokenMintA,data.tokenMintB],safeMint);
+    const mintInfos=await mints(connection,[data.tokenMintA,data.tokenMintB],safeMint),programs=mintInfos.map(x=>x.program);
+    const epoch=(await connection.getEpochInfo()).epoch;
+    for(let i=0;i<2;i++)if([data.tokenMintA,data.tokenMintB][i].equals(args.quoteMint))risk.checkTokenTax(args,mintInfos[i].mint,epoch,'quote');
     const atas=[data.tokenMintA,data.tokenMintB].map((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?args.nativeAccount:spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
     const setup=[data.tokenMintA,data.tokenMintB].flatMap((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?[]:[spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i])]);
     if([inputMint.toBase58(),step.outputMint].includes(spl.NATIVE_MINT.toBase58())){
@@ -66,10 +68,15 @@ async function adapter(step,args){
       const q=await orca.swapQuoteByInputToken(whirlpool,inputMint,bn(amount),Percentage.fromFraction(0,100),
         expectedProgram,ctx.fetcher,orca.IGNORE_CACHE);
       if(big(q.estimatedAmountIn)!==amount)throw Error('partial-swap');
-      const fee=big(q.estimatedFeeAmount),effective=amount-fee,square=big(data.sqrtPrice)**2n,scale=1n<<128n;
+      const inputTax=big(q.transferFee?.deductingFromEstimatedAmountIn||0),outputTax=big(q.transferFee?.deductedFromEstimatedAmountOut||0);
+      const fee=big(q.estimatedFeeAmount),effective=amount-inputTax-fee,square=big(data.sqrtPrice)**2n,scale=1n<<128n;
       const ideal=q.aToB?effective*square/scale:effective*scale/square;
       const out=big(q.estimatedAmountOut);
-      return {out,fee:risk.ppm(fee,amount),impact:risk.impact(out,ideal),
+      const poolRate=BigInt(q.estimatedFeeRateMax??data.feeRate),actualPool=risk.ppm(fee,amount-inputTax);
+      const taxes=[risk.taxRate(mintInfos[q.aToB?0:1].mint,epoch),risk.taxRate(mintInfos[q.aToB?1:0].mint,epoch)];
+      return {out,fee:risk.sum([poolRate>actualPool?poolRate:actualPool,
+        taxes[0]>risk.ppm(inputTax,amount)?taxes[0]:risk.ppm(inputTax,amount),
+        taxes[1]>risk.ppm(outputTax,out+outputTax)?taxes[1]:risk.ppm(outputTax,out+outputTax)]),impact:risk.impact(out+outputTax,ideal),
         instructions(minimum){
           return orca.WhirlpoolIx.swapV2Ix(ctx.program,{...q,amount:bn(amount),otherAmountThreshold:bn(minimum),
             whirlpool:pool,tokenAuthority:user,tokenMintA:data.tokenMintA,tokenMintB:data.tokenMintB,
@@ -81,16 +88,25 @@ async function adapter(step,args){
   const pair=await DLMM.create(connection,pool),x=pair.lbPair.tokenXMint,y=pair.lbPair.tokenYMint;
   const swapForY=x.equals(inputMint);
   if(!(swapForY?x:y).equals(inputMint)||(swapForY?y:x).toBase58()!==step.outputMint)throw Error('cached-route-rejected');
-  const programs=await mints(connection,[x,y],safeMint);
+  const mintInfos=await mints(connection,[x,y],safeMint),programs=mintInfos.map(x=>x.program);
   if(!programs[0].equals(pair.tokenX.owner)||!programs[1].equals(pair.tokenY.owner))throw Error('dlmm-token-program');
   if([inputMint.toBase58(),step.outputMint].includes(spl.NATIVE_MINT.toBase58())&&(x.equals(spl.NATIVE_MINT)?pair.tokenX:pair.tokenY).amount<BigInt(minLiquidity))throw Error('insufficient-sol-liquidity');
   const atas=[x,y].map((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?args.nativeAccount:spl.getAssociatedTokenAddressSync(m,user,false,programs[i]));
   const setup=[x,y].flatMap((m,i)=>args.nativeAccount&&m.equals(spl.NATIVE_MINT)?[]:[spl.createAssociatedTokenAccountIdempotentInstruction(user,atas[i],user,m,programs[i])]);
+  const epoch=pair.clock.epoch.toNumber();
+  for(let i=0;i<2;i++)if([x,y][i].equals(args.quoteMint))risk.checkTokenTax(args,mintInfos[i].mint,epoch,'quote');
   const bins=await pair.getBinArrayForSwap(swapForY);
   return {setup,async quote(amount){
     const q=pair.swapQuote(bn(amount),swapForY,new BN(0),bins,false);
     if(big(q.consumedInAmount)!==amount)throw Error('partial-swap');
-    return {out:big(q.outAmount),...dlmmRisk(q),async instructions(minimum){
+    const epoch=pair.clock.epoch.toNumber(),inMint=mintInfos[swapForY?0:1].mint,outMint=mintInfos[swapForY?1:0].mint;
+    const inputTax=risk.tax(inMint,epoch,amount),out=big(q.outAmount);
+    const grossOut=big(orca.TokenExtensionUtil.calculateTransferFeeIncludedAmount(q.outAmount,outMint,epoch).amount);
+    const poolRate=dlmmRisk({...q,consumedInAmount:bn(amount-inputTax),outAmount:bn(grossOut)});
+    const inRate=risk.ppm(inputTax,amount),outRate=risk.ppm(grossOut-out,grossOut);
+    const fee=risk.sum([poolRate.fee,inRate>risk.taxRate(inMint,epoch)?inRate:risk.taxRate(inMint,epoch),
+      outRate>risk.taxRate(outMint,epoch)?outRate:risk.taxRate(outMint,epoch)]);
+    return {out,fee,impact:poolRate.impact,async instructions(minimum){
       return [await pair.program.methods.swap2(bn(amount),bn(minimum),{slices:[]}).accountsPartial({
         lbPair:pool,reserveX:pair.lbPair.reserveX,reserveY:pair.lbPair.reserveY,tokenXMint:x,tokenYMint:y,
         tokenXProgram:programs[0],tokenYProgram:programs[1],user,userTokenIn:atas[swapForY?0:1],userTokenOut:atas[swapForY?1:0],

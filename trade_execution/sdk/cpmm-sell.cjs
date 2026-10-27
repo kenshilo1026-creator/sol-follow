@@ -75,14 +75,19 @@ async function prepare(input,{connection,state,mint,quote,baseProgram,quoteProgr
   });
   const spotIndex=require('./spot-index.cjs').spotIndex(vaults[zero?1:0],vaults[zero?0:1]);
   if(input.spotOnly)return {spotIndex,pool:a.pool.toBase58()};
+  risk.checkTokenTax(input,quoteInfo,epoch,'quote');
   risk.checkTokenTax(input,base,epoch);
   const transfer=spl.getTransferFeeConfig(base),value=BigInt(amount.toString());
   const details=quoteExactIn({amount:value,reserveIn:vaults[zero?0:1],reserveOut:vaults[zero?1:0],
     tradeRate:u64(c,12),creatorRate:d[390]?u64(c,108):0n,
     creatorOnInput:d[389]===0||d[389]===(zero?1:2),
     inputTax:transfer?spl.calculateEpochFee(transfer,BigInt(epoch),value):0n});
+  const quoteTax=risk.tax(quoteInfo,epoch,details.net),quoteRate=risk.ppm(quoteTax,details.net);
+  const inputRate=risk.taxRate(base,epoch),outputRate=risk.taxRate(quoteInfo,epoch);
+  details.fees[0]=details.fees[0]>inputRate?details.fees[0]:inputRate;
+  details.fees.push(quoteRate>outputRate?quoteRate:outputRate);
   const metrics=risk.checkFees(input,details.fees,[details.poolFee]);
-  return {...a,inputVault:zero?a.vault0:a.vault1,outputVault:zero?a.vault1:a.vault0,expected:details.net,metrics,spotIndex};
+  return {...a,inputVault:zero?a.vault0:a.vault1,outputVault:zero?a.vault1:a.vault0,expected:details.net-quoteTax,metrics,spotIndex};
 }
 function instruction({user,mint,quote,baseProgram,quoteProgram,target,out,amount,minOut,route}){
   const addresses=[user,AUTHORITY,route.config,route.pool,target,out,route.inputVault,route.outputVault,

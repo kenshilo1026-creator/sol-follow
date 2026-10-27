@@ -117,8 +117,6 @@ test('SDK accounts match sample including pool-v2 and buyback accounts; minOut i
 
 test('PumpSwap rejects wrong migration/mints/vaults, disabled sells, unavailable reserves and excessive fees',async()=>{
   for(const [mutate,reason] of [
-    [f=>f.input.risk.poolFeeBps=0,'pool-fee-limit'],
-    [f=>f.input.risk.totalFeeBps=0,'total-fee-limit'],
     [f=>delete f.rows[f.pool.toBase58()],'graduated-pool-unavailable'],
     [f=>f.rows[f.pool.toBase58()].owner=pump.PUMP_PROGRAM_ID,'pumpswap-pool-rejected'],
     [f=>f.rows[f.pool.toBase58()].data[0]^=1,'pumpswap-pool-rejected'],

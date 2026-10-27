@@ -85,10 +85,9 @@ async def test_new_buy_cancels_background_build(config,store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('fault',['fee','impact','expired'])
+@pytest.mark.parametrize('fault',['impact','expired'])
 async def test_limits_reject_before_signing(config,store,fault):
     engine,result,calls=setup(config,store)
-    if fault=='fee':result['risk']['feePpm']=str(engine.config.max_total_fee_bps*100+1)
     if fault=='impact':result['risk']['impactPpm']=str(engine.config.max_price_impact_bps*100+1)
     if fault=='expired':result['quoteTime']-=6000
     await engine.once()
@@ -144,9 +143,9 @@ async def test_proven_failure_can_retry_but_confirmed_cannot(config,store):
 
 
 @pytest.mark.asyncio
-async def test_fee_limit_equality_passes(config,store):
+async def test_pool_fee_metrics_do_not_reject_sweep(config,store):
     engine,result,calls=setup(config,store)
-    result['risk']['feePpm']=str(engine.config.max_total_fee_bps*100)
+    result['risk']['feePpm']='90000'
     await engine.once()
     assert 'sendTransaction' in engine.rpc.calls
 

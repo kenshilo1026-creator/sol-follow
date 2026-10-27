@@ -7,6 +7,7 @@ from solders.transaction import VersionedTransaction
 from chain_common.transaction import Tx
 from chain_common.primitives import WSOL
 from trade_execution.builder import build_sell, BuildError
+from features.notifications.buy_failures import fee_context
 from features.funding.work import WalletFlights
 from trade_execution.quote_sweep import enqueue as enqueue_sweep, recipe_for
 
@@ -173,7 +174,8 @@ class DevExit:
             except Exception as exc:
                 self.next[buy['id']]=time.monotonic()+5
                 reason=str(exc) if isinstance(exc,BuildError) else type(exc).__name__
-                self.notice('dev exit deferred',buy,reason=reason)
+                self.notice('dev exit deferred',buy,reason=reason,quote_mint=request['quoteMint'],
+                            **fee_context(exc,self.config))
 
     async def run(self):
         while True:

@@ -20,16 +20,19 @@ def test_config_safety():
     with pytest.raises(ValueError):load(env={'DRY_RUN':'maybe'})
 
 
-def test_token_tax_limit_defaults_and_units(tmp_path):
+@pytest.mark.parametrize('parameter,attribute,field',[
+    ('SOL_MAX_QUOTE_TOKEN_TAX_PERCENT','max_quote_token_tax_bps','quoteTokenTaxBps'),
+    ('SOL_MAX_TOKEN_TAX_PERCENT','max_token_tax_bps','tokenTaxBps')])
+def test_separate_tax_limits_defaults_and_units(tmp_path,parameter,attribute,field):
     from trade_execution.builder import payload_for
     (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}',encoding='utf-8')
-    assert load(root=tmp_path,env={}).max_token_tax_bps==200
+    assert getattr(load(root=tmp_path,env={}),attribute)==390
     for percent,bps in [('0',0),('2',200),('1.25',125),('20',2000)]:
-        cfg=load(root=tmp_path,env={'SOL_MAX_TOKEN_TAX_PERCENT':percent})
-        assert cfg.max_token_tax_bps==bps
-        assert payload_for(cfg,{},'public-wallet')['risk']['tokenTaxBps']==bps
+        cfg=load(root=tmp_path,env={parameter:percent})
+        assert getattr(cfg,attribute)==bps
+        assert payload_for(cfg,{},'public-wallet')['risk'][field]==bps
     for invalid in ['-1','NaN','Infinity','2.001','21','']:
-        with pytest.raises(ValueError):load(root=tmp_path,env={'SOL_MAX_TOKEN_TAX_PERCENT':invalid})
+        with pytest.raises(ValueError):load(root=tmp_path,env={parameter:invalid})
 
 
 def test_hours_and_percent_units():

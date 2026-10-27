@@ -28,16 +28,25 @@ test('token tax cap checks active and scheduled nominal rates, including maximum
       newerTransferFee:{epoch:BigInt(starts),maximumFee:1n,transferFeeBasisPoints:newer}},data.subarray(4));
     return {tlvData:data};
   };
-  risk.checkTokenTax(input,mint(200,200),10); // equality
-  assert.throws(()=>risk.checkTokenTax(input,mint(201,200),10),/token-tax-limit/);
-  assert.throws(()=>risk.checkTokenTax(input,mint(100,201),10),/token-tax-limit/); // future increase
-  risk.checkTokenTax(input,mint(900,200),20); // older rate no longer active
-  assert.throws(()=>risk.checkTokenTax(input,mint(100,201),20),/token-tax-limit/);
-  risk.checkTokenTax({...input,risk:{...input.risk,tokenTaxBps:0}},mint(0,0),10);
-  risk.checkTokenTax(input,{tlvData:Buffer.alloc(0)},10);
+  assert.equal(risk.taxRate(mint(200,200),10),20000n);
+  assert.equal(risk.taxRate(mint(201,200),10),20100n);
+  assert.equal(risk.taxRate(mint(100,201),10),20100n); // scheduled increase
+  assert.equal(risk.taxRate(mint(900,200),20),20000n); // obsolete rate ignored
+  assert.equal(risk.taxRate(mint(0,0),10),0n);
+  for(const [role,field,reason] of [['quote','quoteTokenTaxBps','quote-token-tax-limit'],['target','tokenTaxBps','token-tax-limit']]){
+    const input={risk:{quoteTokenTaxBps:200,tokenTaxBps:100,[field]:100}};
+    assert.equal(risk.checkTokenTax(input,mint(100,100),10,role),10000n);
+    assert.throws(()=>risk.checkTokenTax(input,mint(100,101),10,role),e=>{
+      assert.deepEqual(risk.feeDetails(e),{feeDetails:{actualPpm:'10100',limitPpm:'10000'}});
+      return e.message===reason;
+    });
+    assert.throws(()=>risk.checkTokenTax(input,mint(101,100),10,role),new RegExp(reason));
+    assert.equal(risk.checkTokenTax(input,mint(900,100),20,role),10000n);
+  }
+  assert.equal(risk.taxRate({tlvData:Buffer.alloc(0)},10),0n);
   const taxed=mint(900,900);
   assert.equal(spl.calculateEpochFee(spl.getTransferFeeConfig(taxed),10n,1000000n),1n);
-  assert.throws(()=>risk.checkTokenTax(input,taxed,10),/token-tax-limit/);
+  assert.equal(risk.taxRate(taxed,10),90000n); // nominal ceiling despite maximumFee
   assert.throws(()=>risk.checkTokenTax(input,mint(0,0),NaN),/invalid-risk-data/);
 });
 function active(rows){
@@ -97,7 +106,7 @@ test('native Stonk build uses SOL budget, shared slippage and no Jupiter; preser
   };
   const input={route:'stonk_native_curve',wallet:user.toBase58(),mint:na[9],quoteMint:na[10],
     tokenProgram:na[11],quoteProgram:na[12],pool:na[4],lookupTables:[],minSlot:0,
-    amount:'10000000',slippagePercent:'2',minLiquidity:'0'};
+    amount:'10000000',slippagePercent:'2',minLiquidity:'0',risk:{totalFeeBps:600,impactBps:200}};
   const result=await build(input,connection);
   assert.equal(result.quoteIn,'10000000');assert.equal(result.quoteOut,'10000000');
   assert.equal(BigInt(result.minOut),(BigInt(result.quotedOut)*98n+99n)/100n);
@@ -123,9 +132,7 @@ test('native Stonk build uses SOL budget, shared slippage and no Jupiter; preser
   simulationError=null;
   await assert.rejects(build({...input,quoteMint:a[10]},connection),/native-only/);
   await assert.rejects(build({...input,quoteProgram:spl.TOKEN_2022_PROGRAM_ID.toBase58()},connection),/native-only/);
-  await assert.rejects(build({...input,risk:{poolFeeBps:100,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
-  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:99}},connection),/token-tax-limit/);
-  await build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:100}},connection);
+  await build({...input,risk:{totalFeeBps:451,impactBps:200}},connection);
   r[na[4]].data[17]=2;await assert.rejects(build(input,connection),/stonk-pool-rejected/);
 });
 test('historical LaunchLab quote reproduces exact transfer-tax net receipt',()=>{
@@ -211,14 +218,34 @@ test('full SOL-to-Stonk build composes atomic swap, net minimum and public RPC s
   };
   t.mock.method(jupiter,'buildHop',async(args)=>{
     assert.equal(args.amount.toString(),'10000000');
-    return {...jupiter.validate(response(args),args),fees:[500n],impacts:[0n]};
+    return {...jupiter.validate(response(args),args),fees:[500n],reverseFees:[500n],impacts:[0n]};
   });
   const input={route:'sol_to_stonk_curve',wallet:user.toBase58(),mint:a[9],quoteMint:a[10],
     tokenProgram:a[11],quoteProgram:a[12],pool:a[4],lookupTables:[],minSlot:0,
-    amount:'10000000',slippagePercent:'2',minLiquidity:'0'};
+    amount:'10000000',slippagePercent:'2',minLiquidity:'0',risk:{totalFeeBps:600,impactBps:200}};
   const result=await build(input,connection);
   assert.equal(result.amount,'10000000');assert.equal(result.quoteIn,'990000');
-  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:300,impactBps:200,tokenTaxBps:0}},connection),/token-tax-limit/);
+  // A quote mint with transfer fees and confidential-fee metadata is supported
+  // for ordinary public transfers. Each mint has its own independent cap.
+  const originalQuote=r[a[10]].data;
+  const feeData=Buffer.alloc(spl.TRANSFER_FEE_CONFIG_SIZE+4);
+  feeData.writeUInt16LE(spl.ExtensionType.TransferFeeConfig);feeData.writeUInt16LE(spl.TRANSFER_FEE_CONFIG_SIZE,2);
+  const schedule={epoch:0n,maximumFee:1000000000000000n,transferFeeBasisPoints:100};
+  spl.TransferFeeConfigLayout.encode({transferFeeConfigAuthority:web3.PublicKey.default,
+    withdrawWithheldAuthority:web3.PublicKey.default,withheldAmount:0n,
+    olderTransferFee:schedule,newerTransferFee:schedule},feeData.subarray(4));
+  const metadata=Buffer.alloc(133);metadata.writeUInt16LE(16);metadata.writeUInt16LE(129,2);
+  r[a[10]].data=Buffer.concat([originalQuote,feeData,metadata]);
+  const capped={...input,risk:{quoteTokenTaxBps:100,tokenTaxBps:100,impactBps:200}};
+  const taxed=await build(capped,connection);
+  assert(BigInt(taxed.quotedOut)<BigInt(result.quotedOut));
+  assert.equal(BigInt(taxed.minOut),(BigInt(taxed.quotedOut)*98n+99n)/100n);
+  for(const [field,reason] of [['quoteTokenTaxBps','quote-token-tax-limit'],['tokenTaxBps','token-tax-limit']]){
+    await assert.rejects(build({...capped,risk:{...capped.risk,[field]:99}},connection),e=>{
+      assert.equal(e.message,reason);assert.deepEqual(e.feeDetails,{actualPpm:'10000',limitPpm:'9900'});return true;
+    });
+  }
+  r[a[10]].data=originalQuote;
   assert(BigInt(result.minOut)<BigInt(result.quotedOut));
   const tx=web3.VersionedTransaction.deserialize(Buffer.from(result.transaction,'base64'));
   assert(tx.signatures[0].every(x=>x===0));assert.equal(tx.message.header.numRequiredSignatures,1);

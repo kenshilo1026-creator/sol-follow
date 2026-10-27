@@ -16,7 +16,7 @@ async function quoteLimit(input,connection){
   }]}:input.swapRecipe;
   if(!recipe)throw Error('price-cache-miss');
   const q=await buildLocal({connection,user,quoteMint,amount,safeMint,
-    minLiquidity:input.minLiquidity,slippageBps:0},recipe);
+    minLiquidity:input.minLiquidity,slippageBps:0,risk:input.risk},recipe);
   risk.check(input,q.fees,q.impacts);
   return {quoteLimit:q.minimum.toString(),solLimit:amount.toString()};
 }

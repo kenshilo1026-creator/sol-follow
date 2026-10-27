@@ -50,7 +50,6 @@ for(const [fixtureName,steps] of [['local_quote_accounts.json',1],['local_quote_
     assert.equal(buy.keys[2].pubkey.toBase58(),quote);
     assert(BigInt(result.quoteIn)<=BigInt(result.quoteOut));
     assert.equal(verification.addresses.length,1);
-    await assert.rejects(buildPumpQuote({...input,risk:{poolFeeBps:0,totalFeeBps:0,impactBps:200}},helpers),/pool-fee-limit/);
     curve[48]=1;await assert.rejects(buildPumpQuote(input,helpers),/curve-graduated/);
     curve[48]=0;values[fixture.recipe.steps[0].pool].owner=web3.SystemProgram.programId;
     await assert.rejects(buildPumpQuote(input,helpers),/account-owner/);

@@ -34,8 +34,7 @@ def context(config, route):
 
 
 def fee_context(exc,config):
-    limits={'pool-fee-limit':('max_pool_fee_bps','SOL_MAX_POOL_FEE_PERCENT'),
-            'total-fee-limit':('max_total_fee_bps','SOL_MAX_TOTAL_FEE_PERCENT'),
+    limits={'quote-token-tax-limit':('max_quote_token_tax_bps','SOL_MAX_QUOTE_TOKEN_TAX_PERCENT'),
             'token-tax-limit':('max_token_tax_bps','SOL_MAX_TOKEN_TAX_PERCENT')}
     selected=limits.get(reason(exc))
     if selected is None:return {}

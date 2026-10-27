@@ -15,7 +15,7 @@ class BuildError(RuntimeError):
         super().__init__(reason)
         self.retry_after=retry_after
         self.fee_details={}
-        if reason in ('pool-fee-limit','total-fee-limit','token-tax-limit') and isinstance(fee_details,dict):
+        if reason in ('pool-fee-limit','total-fee-limit','token-tax-limit','quote-token-tax-limit') and isinstance(fee_details,dict):
             keys=('actualPpm','limitPpm')
             if all(isinstance(fee_details.get(k),str) and fee_details[k].isascii()
                    and fee_details[k].isdigit() and len(fee_details[k])<=7
@@ -130,8 +130,7 @@ def payload_for(config, request, wallet):
             'rpcTimeoutMs':int(config.execution_timeout*1000), 'ws':config.execution_ws_url, 'wallet':wallet,
             'amount':str(config.buy_amount), 'slippagePercent':format(config.slippage_percent,'f'),
             'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
-            'risk':{'poolFeeBps':config.max_pool_fee_bps, 'totalFeeBps':config.max_total_fee_bps,
-                    'impactBps':config.max_price_impact_bps,'tokenTaxBps':config.max_token_tax_bps}}
+            'risk':{'quoteTokenTaxBps':config.max_quote_token_tax_bps,'tokenTaxBps':config.max_token_tax_bps,'impactBps':config.max_price_impact_bps}}
 
 
 def result_or_error(result):

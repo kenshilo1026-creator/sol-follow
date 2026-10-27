@@ -86,8 +86,6 @@ for(const name of ['local_quote_accounts.json','local_dlmm_quote_accounts.json']
     const close=ixs.at(-1);assert(close.programId.equals(spl.TOKEN_PROGRAM_ID)&&close.data[0]===9);
     assert(!close.keys[0].pubkey.equals(spl.getAssociatedTokenAddressSync(spl.NATIVE_MINT,user)));
     assert(close.keys[1].pubkey.equals(user));
-    await assert.rejects(build({...input,risk:{...input.risk,totalFeeBps:0}},connection),/total-fee-limit/);
-    await assert.rejects(build({...input,risk:{...input.risk,poolFeeBps:0}},connection),/pool-fee-limit/);
     steal=true;await assert.rejects(build(input,connection),/sell-fill-rejected/);
   });
 }

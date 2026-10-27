@@ -9,7 +9,7 @@ async function buildSweep(input,{connection,safeMint,finish,integer,fraction}){
   const source=spl.getAssociatedTokenAddressSync(mint,user,false,program);
   const rows=await connection.getMultipleAccountsInfo([mint,source]);
   if(!rows[0]||!rows[0].owner.equals(program)||rows[0].executable)throw Error('account-owner');
-  safeMint(spl.unpackMint(mint,rows[0],program));
+  safeMint(spl.unpackMint(mint,rows[0],program),true);
   const before=spl.unpackAccount(source,rows[1],program);
   if(!before.owner.equals(user)||!before.mint.equals(mint)||before.amount<rawAmount||before.isFrozen)throw Error('sell-balance-unavailable');
   const seed=crypto.randomBytes(16).toString('hex');
@@ -28,9 +28,9 @@ async function buildSweep(input,{connection,safeMint,finish,integer,fraction}){
     const {numerator,denominator}=fraction(input.slippagePercent);
     // Never apply a 20% buy slippage allowance to a patient background conversion.
     const slippageBps=Math.min(numerator.muln(10000).div(denominator).toNumber(),
-      input.risk.totalFeeBps,input.risk.impactBps);
+      input.risk.impactBps);
     hop=await buildReverse({connection,user,quoteMint:mint,amount,safeMint,nativeAccount:native,
-      minLiquidity:input.minLiquidity,slippageBps},input.swapRecipe);
+      minLiquidity:input.minLiquidity,slippageBps,risk:input.risk},input.swapRecipe);
   }
   const metrics=risk.check(input,hop.fees,hop.impacts);
   const quoteTime=Date.now();

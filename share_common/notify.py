@@ -118,10 +118,11 @@ def message(kind, detail):
         if field=='signature' and detail.get('signature')==detail.get('source_signature'):
             continue
         value=detail.get(field)
-        if field=='reason' and value in ('pool-fee-limit','total-fee-limit','token-tax-limit'):
+        if field=='reason' and value in ('pool-fee-limit','total-fee-limit','token-tax-limit','quote-token-tax-limit'):
             translated={'pool-fee-limit':'單一交易池費率超過上限（含協議及適用的 creator 費）',
                         'total-fee-limit':'交易路徑合計費率超過上限',
-                        'token-tax-limit':'代幣轉帳稅率超過上限（含已排程的新稅率）'}
+                        'token-tax-limit':'目標代幣轉帳稅率超過上限（含已排程的新稅率）',
+                        'quote-token-tax-limit':'報價幣轉帳稅率超過上限（含已排程的新稅率）'}
             value=f'{translated[value]}（{value}）'
         if value is not None:
             lines.append(f'{label}: {value}')

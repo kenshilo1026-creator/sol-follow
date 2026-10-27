@@ -140,12 +140,12 @@ async def test_simulation_failure_never_signs_or_sends(config,store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason',['pool-fee-limit','total-fee-limit','token-tax-limit'])
+@pytest.mark.parametrize('reason',['quote-token-tax-limit','token-tax-limit'])
 async def test_fee_rejection_keeps_exit_unsigned_and_retries(config,store,reason):
     from trade_execution.builder import BuildError
     engine,rpc,oid,route,builds=await setup(config,store)
     allowed_builder=engine.builder
-    async def rejected(*args):raise BuildError(reason)
+    async def rejected(*args):raise BuildError(reason,fee_details={'actualPpm':'40000','limitPpm':'39000'})
     engine.builder=rejected
     await engine.once()
     job=store.rows('trading','SELECT * FROM dev_exits')[0]
@@ -153,6 +153,8 @@ async def test_fee_rejection_keeps_exit_unsigned_and_retries(config,store,reason
     assert not any(x[0] in ('simulateTransaction','sendTransaction') for x in rpc.calls)
     assert any(args[0]=='dev exit deferred' and args[1]['reason']==reason and kwargs['alert']
                for args,kwargs in engine.notices.items)
+    detail=next(args[1] for args,kwargs in engine.notices.items if args[0]=='dev exit deferred')
+    assert detail['fee_actual_percent']=='4%' and detail['fee_limit_percent']=='3.9%'
     engine.builder=allowed_builder
     engine.next.clear()
     await engine.once()

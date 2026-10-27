@@ -103,5 +103,5 @@ def test_keyless_ipc_preserves_cooldown_and_excludes_credentials(config,monkeypa
         'rpcFallback':config.execution_fallback_url,'rpcTimeoutMs':int(config.execution_timeout*1000),
         'amount':str(config.buy_amount),'slippagePercent':format(config.slippage_percent,'f'),
         'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
-        'risk':{'poolFeeBps':200,'totalFeeBps':300,'impactBps':200,'tokenTaxBps':200}}
+        'risk':{'quoteTokenTaxBps':390,'tokenTaxBps':390,'impactBps':200}}
     assert not any(name.startswith('JUPITER_') for name in captured['env'])

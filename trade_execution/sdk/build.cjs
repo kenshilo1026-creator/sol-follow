@@ -23,7 +23,7 @@ const REASONS = new Set(['spot-index-unavailable','sweep-quote-expired','sell-ba
   'curve-graduated-or-quote-mismatch','dlmm-quote-mismatch','dlmm-token-program',
   'insufficient-sol-liquidity','partial-swap','rounding-exhausts-slippage','simulation-rejected','native-only','unknown-route',
   'jupiter-rate-limited','jupiter-build-failed','jupiter-route-rejected','stonk-pool-rejected',
-  'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit','token-tax-limit',
+  'stonk-curve-rejected','stonk-fill-rejected','invalid-risk-data','pool-fee-limit','total-fee-limit','token-tax-limit','quote-token-tax-limit',
   'price-impact-limit','cached-route-rejected','cache-slot-behind','cache-disconnected','price-cache-miss','blockhash-cache-miss','invalid-priority','pump-fill-rejected','market-cap-price-unavailable','market-cap-supply-unavailable','market-cap-route-unavailable']);
 
 function integer(v) {
@@ -69,7 +69,7 @@ function safeMint(mint, allowTransferFee=false) {
   // SPCX has dormant hook, pausable, default-state and confidential-capability
   // extensions. Public transfers are supported while initialized/unpaused and
   // with no active hook. Confidential balances themselves are never used.
-  const allowed = new Set([0,3,4,6,10,12,14,18,19,20,21,22,23,25,26]);
+  const allowed = new Set([0,3,4,6,10,12,14,16,18,19,20,21,22,23,25,26]);
   if (allowTransferFee) allowed.add(1);
   if (spl.getExtensionTypes(mint.tlvData).some(t => !allowed.has(t)))
     throw Error('unsupported-mint-extension');

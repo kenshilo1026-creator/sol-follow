@@ -37,9 +37,10 @@ function feeSchedule(configRow,platformRow,quote) {
   if(rate>=1000000n)throw Error('stonk-curve-rejected');
   return rate;
 }
-function quoteDetails(state,amount,rate,mint,epoch) {
-  const fee=(amount*rate+999999n)/1000000n;
-  const effective=amount-fee, x=state.virtualA-state.realA, y=state.virtualB+state.realB;
+function quoteDetails(state,amount,rate,mint,epoch,quoteMint=null) {
+  const quoteTax=quoteMint?risk.tax(quoteMint,epoch,amount):0n,vaultIn=amount-quoteTax;
+  const fee=(vaultIn*rate+999999n)/1000000n;
+  const effective=vaultIn-fee, x=state.virtualA-state.realA, y=state.virtualB+state.realB;
   if(effective<=0n||x<=0n||y<=0n)throw Error('stonk-curve-rejected');
   const gross=effective*x/(y+effective);
   // The graduation boundary can change instruction requirements; never buy it
@@ -48,7 +49,9 @@ function quoteDetails(state,amount,rate,mint,epoch) {
   const transfer=spl.getTransferFeeConfig(mint);
   const tax=transfer?spl.calculateEpochFee(transfer,BigInt(epoch),gross):0n;
   if(gross<=tax)throw Error('stonk-curve-rejected');
-  return {net:gross-tax,fees:[risk.ppm(fee,amount),risk.ppm(tax,gross)],impact:risk.impact(gross,effective*x/y)};
+  const actual=[risk.ppm(quoteTax,amount),risk.ppm(fee,vaultIn),risk.ppm(tax,gross)];
+  const nominal=[quoteMint?risk.taxRate(quoteMint,epoch):0n,rate,risk.taxRate(mint,epoch)];
+  return {net:gross-tax,fees:actual.map((r,i)=>r>nominal[i]?r:nominal[i]),impact:risk.impact(gross,effective*x/y)};
 }
 function quoteNet(...args){
   return quoteDetails(...args).net;
@@ -79,18 +82,22 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   const state=poolState(rows[0],pool,mint,quote);
   account(rows[1],baseProgram,82);account(rows[2],quoteProgram,82);
   const base=spl.unpackMint(mint,rows[1],baseProgram),quoteInfo=spl.unpackMint(quote,rows[2],quoteProgram);
-  safeMint(base,true);safeMint(quoteInfo); // Quote transfer taxes need a different first-leg adapter.
+  safeMint(base,true);safeMint(quoteInfo,true);
+  const checkedEpoch=connection.getEpochInfo().then(epoch=>{
+    risk.checkTokenTax(input,quoteInfo,epoch.epoch,'quote');
+    risk.checkTokenTax(input,base,epoch.epoch);
+    return epoch;
+  });
   const [configs,epoch,hop]=await Promise.all([
-    connection.getMultipleAccountsInfo([state.config,PLATFORM]),connection.getEpochInfo(),
-    native?{expected:BigInt(amount.toString()),minimum:BigInt(amount.toString()),fees:[],impacts:[],setup:[],swaps:[],tables:[]}:
+    connection.getMultipleAccountsInfo([state.config,PLATFORM]),checkedEpoch,
+    checkedEpoch.then(()=>native?{expected:BigInt(amount.toString()),minimum:BigInt(amount.toString()),fees:[],impacts:[],setup:[],swaps:[],tables:[]}:
     jupiter.buildHop({user,quoteMint:quote,quoteAta,amount,slippageBps,connection,safeMint,
-      minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,waitForBackground:input.waitForBackground,background:input.background})]);
+      risk:input.risk,minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,waitForBackground:input.waitForBackground,background:input.background}))]);
   const rate=feeSchedule(configs[0],configs[1],quote);
-  risk.checkTokenTax(input,base,epoch.epoch);
-  const details=quoteDetails(state,hop.expected,rate,base,epoch.epoch),expected=details.net;
+  const details=quoteDetails(state,hop.expected,rate,base,epoch.epoch,quoteInfo),expected=details.net;
   const metrics=risk.check(input,[...hop.fees,...details.fees],[...hop.impacts,details.impact],[...hop.fees,rate]);
   const {minOut}=minimums(new BN(hop.expected.toString()),new BN(expected.toString()),input.slippagePercent);
-  if(quoteNet(state,hop.minimum,rate,base,epoch.epoch)<BigInt(minOut.toString()))throw Error('rounding-exhausts-slippage');
+  if(quoteNet(state,hop.minimum,rate,base,epoch.epoch,quoteInfo)<BigInt(minOut.toString()))throw Error('rounding-exhausts-slippage');
   const ixs=[spl.createAssociatedTokenAccountIdempotentInstruction(user,nativeAta,user,spl.NATIVE_MINT),
     spl.createAssociatedTokenAccountIdempotentInstruction(user,quoteAta,user,quote,quoteProgram),
     spl.createAssociatedTokenAccountIdempotentInstruction(user,targetAta,user,mint,baseProgram),

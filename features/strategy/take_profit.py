@@ -15,6 +15,7 @@ from features.strategy.positions import load_rules, select_rule
 from features.strategy.market_index import SCALE, register_fill
 from features.funding.work import WalletFlights
 from trade_execution.builder import build_sell, spot_index
+from features.notifications.buy_failures import fee_context
 from trade_execution.quote_sweep import enqueue, recipe_for
 
 MARKER = 'take-profit-v1'
@@ -174,7 +175,7 @@ class TakeProfit:
             if signed:self.store.update_order(oid,state='unknown')
             else:self.store.fail_order(oid,'take-profit-build-failed')
             self.notice('take profit unknown' if signed else 'take profit deferred',position,order=oid,
-                        reason=reason(exc))
+                        reason=reason(exc),**fee_context(exc,self.config))
         finally:
             self.priority.active-=1
 
@@ -303,7 +304,7 @@ class TakeProfit:
                         self.dirty.add(pos['mint'])
                 except asyncio.CancelledError:raise
                 except Exception as exc:
-                    self.notice('take profit deferred',pos,reason=reason(exc))
+                    self.notice('take profit deferred',pos,reason=reason(exc),**fee_context(exc,self.config))
 
     async def run(self):
         reconcile_due=0

@@ -1,6 +1,7 @@
 """No RPC amount gate. Calldata budgets are upper bounds, never tx SOL deltas."""
 from chain_common.primitives import WSOL
 from trade_execution.builder import BuildError
+from features.notifications.buy_failures import fee_context
 
 
 async def check(config, route, builder):
@@ -24,7 +25,7 @@ async def check(config, route, builder):
             raise BuildError('price-cache-miss')
     except Exception as exc:
         reason = str(exc) if isinstance(exc, BuildError) else 'price-cache-unavailable'
-        return False, {**detail, 'reason': reason}
+        return False, {**detail, 'reason': reason, **fee_context(exc,config)}
     return amount <= quote_limit, {**detail, 'quote_limit_raw': str(quote_limit),
         'reason': 'buy-budget-allowed' if amount <= quote_limit else 'source-token-budget-over-usd-limit'}
 
@@ -60,6 +61,6 @@ async def check_minimum(config, route, builder, *, ignore=False):
             raise BuildError('price-cache-miss')
     except Exception as exc:
         reason = str(exc) if isinstance(exc, BuildError) else 'price-cache-unavailable'
-        return False, {**detail, 'reason': reason}
+        return False, {**detail, 'reason': reason, **fee_context(exc,config)}
     return amount >= threshold, {**detail, 'quote_minimum_raw': str(threshold),
         'reason': 'minimum-allowed' if amount >= threshold else below_reason}

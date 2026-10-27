@@ -167,9 +167,8 @@ class Config:
     funding_workers: int = 4
     funding_alchemy_rps: int = 8
     max_prelaunch_tx: int = 10
-    max_pool_fee_bps: int = 200
-    max_total_fee_bps: int = 300
-    max_token_tax_bps: int = 200
+    max_quote_token_tax_bps: int = 390
+    max_token_tax_bps: int = 390
     max_price_impact_bps: int = 200
     quote_cache_ttl_ms: int = 2000
     quote_cache_accounts: int = 512
@@ -364,9 +363,8 @@ def load(root=ROOT, env=None):
         funding_workers=integer('SOL_FUNDING_WORKERS', 4, 1, 8),
         funding_alchemy_rps=integer('SOL_FUNDING_ALCHEMY_RPS', 8, 1, 20),
         max_prelaunch_tx=integer('SOL_MAX_PRELAUNCH_TX',10,1,999),
-        max_pool_fee_bps=risk_bps(get('SOL_MAX_POOL_FEE_PERCENT', '2')),
-        max_total_fee_bps=risk_bps(get('SOL_MAX_TOTAL_FEE_PERCENT', '3')),
-        max_token_tax_bps=risk_bps(get('SOL_MAX_TOKEN_TAX_PERCENT', '2')),
+        max_quote_token_tax_bps=risk_bps(get('SOL_MAX_QUOTE_TOKEN_TAX_PERCENT', '3.9')),
+        max_token_tax_bps=risk_bps(get('SOL_MAX_TOKEN_TAX_PERCENT', '3.9')),
         max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),
         quote_cache_ttl_ms=integer('SOL_QUOTE_CACHE_TTL_MS', 2000, 100, 5000),
         quote_cache_accounts=integer('SOL_QUOTE_CACHE_ACCOUNTS', 512, 32, 2048),

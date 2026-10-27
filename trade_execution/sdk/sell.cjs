@@ -5,14 +5,17 @@ const pump=require('@pump-fun/pump-sdk'),BN=require('bn.js'),crypto=require('nod
 const stonk=require('./stonk.cjs');
 const risk=require('./risk.cjs');
 const {spotIndex:reserveIndex,SCALE}=require('./spot-index.cjs');
-function sellDetails(state,amount,rate,mint,epoch){
+function sellDetails(state,amount,rate,mint,epoch,quoteMint=null){
   const transfer=spl.getTransferFeeConfig(mint);
   const net=amount-(transfer?spl.calculateEpochFee(transfer,BigInt(epoch),amount):0n);
   const x=state.virtualA-state.realA,y=state.virtualB+state.realB;
   if(net<=0n||x<=0n||y<=0n||net>state.realA)throw Error('stonk-curve-rejected');
   const gross=net*y/(x+net),fee=(gross*rate+999999n)/1000000n;
   if(gross>state.realB||gross<=fee)throw Error('stonk-curve-rejected');
-  return {net:gross-fee,fees:[risk.ppm(amount-net,amount),risk.ppm(fee,gross)]};
+  const quoteTax=quoteMint?risk.tax(quoteMint,epoch,gross-fee):0n;
+  const actual=[risk.ppm(amount-net,amount),risk.ppm(fee,gross),risk.ppm(quoteTax,gross-fee)];
+  const nominal=[risk.taxRate(mint,epoch),rate,quoteMint?risk.taxRate(quoteMint,epoch):0n];
+  return {net:gross-fee-quoteTax,fees:actual.map((r,i)=>r>nominal[i]?r:nominal[i])};
 }
 function sellQuote(...args){
   return sellDetails(...args).net;
@@ -40,7 +43,7 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
   for(const [i,p] of [[0,baseProgram],[1,quoteProgram],[2,isStonk?stonk.PROGRAM:pump.PUMP_PROGRAM_ID]])
     if(!rows[i]||rows[i].executable||!rows[i].owner.equals(p))throw Error('account-owner');
   const base=spl.unpackMint(mint,rows[0],baseProgram),quoteInfo=spl.unpackMint(quote,rows[1],quoteProgram);
-  safeMint(base,isStonk);safeMint(quoteInfo);
+  safeMint(base,isStonk);safeMint(quoteInfo,isStonk);
   // Spot monitoring validates the pool/mints but never needs a wallet balance,
   // an amount-dependent liquidation quote, fees, blockhash or simulation.
   if(input.spotOnly){
@@ -80,8 +83,9 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
     }else{
       const configs=await connection.getMultipleAccountsInfo([state.config,stonk.PLATFORM]);
       const epoch=await connection.getEpochInfo();
+      risk.checkTokenTax(input,quoteInfo,epoch.epoch,'quote');
       risk.checkTokenTax(input,base,epoch.epoch);
-      const rate=stonk.feeSchedule(...configs,quote),details=sellDetails(state,BigInt(amount.toString()),rate,base,epoch.epoch);
+      const rate=stonk.feeSchedule(...configs,quote),details=sellDetails(state,BigInt(amount.toString()),rate,base,epoch.epoch,quoteInfo);
       metrics=risk.checkFees(input,details.fees,[rate]);
       expected=new BN(details.net.toString());venue='stonk_curve';spotIndex=reserveIndex(state.virtualB+state.realB,state.virtualA-state.realA);
       ({minOut}=minimums(amount,expected,input.slippagePercent));
@@ -139,4 +143,4 @@ async function buildSell(input,{connection,safeMint,finish,minimums,integer,frac
   return {...await finish(connection,input,user,ixs,check),side:'sell',wallet:user.toBase58(),mint:mint.toBase58(),
     amount:amount.toString(),quoteMint:quote.toBase58(),quotedOut:expected.toString(),minOut:minOut.toString(),risk:metrics,venue,spotIndex,indexScale:SCALE.toString()};
 }
-module.exports={buildSell,sellInstruction,sellQuote};
+module.exports={buildSell,sellInstruction,sellQuote,sellDetails};

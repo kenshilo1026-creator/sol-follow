@@ -9,26 +9,11 @@ const launch=require('../fixtures/stonk_route_accounts.json');
 const ref=require('../fixtures/stonk_non_sol_buy.json');
 const {build,safeMint}=require('../../trade_execution/sdk/build.cjs');
 const pk=x=>new web3.PublicKey(x);
-test('fee rejection exposes only numeric rates without changing cap boundaries',()=>{
-  const input={risk:{poolFeeBps:100,totalFeeBps:300,impactBps:200}};
-  assert.doesNotThrow(()=>risk.checkFees(input,[10000n]));
-  assert.throws(()=>risk.checkFees(input,[12500n]),e=>{
-    assert.deepEqual(risk.feeDetails(e),{feeDetails:{actualPpm:'12500',limitPpm:'10000'}});
-    return e.message==='pool-fee-limit';
-  });
-  assert.throws(()=>risk.checkFees({risk:{poolFeeBps:200,totalFeeBps:100,impactBps:200}},[12500n]),e=>{
-    assert.deepEqual(risk.feeDetails(e),{feeDetails:{actualPpm:'12500',limitPpm:'10000'}});
-    return e.message==='total-fee-limit';
-  });
-  assert.deepEqual(risk.feeDetails({message:'pool-fee-limit',feeDetails:{actualPpm:'https://secret',limitPpm:'1'}}),{});
-});
-test('fee and impact caps are separate from minOut, including transfer tax',()=>{
-  assert.throws(()=>risk.check({},[25000n],[0n]),/pool-fee-limit/);
-  assert.throws(()=>risk.check({},[15000n,15000n,10000n],[0n],[15000n,15000n]),/total-fee-limit/);
+test('pool/platform fees are metrics only; impact and malformed data remain guarded',()=>{
+  assert.equal(risk.check({risk:{totalFeeBps:0,poolFeeBps:0}},[90000n],[0n]).feePpm,'90000');
   assert.throws(()=>risk.check({},[1000n],[15000n,15000n]),/price-impact-limit/);
-  assert.doesNotThrow(()=>risk.check({},[500n,12500n,10000n],[1000n],[500n,12500n]));
   assert.throws(()=>risk.check({},[undefined],[0n]));
-  assert.throws(()=>risk.check({risk:{poolFeeBps:-1,totalFeeBps:300,impactBps:200}},[0n],[0n]),/invalid-risk-data/);
+  assert.throws(()=>risk.check({risk:{tokenTaxBps:-1}},[0n],[0n]),/invalid-risk-data/);
 });
 test('route recipes reject split paths, cycles, wrong destination and unsupported venues',()=>{
   const quote=pk(snapshot.recipe.steps.at(-1).outputMint);
@@ -84,7 +69,8 @@ test('real Whirlpool snapshots build SOL-USDC-DJT locally with no Jupiter call',
   for(let i=1;i<2;i++)assert.equal(hop.swaps[i].data.readBigUInt64LE(8),hop.swaps[i-1].data.readBigUInt64LE(16));
   const a=ref.transaction.message.instructions[4].accounts;
   const input={route:'sol_to_stonk_curve',wallet:user.toBase58(),mint:a[9],quoteMint:a[10],tokenProgram:a[11],quoteProgram:a[12],
-    pool:a[4],lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2',minLiquidity:'0',swapRecipe:snapshot.recipe};
+    pool:a[4],lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2',minLiquidity:'0',swapRecipe:snapshot.recipe,
+    risk:{totalFeeBps:600,impactBps:200}};
   const result=await build(input,connection);
   const bytes=Buffer.from(result.transaction,'base64');assert(bytes.length<=1232);
   const tx=web3.VersionedTransaction.deserialize(bytes);assert(tx.signatures[0].every(n=>n===0));
@@ -94,7 +80,7 @@ test('real Whirlpool snapshots build SOL-USDC-DJT locally with no Jupiter call',
   assert.equal(buy.data.readBigUInt64LE(16),BigInt(result.minOut));
   assert.equal(buy.data.readBigUInt64LE(8),hop.minimum);
   // Transfer tax alone pushes the combined fee over a deliberately tighter cap.
-  await assert.rejects(build({...input,risk:{poolFeeBps:200,totalFeeBps:150,impactBps:200}},connection),/total-fee-limit/);
+  await assert.rejects(build({...input,risk:{tokenTaxBps:99,quoteTokenTaxBps:390,impactBps:200}},connection),/token-tax-limit/);
   // Real account owner validation still runs on a persisted recipe.
   rows[snapshot.recipe.steps[0].pool].owner=web3.SystemProgram.programId;
   await assert.rejects(jupiter.buildHop(args),/account-owner/);
@@ -106,12 +92,13 @@ test('real DLMM snapshot builds the direct cached SOL-DJT route and Stonk packet
   const user=web3.Keypair.generate().publicKey,{connection}=fixtureConnection(user,fixture);
   const a=ref.transaction.message.instructions[4].accounts;
   const input={route:'sol_to_stonk_curve',wallet:user.toBase58(),mint:a[9],quoteMint:a[10],tokenProgram:a[11],quoteProgram:a[12],
-    pool:a[4],lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2',minLiquidity:'0',swapRecipe:fixture.recipe};
+    pool:a[4],lookupTables:[],minSlot:0,amount:'10000000',slippagePercent:'2',minLiquidity:'0',swapRecipe:fixture.recipe,
+    risk:{totalFeeBps:600,impactBps:200}};
   const result=await build(input,connection);
   assert(Buffer.from(result.transaction,'base64').length<=1232);
   assert(BigInt(result.quotedOut)>BigInt(result.minOut));
   assert.equal(result.quoteOut,fixture.expected);
-  await assert.rejects(build({...input,risk:{poolFeeBps:0,totalFeeBps:300,impactBps:200}},connection),/pool-fee-limit/);
+  await assert.rejects(build({...input,risk:{tokenTaxBps:99,quoteTokenTaxBps:390,impactBps:200}},connection),/token-tax-limit/);
 });
 
 

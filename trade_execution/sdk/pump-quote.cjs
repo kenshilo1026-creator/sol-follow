@@ -24,7 +24,7 @@ async function buildPumpQuote(input,{connection,safeMint,finish,minimums,integer
   if(curve.complete||!curve.quoteMint.equals(quote))throw Error('curve-graduated-or-quote-mismatch');
   const global=pump.PUMP_SDK.decodeGlobal(rows[3]),feeConfig=pump.PUMP_SDK.decodeFeeConfig(rows[4]);
   const hop=await jupiter.buildHop({user,quoteMint:quote,quoteAta,amount,slippageBps,connection,safeMint,
-    minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,
+    risk:input.risk,minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,
     waitForBackground:input.waitForBackground,background:input.background});
   const pumpQuote=q=>pump.getBuyTokenAmountFromSolAmount({global,feeConfig,mintSupply:new BN(base.supply.toString()),bondingCurve:curve,amount:new BN(q.toString())});
   const expected=pumpQuote(hop.expected),quoteIn=new BN(hop.minimum.toString());

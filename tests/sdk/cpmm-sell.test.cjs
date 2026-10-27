@@ -122,8 +122,6 @@ for(const [native,existing] of [[false,true],[true,true],[true,false]]){
 
 test('graduated exit enforces fees, tax, migration proof, vaults, clock and pool availability before signing',async()=>{
   for(const [mutate,reason] of [
-    [f=>f.input.risk.poolFeeBps=100,'pool-fee-limit'],
-    [f=>f.input.risk.totalFeeBps=200,'total-fee-limit'],
     [f=>f.input.risk.tokenTaxBps=99,'token-tax-limit'],
     [f=>f.rows[f.oldPool.toBase58()].data[17]=1,'stonk-pool-rejected'],
     [f=>f.rows[f.oldPool.toBase58()].data[20]=0,'unsupported-graduation'],

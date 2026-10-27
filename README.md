@@ -188,20 +188,20 @@ Pump 非 SOL Create／買入共用 quote 路徑快取並預熱換幣帳戶；已
 
 預設限制（皆為百分比，可在 `.env` 覆蓋，精度 0.01%，0 表示不容許）：
 
-- `SOL_MAX_POOL_FEE_PERCENT=2`：任何單池超過 2% 拒絕。
-- `SOL_MAX_TOTAL_FEE_PERCENT=3`：整條路徑池費／Stonk 轉帳稅合計超過 3% 拒絕。
-- `SOL_MAX_TOKEN_TAX_PERCENT=2`：Stonk 目標幣 Token-2022 的當前或已排定轉帳稅率超過 2% 拒絕；相等通過。
+- `SOL_MAX_QUOTE_TOKEN_TAX_PERCENT=3.9`：報價幣的轉帳稅上限。
+- `SOL_MAX_TOKEN_TAX_PERCENT=3.9`：目標代幣的轉帳稅上限。兩項獨立比較，任一嚴格超標拒絕，相等通過。
 - `SOL_MAX_PRICE_IMPACT_PERCENT=2`：扣除費用後，相對各池當下邊際價格的合計價格影響超過 2% 拒絕。
 - `SOL_SLIPPAGE_PERCENT=2`：保留原有最終實收 minOut，至少為完整即時預估淨輸出的 98%。
 
-池費及總費上限適用於所有已支援買入、Pump／Stonk dev 超標緊急賣出及背景換回 SOL；
-包含 Pump 原生 SOL 直接買入。總費包含池費、creator 費及支援的轉帳稅，不含網路費或 ATA 租金。
+平台、協議、creator 及池費不再作為拒買／拒賣門檻；仍在報價中扣除，以正確計算淨實收及 minOut。
+不再檢查往返總費用，也不將兩種幣的稅率相加。Telegram 超標通知列出報價幣或目標代幣、檢查稅率、上限及對應設定。
 價格影響上限仍只用於非 SOL 路由買入、Stonk 買入及背景換幣，未新增至 Pump SOL 直接買入或緊急賣出。
 這些是建單前的成本上限，與鏈上的 minOut 各自生效；不把高費用藏在滑點內。
-轉帳稅上限預設 2%，可設 0–20%，精度 0.01%；檢查 mint 設定的名義稅率，
-即使 maximumFee 封頂令本次實際扣稅較低，名義稅率超標仍拒絕。總費則用本次實際扣稅比例計算。
-稅率檢查重用組單已取得的 mint／epoch，不增加 RPC，套用 Stonk 買入及 dev 緊急賣出；
-Pump、報價幣及中間換幣路由仍拒絕 TransferFeeConfig，未知／啟用中的 hook 亦不放行。
+兩個轉帳稅上限預設各 3.9%，可設 0–20%，精度 0.01%；檢查當前及已排程的名義稅率，
+即使 maximumFee 封頂令本次實際扣稅較低，名義稅率超標仍拒絕。
+Stonk 買入、曲線／畢業後賣出分別檢查報價幣及目標幣；背景換回 SOL 使用報價幣上限。
+Whirlpool／DLMM 報價及 Stonk 買賣支援轉帳稅的淨額計算；Pump 曲線上的帶稅 mint 仍需專用適配，
+未知／啟用中的 hook 仍不放行。稅率檢查重用組單取得的 mint／epoch。
 本地檢查不是鏈上 buy guard：快照之後的設定變更仍由原有 minOut 限制實收，不能保證執行時稅率上限。
 Stonk 依 [官方 LaunchLab SDK](https://github.com/raydium-io/raydium-sdk-V2/blob/master/src/raydium/launchpad/launchpad.ts#L628-L695)
 以扣除轉帳稅的數量計算 minOut，模擬亦核對淨收幣及既有中間資產未被花用。
@@ -564,10 +564,10 @@ SOL 對沒有既有 WSOL 時原子解包，有既有 WSOL 則保留帳戶及舊�
 不沿用舊報價或盲目接受外部路由指令。找不到路徑、流動性不足、費用／價格影響超標時保留餘額，
 30 秒後再於閒置期間嘗試，不為換幣放寬門檻。
 
-`SOL_MAX_POOL_FEE_PERCENT` 限制每段池費，`SOL_MAX_TOTAL_FEE_PERCENT` 限制累計池費及支援的轉帳費，
-`SOL_MAX_PRICE_IMPACT_PERCENT` 另外限制價格影響。這些費率不含 Solana 網路費與 ATA 租金。
-背景換幣的滑點取 `SOL_SLIPPAGE_PERCENT`、`SOL_MAX_TOTAL_FEE_PERCENT`、`SOL_MAX_PRICE_IMPACT_PERCENT`
-三者最小值，逐段設鏈上 minOut；簽名前要求報價不超過 5 秒並再次模擬。
+`SOL_MAX_QUOTE_TOKEN_TAX_PERCENT` 限制待換回 SOL 的報價幣轉帳稅，平台／池費沒有額外上限。
+`SOL_MAX_PRICE_IMPACT_PERCENT` 另外限制價格影響。
+背景換幣的滑點取 `SOL_SLIPPAGE_PERCENT`、`SOL_MAX_PRICE_IMPACT_PERCENT`
+兩者最小值，逐段設鏈上 minOut；簽名前要求報價不超過 5 秒並再次模擬。
 費率上限依報價快照檢查，鏈上由 minOut 約束實收；不是在鏈上鎖住池子的費率設定。
 這些限制能約束報價成本及成交下限，但不保證沒有 MEV 或報價前已發生的池價操縱。
 
