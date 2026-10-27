@@ -13,6 +13,7 @@ from features.strategy.dev_holdings import permitted as dev_permitted
 from features.strategy.create_dev_gate import permitted as create_permitted
 from trade_execution.native import decode_native
 from features.notifications.buy_failures import context as buy_context, reason as failure_reason, fee_context
+from features.notifications.buy_success import context as buy_success_context
 
 MARKER = 'atomic-pump-buy-v1'
 
@@ -158,7 +159,7 @@ class Executor:
             self.store.update_order(oid,state='submitted')
             trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings,
                           'simulation_source':simulation_source,'skip_preflight':True})
-            self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']},alert=True)
+            self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']})
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
             raise
@@ -222,8 +223,9 @@ class Executor:
                     continue
                 native=[r for r in decode_native(tx) if r.trade.wallet==wallet and r.trade.mint==row['mint']]
                 quote=native[0].trade.quote if len(native)==1 else int(row['amount'])
+                completed=buy_success_context(self.store,row,tx,wallet,tokens)
                 if self.store.fill(row['id'],tokens,quote):
-                    self.notices.emit('buy finalized',{'order':row['id'],'signature':row['signature'],'tokens':tokens},alert=True)
+                    self.notices.emit('buy finalized',completed,alert=True)
             elif status and status.get('err') is None and status.get('confirmationStatus')=='confirmed':
                 self.store.update_order(row['id'],state='confirmed')
             elif not status:

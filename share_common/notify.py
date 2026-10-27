@@ -54,6 +54,23 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='buy finalized':
+        lines=['✅ [SOL][LIVE] 買入成交',f"代幣: {detail['mint']}"]
+        name=detail.get('name');symbol=detail.get('symbol')
+        if name or symbol:lines.append('名稱: '+(name or '')+(f' ({symbol})' if symbol else ''))
+        if detail.get('launchpad'):lines.append(f"平台: {detail['launchpad']}")
+        lines.append(f"買入預算: {detail['buy_sol']} SOL")
+        if 'token_amount' in detail:lines.append(f"實收: {detail['token_amount']} {symbol or 'tokens'}")
+        else:lines.append(f"實收（最小單位）: {detail['tokens']}")
+        lines.append(f"錢包: {detail['wallet']}")
+        if detail.get('dev'):lines.append(f"Dev: {detail['dev']}")
+        if 'network_fee_sol' in detail:lines.append(f"網路費: {detail['network_fee_sol']} SOL")
+        slot=f"成交 slot: {detail['slot']}"
+        if 'slot_delta' in detail:
+            slot+=('（與來源交易同 slot）' if detail['slot_delta']==0
+                   else f"（較來源交易 {detail['slot_delta']:+d} slots）")
+        lines.extend([slot,'交易: '+detail['transaction_url']])
+        return '\n'.join(lines)[:3900]
     if kind=='service started':
         mode='Dry run' if detail['mode']=='dry' else 'live'
         return f'sol-follow 開始 ({mode})'

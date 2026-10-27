@@ -156,7 +156,8 @@ async def test_hotlist_pump_create_signal_reaches_executor(config,store):
 async def test_finalized_result_updates_position_once(config,store,tmp_path,failed):
     key=Keypair()
     cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
-    rpc=RPC(store,oid);engine=Executor(cfg,store,rpc,Notices(),Priority(),builder)
+    notices=Notices()
+    rpc=RPC(store,oid);engine=Executor(cfg,store,rpc,notices,Priority(),builder)
     await engine.buy(oid,route)
     signature=store.order(oid)['signature']
     raw=sample()
@@ -170,15 +171,30 @@ async def test_finalized_result_updates_position_once(config,store,tmp_path,fail
         async def transaction(self,sig,commitment):
             assert sig==signature and commitment=='finalized'
             return raw
-    restarted=Executor(cfg,store,FinalizedRPC(),Notices(),Priority(),builder)
+    restarted=Executor(cfg,store,FinalizedRPC(),notices,Priority(),builder)
     await restarted.reconcile_once();await restarted.reconcile_once()
+    alerts=[args for args,kwargs in notices.items if kwargs.get('alert')]
+    assert not any(args[0]=='buy submitted' for args in alerts)
+    assert len(alerts)==1
     if failed:
+        assert alerts[0][0]=='buy failed on chain'
         assert store.order(oid)['state']=='failed'
         assert not store.rows('trading','SELECT * FROM positions')
     else:
         assert store.order(oid)['state']=='finalized'
         rows=store.rows('trading','SELECT * FROM positions')
         assert len(rows)==1 and int(rows[0]['amount'])==route.trade.tokens
+
+        assert alerts[0][0]=='buy finalized'
+        detail=alerts[0][1]
+        assert detail['mint']==route.trade.mint and detail['wallet']==cfg.wallet_address
+        assert detail['tokens']==route.trade.tokens
+        assert detail['transaction_url']=='https://solscan.io/tx/'+signature
+        from share_common.notify import telegram_message
+        text=telegram_message('buy finalized',detail)
+        assert '<code>'+route.trade.mint+'</code>' in text
+        assert '買入成交' in text and '買入預算:' in text and '實收:' in text
+        assert detail['token_amount'] in text
 
 
 def test_restart_expires_own_unsigned_orders_only(config,store):
