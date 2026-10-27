@@ -9,6 +9,19 @@ const launch=require('../fixtures/stonk_route_accounts.json');
 const ref=require('../fixtures/stonk_non_sol_buy.json');
 const {build,safeMint}=require('../../trade_execution/sdk/build.cjs');
 const pk=x=>new web3.PublicKey(x);
+test('fee rejection exposes only numeric rates without changing cap boundaries',()=>{
+  const input={risk:{poolFeeBps:100,totalFeeBps:300,impactBps:200}};
+  assert.doesNotThrow(()=>risk.checkFees(input,[10000n]));
+  assert.throws(()=>risk.checkFees(input,[12500n]),e=>{
+    assert.deepEqual(risk.feeDetails(e),{feeDetails:{actualPpm:'12500',limitPpm:'10000'}});
+    return e.message==='pool-fee-limit';
+  });
+  assert.throws(()=>risk.checkFees({risk:{poolFeeBps:200,totalFeeBps:100,impactBps:200}},[12500n]),e=>{
+    assert.deepEqual(risk.feeDetails(e),{feeDetails:{actualPpm:'12500',limitPpm:'10000'}});
+    return e.message==='total-fee-limit';
+  });
+  assert.deepEqual(risk.feeDetails({message:'pool-fee-limit',feeDetails:{actualPpm:'https://secret',limitPpm:'1'}}),{});
+});
 test('fee and impact caps are separate from minOut, including transfer tax',()=>{
   assert.throws(()=>risk.check({},[25000n],[0n]),/pool-fee-limit/);
   assert.throws(()=>risk.check({},[15000n,15000n,10000n],[0n],[15000n,15000n]),/total-fee-limit/);

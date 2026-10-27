@@ -272,6 +272,7 @@ if (require.main === module) {
       event=>process.stderr.write(JSON.stringify(event)+'\n'),()=>build(JSON.parse(input)))));}
     catch (error) {process.stdout.write(JSON.stringify({error:REASONS.has(error.message)
       ? error.message : 'sdk-or-rpc-failed',
+      ...risk.feeDetails(error),
       ...(error.message==='jupiter-rate-limited'?{retryAfter:error.retryAfter}:{})}));process.exitCode=1;}
   });
 }

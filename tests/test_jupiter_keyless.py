@@ -99,6 +99,7 @@ def test_keyless_ipc_preserves_cooldown_and_excludes_credentials(config,monkeypa
         asyncio.run(builder.build(config,route(),'public-wallet'))
     assert error.value.retry_after==expected
     assert captured['payload']=={'route':'sol_to_stonk_curve','rpc':config.rpc,'ws':config.ws,'wallet':'public-wallet',
+        'rpcCooldownDir':str((config.data/'rpc-cooldowns').resolve()),
         'rpcFallback':config.execution_fallback_url,'rpcTimeoutMs':int(config.execution_timeout*1000),
         'amount':str(config.buy_amount),'slippagePercent':format(config.slippage_percent,'f'),
         'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,

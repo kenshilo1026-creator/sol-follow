@@ -80,6 +80,38 @@ def test_error_details_never_forward_provider_url_or_key():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('code,actual,limit,chinese',[
+    ('pool-fee-limit','12500','10000','單一交易池費率超過上限'),
+    ('total-fee-limit','100001','100000','交易路徑合計費率超過上限'),
+    ('token-tax-limit','30000','20000','代幣轉帳稅率超過上限'),
+])
+async def test_fee_failure_details_reach_chinese_alert_and_audit(config,store,code,actual,limit,chinese):
+    from trade_execution.builder import result_or_error
+    from share_common.notify import message
+    cfg,route,oid,_=setup_order(config,store)
+    async def fail(*args):
+        result_or_error({'error':code,'feeDetails':{'actualPpm':actual,'limitPpm':limit,
+                                                   'secret':'https://private-key'}})
+    notices=Notices()
+    await Executor(cfg,store,RPC(),notices,Priority(),fail).buy(oid,route)
+    detail=alerts(notices,'buy rejected')[0]
+    rendered=message('buy rejected',detail)
+    assert chinese in rendered and 'private-key' not in rendered
+    assert detail['fee_actual_percent']=={'12500':'1.25%','100001':'10.0001%','30000':'3%'}[actual]
+    assert detail['fee_limit_percent']=={'10000':'1%','100000':'10%','20000':'2%'}[limit]
+    recorded=store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")
+    assert json.loads(recorded[-1]['detail'])['fee_actual_percent']==detail['fee_actual_percent']
+
+
+def test_fee_error_rejects_unsafe_details_and_handles_missing_values(config):
+    from features.notifications.buy_failures import fee_context
+    exc=BuildError('pool-fee-limit',fee_details={'actualPpm':'https://secret','limitPpm':'10000'})
+    detail=fee_context(exc,config)
+    assert detail['fee_actual_percent']=='未取得' and detail['fee_limit_percent']=='2%'
+    assert not BuildError('unknown-error',fee_details={'actualPpm':'12500','limitPpm':'10000'}).fee_details
+
+
+@pytest.mark.asyncio
 async def test_alert_reaches_telegram_sender_without_real_network(config,store,monkeypatch):
     sent=[]
     notices=TelegramNotices(replace(config,telegram_token='fixture-token',telegram_chat='fixture-chat'),store)

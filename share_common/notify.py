@@ -3,6 +3,8 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from chain_common.public_rpc import rpc_notices
 import logging
+import html
+import re
 import time
 import aiohttp
 
@@ -105,7 +107,9 @@ def message(kind, detail):
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
     fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
             ('rule_type','規則類型'),('thresholds','規則門檻'),('gain_percent','Spot index 盈虧（%）'),
-            ('received','實收報價幣（最小單位）'),('reason','原因'),('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
+            ('received','實收報價幣（最小單位）'),('reason','原因'),
+            ('fee_actual_percent','檢查費率'),('fee_limit_percent','設定上限'),('fee_parameter','對應設定'),
+            ('outcome','結果'),('route','路徑'),('amount','數量（最小單位）'),('source_wallet','目標錢包'),
             ('wallet','目標錢包'),('source_signature','目標交易'),('signature','交易簽名'),('order','訂單'),
             ('sol_lamports','換回 SOL（lamports，未扣網路費／租金）')]
     for field,label in fields:
@@ -114,9 +118,27 @@ def message(kind, detail):
         if field=='signature' and detail.get('signature')==detail.get('source_signature'):
             continue
         value=detail.get(field)
+        if field=='reason' and value in ('pool-fee-limit','total-fee-limit','token-tax-limit'):
+            translated={'pool-fee-limit':'單一交易池費率超過上限（含協議及適用的 creator 費）',
+                        'total-fee-limit':'交易路徑合計費率超過上限',
+                        'token-tax-limit':'代幣轉帳稅率超過上限（含已排程的新稅率）'}
+            value=f'{translated[value]}（{value}）'
         if value is not None:
             lines.append(f'{label}: {value}')
     return '\n'.join(lines)[:3900]
+
+
+def telegram_message(kind, detail):
+    """RH-style copyable token addresses; other text remains literal HTML-safe text."""
+    text=html.escape(message(kind,detail),quote=False)
+    alphabet='1-9A-HJ-NP-Za-km-z'
+    tokens={value for key in ('mint','quote_mint','base_mint','token_address','token')
+            if isinstance(value:=detail.get(key),str)
+            and re.fullmatch('['+alphabet+']{32,44}',value)}
+    if not tokens:return text
+    pattern=r'(?<!['+alphabet+'])('+'|'.join(re.escape(v) for v in sorted(tokens))+r')(?!['+alphabet+'])'
+    # Format only after the existing plain-text truncation, so tags stay closed.
+    return re.sub(pattern,lambda match:'<code>'+match.group(0)+'</code>',text)
 
 
 class Notices:
@@ -176,7 +198,8 @@ class Notices:
                 if alert and self.config.telegram_token and self.config.telegram_chat:
                     try:
                         async with session.post('https://api.telegram.org/bot'+self.config.telegram_token+'/sendMessage',
-                            json={'chat_id':self.config.telegram_chat,'text':message(kind,detail)}) as response:
+                            json={'chat_id':self.config.telegram_chat,'text':telegram_message(kind,detail),
+                                  'parse_mode':'HTML'}) as response:
                             if response.status != 200:
                                 log.error('[SOL] Telegram failed HTTP=%s', response.status)
                     except Exception as exc:

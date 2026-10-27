@@ -11,9 +11,16 @@ from weakref import WeakKeyDictionary
 
 
 class BuildError(RuntimeError):
-    def __init__(self, reason, retry_after=0):
+    def __init__(self, reason, retry_after=0, fee_details=None):
         super().__init__(reason)
         self.retry_after=retry_after
+        self.fee_details={}
+        if reason in ('pool-fee-limit','total-fee-limit','token-tax-limit') and isinstance(fee_details,dict):
+            keys=('actualPpm','limitPpm')
+            if all(isinstance(fee_details.get(k),str) and fee_details[k].isascii()
+                   and fee_details[k].isdigit() and len(fee_details[k])<=7
+                   and int(fee_details[k])<=1000000 for k in keys):
+                self.fee_details={k:fee_details[k] for k in keys}
 
 
 class JupiterGate:
@@ -135,4 +142,4 @@ def result_or_error(result):
         if not isinstance(delay,(int,float)) or not math.isfinite(delay) or delay<0:
             delay=60
         raise BuildError(reason if isinstance(reason,str) and len(reason)<80 and all(c.islower() or c=='-' for c in reason)
-                         else 'route-build-or-simulation-rejected',retry_after=delay)
+                         else 'route-build-or-simulation-rejected',retry_after=delay,fee_details=result.get('feeDetails'))

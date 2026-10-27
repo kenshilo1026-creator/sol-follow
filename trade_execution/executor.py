@@ -11,7 +11,7 @@ from features.funding.processed import Processed
 from features.strategy.dev_holdings import permitted as dev_permitted
 from features.strategy.create_dev_gate import permitted as create_permitted
 from trade_execution.native import decode_native
-from features.notifications.buy_failures import context as buy_context, reason as failure_reason
+from features.notifications.buy_failures import context as buy_context, reason as failure_reason, fee_context
 
 MARKER = 'atomic-pump-buy-v1'
 
@@ -152,6 +152,7 @@ class Executor:
             raise
         except Exception as exc:
             mark('failed_ms')
+            fees=fee_context(exc,self.config)
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:
@@ -159,11 +160,11 @@ class Executor:
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
-                          'source_proof':Processed(self.store).row(route.trade.signature)})
+                          'source_proof':Processed(self.store).row(route.trade.signature),**fees})
             self.notices.emit('buy deferred' if signed else 'buy rejected',
                 {'order':oid,**buy_context(self.config,route),'stage':stage,'reason':failure_reason(exc),
                  'type':type(exc).__name__,'signed':signed,'signature':signature,
-                 'outcome':'unknown' if signed else 'not-submitted'},alert=True)
+                 'outcome':'unknown' if signed else 'not-submitted',**fees},alert=True)
         finally:
             self.priority.active-=1
             if hasattr(self.builder,"set_priority"):

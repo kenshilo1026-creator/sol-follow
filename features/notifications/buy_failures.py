@@ -1,5 +1,6 @@
 """Public trade context only: never forward provider bodies, URLs or key errors."""
 import re
+from decimal import Decimal
 from chain_common.primitives import WSOL, SYSTEM, b58decode
 from chain_common.rpc import RpcError
 from trade_execution.builder import BuildError
@@ -30,6 +31,22 @@ def context(config, route):
     return {'mode':config.mode,'mint':route.trade.mint,'quote_mint':route.quote_mint,
             'route':route.kind,'source_wallet':route.trade.wallet,
             'source_signature':route.trade.signature,'buy_lamports':str(config.buy_amount)}
+
+
+def fee_context(exc,config):
+    limits={'pool-fee-limit':('max_pool_fee_bps','SOL_MAX_POOL_FEE_PERCENT'),
+            'total-fee-limit':('max_total_fee_bps','SOL_MAX_TOTAL_FEE_PERCENT'),
+            'token-tax-limit':('max_token_tax_bps','SOL_MAX_TOKEN_TAX_PERCENT')}
+    selected=limits.get(reason(exc))
+    if selected is None:return {}
+    attr,parameter=selected
+    detail=exc.fee_details if isinstance(exc,BuildError) else {}
+    def percent(raw):
+        value=format(Decimal(raw)/10000,'f')
+        return value.rstrip('0').rstrip('.') if '.' in value else value
+    return {'fee_parameter':parameter,
+            'fee_limit_percent':percent(detail.get('limitPpm',str(getattr(config,attr)*100)))+'%',
+            'fee_actual_percent':percent(detail['actualPpm'])+'%' if detail else '未取得'}
 
 
 def unrecognized_non_sol(tx, routes):
