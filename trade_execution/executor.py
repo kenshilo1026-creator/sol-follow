@@ -59,6 +59,7 @@ class Executor:
         began=time.monotonic()
         timings={}
         simulation_source=None
+        builder_timing=None
         def mark(name):timings[name]=round((time.monotonic()-began)*1000,3)
         def require_fresh():
             reason=self.rejection(route,oid)
@@ -79,6 +80,7 @@ class Executor:
                 await self.builder.set_priority(self.priority.active)
             stage='build'
             result=await self.builder(self.config,route,wallet)
+            builder_timing=result.get('buildTiming')
             mark('built_ms')
             require_fresh()
             wire=base64.b64decode(result['transaction'],validate=True)
@@ -158,7 +160,7 @@ class Executor:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
             trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings,
-                          'simulation_source':simulation_source,'skip_preflight':True})
+                          'simulation_source':simulation_source,'builder_timing':builder_timing,'skip_preflight':True})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']})
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
@@ -172,7 +174,7 @@ class Executor:
                 self.store.fail_order(oid,failure_reason(exc))
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
-                          'simulation_source':simulation_source,
+                          'simulation_source':simulation_source,'builder_timing':builder_timing,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
                           'source_proof':Processed(self.store).row(route.trade.signature),**fees})
             self.notices.emit('buy deferred' if signed else 'buy rejected',

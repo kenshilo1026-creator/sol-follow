@@ -17,19 +17,29 @@ def create_route(item, tx):
     # an arbitrary fee beneficiary and must not lend another wallet's hotlist.
     if item.user not in tx.signers or item.signature != tx.signature or item.slot != tx.slot:
         return None
-    tables=tuple(r['accountKey'] for r in tx.raw['transaction']['message'].get('addressTableLookups',[]))
+    # The create message is already expanded. Its ALTs belong to the source
+    # transaction, not our independently composed native buy. Non-SOL routes
+    # retain these optional packing tables and add their hop's verified tables.
+    tables=() if item.quote_mint==WSOL else tuple(
+        r['accountKey'] for r in tx.raw['transaction']['message'].get('addressTableLookups',[]))
     if len(tables)>8:return None
     for key in tables:pubkey(key)
+    hint={'version':1,'mint':item.mint,'quoteMint':item.quote_mint,
+          'pool':item.pool,'slot':item.slot,'launchpad':item.launchpad}
+
     trade=Trade(item.event,item.signature,item.slot,item.time,item.user,item.mint,'create',
                 0,0,tx.owner_tokens('post',item.user,item.mint),item.pool)
     if item.launchpad==pump_fun.NAME and item.program==pump_fun.PROGRAM:
         if item.pool!=pump_fun.curve_address(item.mint):return None
         return Route(trade,item.quote_mint,item.base_token_program,item.quote_token_program,'',tables,
-                     kind='pump_native_curve' if item.quote_mint==WSOL else 'sol_to_pump_curve')
+                     kind='pump_native_curve' if item.quote_mint==WSOL else 'sol_to_pump_curve',create_hint=hint)
     if item.launchpad==stonk.NAME and item.program==stonk.PROGRAM:
         if item.pool!=stonk.pool_address(item.mint,item.quote_mint):return None
+        if item.flags.get('config'):
+            pubkey(item.flags['config'])
+            hint['config']=item.flags['config']
         return StonkRoute(trade,item.quote_mint,item.base_token_program,item.quote_token_program,tables,
-                          kind='stonk_native_curve' if item.quote_mint==WSOL else 'sol_to_stonk_curve')
+                          kind='stonk_native_curve' if item.quote_mint==WSOL else 'sol_to_stonk_curve',create_hint=hint)
     return None
 
 

@@ -58,7 +58,7 @@ def decode(tx,path,ix,data):
     migration=r.u8()
     if migration not in (0,1):raise Unsupported('stonk-migration-variant')
     locked,cliff,unlock=r.u64(),r.u64(),r.u64()
-    flags={'curve_kind':kind,'supply_raw':str(supply),'total_sell_raw':str(total_sell) if total_sell is not None else None,
+    flags={'config':config,'curve_kind':kind,'supply_raw':str(supply),'total_sell_raw':str(total_sell) if total_sell is not None else None,
            'fundraising_raw':str(fundraising),'migration_type':migration,
            'locked_raw':str(locked),'cliff_period':str(cliff),'unlock_period':str(unlock)}
     if v2 or token2022:

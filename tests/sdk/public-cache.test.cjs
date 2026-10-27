@@ -105,3 +105,32 @@ test('background blockhash response from a disconnected generation is discarded'
   const p=cache.refresh();cache.invalidate();resolve({context:{slot:100},value:{blockhash:'hash',lastValidBlockHeight:1000}});await p;
   assert.throws(()=>cache.pick(),/blockhash-cache-miss/);
 });
+
+
+test('only explicitly shared settings reuse older continuously covered snapshots',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r,{ttlMs:1000});t.after(()=>cache.close());
+  const config=key(),pool=key();
+  for(const k of [config,pool]){cache.watch(k.toBase58());r.ack(k);}
+  r.pulse({slot:100});await cache.view().getMultipleAccountsInfo([config,pool]);
+  now+=5000;r.pulse({slot:110});
+  const shared=cache.view(110,true,{sharedKeys:[config]});
+  assert((await shared.getMultipleAccountsInfo([config]))[0]);assert.equal(r.reads,1);
+  await assert.rejects(shared.getMultipleAccountsInfo([pool]),/price-cache-miss/);
+  await assert.rejects(cache.view(110,true).getMultipleAccountsInfo([config]),/price-cache-miss/);
+  r.update(config,{data:Buffer.from('updated')},110);
+  assert.equal((await shared.getMultipleAccountsInfo([config]))[0].data.toString(),'updated');
+  now+=1001;await assert.rejects(shared.getMultipleAccountsInfo([config]),/price-cache-miss/);
+  r.pulse({slot:111});r._rpcWebSocket.emit('close');
+  await assert.rejects(shared.getMultipleAccountsInfo([config]),/price-cache-miss/);
+});
+test('shared warmup takes one post-ACK baseline and yields that read to trading',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r),gate=new BackgroundGate();t.after(()=>cache.close());
+  const k=key();await cache.primeShared([k],()=>gate.wait());assert.equal(r.reads,1);
+  gate.setTrades(1);r.ack(k);await tick();assert.equal(r.reads,1);
+  r.pulse({slot:110});
+  await assert.rejects(cache.view(110,true,{sharedKeys:[k]}).getMultipleAccountsInfo([k]),/price-cache-miss/);
+  gate.setTrades(0);await tick();assert.equal(r.reads,2);
+  await cache.view(110,true,{sharedKeys:[k]}).getMultipleAccountsInfo([k]);
+  await tick();assert.equal(r.reads,2); // no periodic HTTP refresh
+});

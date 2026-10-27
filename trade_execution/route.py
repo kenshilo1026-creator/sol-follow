@@ -22,9 +22,10 @@ class Route:
     observed_mint: str = ''
     observed_kind: str = 'calldata-input-bound'
     funding_sol_limit: int = 0
+    create_hint: dict | None = None
 
     def request(self):
-        return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
+        return dict(**({'createHint':self.create_hint} if self.create_hint else {}),route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
                     tokenProgram=self.token_program, quoteProgram=self.quote_program,
                     pool=self.trade.pool if self.kind=='sol_to_pump_curve' else self.dlmm_pool,
                     lookupTables=list(self.lookup_tables), minSlot=self.trade.slot,

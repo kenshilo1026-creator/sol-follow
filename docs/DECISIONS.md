@@ -632,3 +632,36 @@ from remaining coverage, local storage and network delays on the next VPS run.
 
 References: https://solana.com/docs/rpc/http/sendtransaction and
 https://github.com/jito-labs/jito-docs/blob/main/docs/source/lowlatencytxnsend.md.
+
+
+## 2026-10-27: Create-specific Pump/Stonk account preparation
+
+- Decoded create routes carry a mint/quote/pool/slot-bound `createHint`. Stonk
+  initialize also retains its GlobalConfig account address. Builders still read
+  actual mint and pool state; they do not synthesize reserves before embedded
+  dev buys or assume Token-2022 extensions from a mint name/initialization flag.
+- Native create buys do not inherit the launch transaction's ALTs. Non-SOL buys
+  retain their optional packing tables and the independently verified hop ALTs.
+- Native Pump create uses the pinned SDK's idempotent ATA instruction without
+  fetching the destination ATA. This works whether the account already exists
+  or not; it does not assert that its balance is zero. Final receipt reconciliation
+  still checks the actual balance delta.
+- Stonk batches the decoded config and platform with the initial pool/mint read,
+  and checks the returned pool's config matches the hint before calculating fees.
+  Missing hints retain the ordinary two-stage read. Config mismatch rejects.
+- Pump Global/FeeConfig and Stonk PlatformConfig are warmed at startup. Observed
+  Stonk configs queue background warmup, including SOL pairs, and recent persisted
+  create records restore those keys on restart. There is no periodic account HTTP
+  refresh. Subscription ACK schedules one background HTTP baseline so a snapshot
+  from before ACK cannot be treated as uninterrupted coverage.
+- Only explicitly selected shared settings can reuse an older slot snapshot when
+  continuous subscription coverage and a healthy WS head at/after the source slot
+  are present. Pool/mint snapshots remain source-slot constrained. Disconnects,
+  stale heartbeats and missing coverage restore strict HTTP fallback. Background
+  baselines yield to active trading; in-flight network requests cannot be preempted.
+- Single SDK simulation, minOut, token-tax/fee checks, source freshness, signature
+  durability and receipt verification remain. This is reduced account-read latency,
+  not a zero-RPC or same-slot guarantee. Fresh pool state and simulation still cost
+  RPC time. `builder_timing` records total worker build time and per-method count/ms
+  in execution audit, including expiry after a successful build. Method times include
+  cache work and may overlap; do not sum them as network latency.

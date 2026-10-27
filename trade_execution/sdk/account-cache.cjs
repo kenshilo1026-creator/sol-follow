@@ -6,6 +6,7 @@ class AccountCache {
   constructor(connection,{ttlMs=2000,maxAccounts=512,commitment='confirmed'}={}){
     this.commitment=commitment;this.rpc=connection;this.ttlMs=ttlMs;this.max=maxAccounts;
     this.rows=new Map();this.misc=new Map();this.subscriptions=new Map();this.watchState=new Map();
+    this.sharedWait=new Map();
     this.generation=0;this.hits=0;this.misses=0;this.closed=false;this.head=0;this.pulseAt=null;this.clock=null;
     connection._rpcWebSocket?.on('close',()=>this.invalidate());
     connection._rpcWebSocket?.on('error',()=>this.invalidate());
@@ -39,13 +40,14 @@ class AccountCache {
       if(this.watchState.get(k)!==state)return;
       state.version++;state.subscribed=next==='subscribed';
       if(!state.subscribed)this.rows.delete(k);
+      else if(this.sharedWait.has(k))void this.baselineShared(k,state);
     });
     this.trim();
   }
   trim(){
     while(this.rows.size>this.max||this.subscriptions.size>this.max){
       const k=this.rows.keys().next().value||this.subscriptions.keys().next().value;
-      this.rows.delete(k);const id=this.subscriptions.get(k);this.subscriptions.delete(k);
+      this.sharedWait.delete(k);this.rows.delete(k);const id=this.subscriptions.get(k);this.subscriptions.delete(k);
       this.watchState.get(k)?.dispose();this.watchState.delete(k);
       if(id!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
     }
@@ -62,12 +64,30 @@ class AccountCache {
     // A changed pool still needs its own account update at/after the trigger.
     return row&&row.slot>=minSlot&&age>=0&&(age<=this.ttlMs||watched);
   }
-  async get(keys,config={},cacheOnly=false,wait=async()=>{}){
+  async baselineShared(k,state){
+    // One HTTP baseline after ACK, not periodic polling. An earlier HTTP
+    // response cannot prove coverage of the subscription startup gap.
+    const version=state.version,gen=this.generation,wait=this.sharedWait.get(k);
+    try{
+      await wait();
+      if(this.closed||gen!==this.generation||!state.subscribed||state.version!==version)return;
+      await this.get([new web3.PublicKey(k)],{},false,wait,new Set(),true);
+    }catch{} // A failed baseline leaves strict freshness/fallback in force.
+  }
+  async primeShared(keys,wait=async()=>{}){
+    for(const key of keys){const k=key.toBase58();this.sharedWait.set(k,wait);this.watch(k);}
+    return this.get(keys,{},false,wait);
+  }
+  validShared(row,minSlot,k,shared){
+    return this.valid(row,minSlot,k)||(shared.has(k)&&row?.value&&row.continuous
+      &&this.watchState.get(k)?.subscribed&&this.healthy()&&this.head>=minSlot&&Date.now()>=row.at);
+  }
+  async get(keys,config={},cacheOnly=false,wait=async()=>{},shared=new Set(),force=false){
     const minSlot=config.minContextSlot||0;
     if(!keys.length)return {context:{slot:minSlot},value:[]};
     const names=keys.map(k=>k.toBase58());
     let rows=names.map(k=>this.rows.get(k));
-    const missing=names.map((k,i)=>this.valid(rows[i],minSlot,k)?-1:i).filter(i=>i>=0);
+    const missing=names.map((k,i)=>!force&&this.validShared(rows[i],minSlot,k,shared)?-1:i).filter(i=>i>=0);
     if(!missing.length){this.hits+=keys.length;return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};}
     if(cacheOnly)throw Error('price-cache-miss');
     await wait();const gen=this.generation;this.misses+=missing.length;
@@ -84,7 +104,7 @@ class AccountCache {
     });
     // Copy the current rows; a websocket update can be newer than the HTTP reply.
     rows=names.map((k,i)=>this.rows.get(k)||fetched.get(k)||rows[i]);
-    if(rows.some((row,i)=>!this.valid(row,minSlot,names[i])))throw Error('cache-slot-behind');
+    if(rows.some((row,i)=>!this.validShared(row,minSlot,names[i],shared)))throw Error('cache-slot-behind');
     return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};
   }
   invalidate(){
@@ -102,12 +122,12 @@ class AccountCache {
     const addresses=state.lastExtendedSlot>=bankSlot?state.addresses.slice(0,state.lastExtendedSlotStartIndex):state.addresses;
     return {context:r.context,value:new web3.AddressLookupTableAccount({key,state:{...state,addresses}})};
   }
-  view(minSlot=0,cacheOnly=false,{wait=async()=>{},blockhashCache}={}){
-    const cache=this,rpc=this.rpc;
+  view(minSlot=0,cacheOnly=false,{wait=async()=>{},blockhashCache,sharedKeys=[]}={}){
+    const cache=this,rpc=this.rpc,shared=new Set(sharedKeys.map(k=>k.toBase58()));
     const config=c=>({...typeof c==='object'&&c,minContextSlot:Math.max(minSlot,c?.minContextSlot||0),commitment:cache.commitment});
     const methods={
-      getMultipleAccountsInfoAndContext:(keys,c)=>cache.get(keys,config(c),cacheOnly,wait),
-      getMultipleAccountsInfo:async(keys,c)=>(await cache.get(keys,config(c),cacheOnly,wait)).value,
+      getMultipleAccountsInfoAndContext:(keys,c)=>cache.get(keys,config(c),cacheOnly,wait,shared),
+      getMultipleAccountsInfo:async(keys,c)=>(await cache.get(keys,config(c),cacheOnly,wait,shared)).value,
       getAccountInfoAndContext:async(k,c)=>{const r=await cache.get([k],config(c),cacheOnly,wait);return {context:r.context,value:r.value[0]};},
       getAccountInfo:async(k,c)=>(await cache.get([k],config(c),cacheOnly,wait)).value[0],
       getLatestBlockhash:async c=>{
@@ -138,7 +158,7 @@ class AccountCache {
     }});
   }
   close(){
-    this.closed=true;this.rows.clear();
+    this.closed=true;this.rows.clear();this.sharedWait.clear();
     for(const state of this.watchState.values())state.dispose();
     for(const id of this.subscriptions.values())Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
     if(this.clockId!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(this.clockId)).catch(()=>{});

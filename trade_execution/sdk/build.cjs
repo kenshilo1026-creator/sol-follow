@@ -154,8 +154,11 @@ async function buildNative(input,injectedConnection) {
   fraction(input.slippagePercent);
   const connection=injectedConnection || connectionFor(input);
   const targetAta=spl.getAssociatedTokenAddressSync(mint,user,false,tokenProgram);
+  const create=require('./create-fast.cjs').hint(input);
+  // The SDK emits idempotent ATA creation when accountInfo is null. This is
+  // safe even if somebody already created our ATA; no absence is assumed.
   const accounts=await connection.getMultipleAccountsInfo([
-    mint,pump.bondingCurvePda(mint),pump.GLOBAL_PDA,pump.PUMP_FEE_CONFIG_PDA,targetAta]);
+    mint,pump.bondingCurvePda(mint),pump.GLOBAL_PDA,pump.PUMP_FEE_CONFIG_PDA,...(create?[]:[targetAta])]);
   [tokenProgram,pump.PUMP_PROGRAM_ID,pump.PUMP_PROGRAM_ID,pump.PUMP_FEE_PROGRAM_ID].forEach((owner,i)=>{
     if (!accounts[i] || accounts[i].executable || !accounts[i].owner.equals(owner)) throw Error('account-owner');
   });

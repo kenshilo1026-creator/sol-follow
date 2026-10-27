@@ -20,6 +20,8 @@ class CachedBuilder:
         self.pending = {}
         self.counter = 0
         self.queue = OrderedDict()
+        self.shared_queue = OrderedDict()
+        self.shared_seen = set()
         self.recent = OrderedDict()
         self.stats = {}
         self.closed = False
@@ -47,6 +49,17 @@ class CachedBuilder:
         self.enqueue(request, route.trade.wallet)
 
     def observe_create(self, item, enqueue=True):
+        # Config addresses decoded from initialize are useful before this mint
+        # becomes eligible. No RPC is awaited by the create/event handler.
+        if item.launchpad=='stonk' and item.flags.get('config'):
+            key=item.flags['config']
+            if key not in self.shared_seen:
+                self.shared_queue[key]=dict(route='stonk_native_curve' if item.quote_mint==WSOL else 'sol_to_stonk_curve',
+                    mint=item.mint,quoteMint=item.quote_mint,pool=item.pool,minSlot=item.slot,lookupTables=[],
+                    tokenProgram=item.base_token_program,quoteProgram=item.quote_token_program,
+                    createHint=dict(version=1,mint=item.mint,quoteMint=item.quote_mint,pool=item.pool,
+                                    slot=item.slot,launchpad=item.launchpad,config=key))
+                while len(self.shared_queue)>128:self.shared_queue.popitem(last=False)
         if item.quote_mint == WSOL:
             return
         from launchpads import stonk
@@ -151,7 +164,7 @@ class CachedBuilder:
                     payload["active"]=self.priority.active
                 self.process.stdin.write((json.dumps({'id': identifier, 'input': payload})+'\n').encode())
                 await self.process.stdin.drain()
-            background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap")
+            background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap","shared_warm")
             if background:
                 # Pausing background work is not a hung foreground build.
                 row=await future
@@ -194,6 +207,13 @@ class CachedBuilder:
                                self.config.wallet_address,operation="bootstrap")
         except BuildError:
             self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
+        # Restore recently decoded Stonk configs, including SOL pairs, before
+        # background route warmup. Older records without config safely skip.
+        from types import SimpleNamespace
+        rows=self.seen.store.rows('funding',
+            "SELECT detail FROM launch_creates WHERE launchpad='stonk' AND status!='invalid' ORDER BY slot DESC LIMIT 128")
+        for row in rows:
+            self.observe_create(SimpleNamespace(**json.loads(row['detail'])),enqueue=False)
         await self.import_creates()
         for request, wallet in self.seen.recent():
             if request['route']=='prime':
@@ -203,6 +223,15 @@ class CachedBuilder:
         # Start/load SDKs before the first qualifying signal.
         await self.start()
         while True:
+            if not self.priority.active and self.shared_queue:
+                key,request=self.shared_queue.popitem(last=False)
+                try:
+                    await self.request(request,self.config.wallet_address,operation='shared_warm')
+                    self.shared_seen.add(key)
+                    if len(self.shared_seen)>512:self.shared_seen.clear()
+                except BuildError:
+                    self.notices.emit('shared config warm deferred',{},key='shared-warm',interval=60)
+                continue
             if self.priority.active or not self.queue:
                 await asyncio.sleep(0.2)
                 continue

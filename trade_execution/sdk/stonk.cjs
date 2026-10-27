@@ -78,8 +78,14 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   const targetAta=spl.getAssociatedTokenAddressSync(mint,user,false,baseProgram);
   const quoteAta=spl.getAssociatedTokenAddressSync(quote,user,false,quoteProgram);
   const nativeAta=spl.getAssociatedTokenAddressSync(spl.NATIVE_MINT,user);
-  const rows=await connection.getMultipleAccountsInfo([pool,mint,quote,targetAta,nativeAta]);
+  const create=require('./create-fast.cjs').hint(input);
+  const configHint=create?.config?new web3.PublicKey(create.config):null;
+  // Create carries GlobalConfig: fetch it with pool/mints rather than waiting
+  // for pool decoding before issuing another HTTP round trip.
+  const rows=await connection.getMultipleAccountsInfo([pool,mint,quote,targetAta,nativeAta,
+    ...(configHint?[configHint,PLATFORM]:[])]);
   const state=poolState(rows[0],pool,mint,quote);
+  if(configHint&&!state.config.equals(configHint))throw Error('stonk-pool-rejected');
   account(rows[1],baseProgram,82);account(rows[2],quoteProgram,82);
   const base=spl.unpackMint(mint,rows[1],baseProgram),quoteInfo=spl.unpackMint(quote,rows[2],quoteProgram);
   safeMint(base,true);safeMint(quoteInfo,true);
@@ -89,7 +95,7 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
     return epoch;
   });
   const [configs,epoch,hop]=await Promise.all([
-    connection.getMultipleAccountsInfo([state.config,PLATFORM]),checkedEpoch,
+    configHint?Promise.resolve(rows.slice(5)):connection.getMultipleAccountsInfo([state.config,PLATFORM]),checkedEpoch,
     checkedEpoch.then(()=>native?{expected:BigInt(amount.toString()),minimum:BigInt(amount.toString()),fees:[],impacts:[],setup:[],swaps:[],tables:[]}:
     jupiter.buildHop({user,quoteMint:quote,quoteAta,amount,slippageBps,connection,safeMint,
       risk:input.risk,minLiquidity:input.minLiquidity,swapRecipe:input.swapRecipe,onRecipe:input.onRecipe,waitForBackground:input.waitForBackground,background:input.background}))]);

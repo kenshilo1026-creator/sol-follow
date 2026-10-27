@@ -26,9 +26,10 @@ class StonkRoute:
     observed_mint: str = ''
     observed_kind: str = 'exact-input-budget'
     funding_sol_limit: int = 0
+    create_hint: dict | None = None
 
     def request(self):
-        return dict(route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
+        return dict(**({'createHint':self.create_hint} if self.create_hint else {}),route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
                     tokenProgram=self.token_program, quoteProgram=self.quote_program,
                     pool=self.trade.pool, lookupTables=list(self.lookup_tables), minSlot=self.trade.slot)
 
