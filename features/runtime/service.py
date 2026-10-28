@@ -438,6 +438,8 @@ class Service:
             self.dev_holdings.changed=self.dev_exit.wake.set
             self.dev_holdings.recover()
             self.executor.recover_unsigned()
+            from features.strategy.startup_positions import prune_empty_positions
+            await prune_empty_positions(self.config,self.store,self.execution_reads,self.notices)
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
             if outstanding or positions:
