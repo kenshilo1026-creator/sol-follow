@@ -54,6 +54,16 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='positions retained for exit management':
+        mints='、'.join(detail.get('position_mints',[])) or '無'
+        return (f"[SOL] 啟動後保留持倉管理\n本地持倉紀錄: {mints}"
+                f"\n另需保留的舊訂單: {len(detail.get('orders',[]))} 筆"
+                "\n保留原有紀錄供賣出與交易核對使用；不是新增買單。")
+    if kind=='funding queue unavailable':
+        code=detail.get('sqlite_name') or detail.get('type','未知')
+        return (f"⚠️ [SOL] 資格工作佇列暫時無法處理\n原因: {detail.get('reason','需查看服務日誌定位')}"
+                f"\n錯誤: {code}\n位置: {detail.get('location','未知')}"
+                "\n本輪工作未能正常處理，稍後重試；持續失敗會延誤入金資格及跟買訊號處理。")
     if kind=='buy finalized':
         lines=['✅ [SOL][LIVE] 買入成交',f"代幣: {detail['mint']}"]
         name=detail.get('name');symbol=detail.get('symbol')

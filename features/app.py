@@ -68,7 +68,9 @@ def main():
     except KeyboardInterrupt:
         pass
     except Exception as exc:
-        logging.error('[SOL] service stopped safely type=%s; signed orders remain durable',type(exc).__name__)
+        from features.database.errors import failures
+        logging.error('[SOL] service stopped safely type=%s failures=%s; signed orders remain durable',
+                      type(exc).__name__,failures(exc))
         raise SystemExit(1) from None
     finally:
         instance.close()

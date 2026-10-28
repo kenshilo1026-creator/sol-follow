@@ -26,6 +26,7 @@ from features.funding.backlog import BacklogMonitor
 from features.funding.processed import Processed
 from features.database.maintenance import Maintenance
 from features.database.storage import Store
+from features.database.errors import detail as database_error
 from launchpads import ENABLED, pump_fun, stonk
 from launchpads.create import inspect as inspect_creates, SUPPORTED as CREATE_DECODERS
 from share_common.notify import Notices
@@ -233,7 +234,7 @@ class Service:
                 if not rows:
                     rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed,excluded=self.active_jobs)
             except Exception as exc:
-                self.notices.emit('funding queue unavailable',{'type':type(exc).__name__},alert=True,key='queue-error')
+                self.notices.emit('funding queue unavailable',database_error(exc),alert=True,key='queue-error')
                 await asyncio.sleep(0.5)
                 continue
             if not rows:

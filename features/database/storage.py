@@ -142,6 +142,10 @@ class Store:
             yield c
         finally:
             try:
+                # Maintenance's deadline belongs to that operation, not the next
+                # borrower. Clear it BEFORE rollback/reset SQL, which it can also
+                # interrupt once the deadline has elapsed.
+                c.set_progress_handler(None, 0)
                 if c.in_transaction:
                     c.rollback()
                 if pooled and self.reuse_connections and name not in self._idle_connections:
