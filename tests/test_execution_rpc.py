@@ -50,6 +50,25 @@ def test_dedicated_rpc_configuration_reaches_sdk_without_exposing_urls_in_repr(t
     assert 'private-token' not in repr(cfg) and 'backup-token' not in repr(cfg)
 
 
+def test_alchemy_primary_public_fallback_and_explicit_overrides(tmp_path):
+    (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}')
+    public='https://public.example'
+    cfg=load(tmp_path,env={'ALCHEMY_API_KEY':'fixture-key','SOL_RPC_HTTP_URL':public})
+    alchemy='https://solana-mainnet.g.alchemy.com/v2/fixture-key'
+    payload=payload_for(cfg,{},'wallet')
+    assert payload['rpc']==alchemy and payload['rpcFallback']==public
+    assert cfg.execution_ws_url==cfg.ws
+    assert 'fixture-key' not in repr(cfg)
+    custom=replace(cfg,execution_http='https://dedicated.example')
+    assert custom.execution_rpc_url=='https://dedicated.example'
+    assert custom.execution_fallback_url==alchemy
+    assert replace(cfg,execution_http=public).execution_fallback_url==alchemy
+    assert replace(cfg,execution_fallback_http='https://backup.example').execution_fallback_url=='https://backup.example'
+    assert replace(cfg,execution_fallback_http=alchemy).execution_fallback_url==''
+    no_key=replace(cfg,alchemy_key='')
+    assert no_key.execution_rpc_url==public and no_key.execution_fallback_url==''
+
+
 @pytest.mark.parametrize('name',['SOL_EXECUTION_RPC_HTTP_URL','SOL_EXECUTION_RPC_FALLBACK_HTTP_URL','SOL_EXECUTION_RPC_WS_URL'])
 def test_invalid_execution_endpoint_fails_without_leaking_secret(tmp_path,name):
     (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}')
@@ -208,4 +227,4 @@ async def test_runtime_lanes_share_real_cooldown_but_isolate_activity(config, st
     monkeypatch.setattr(reply, 'json', result)
     response = await asyncio.wait_for(reader.call('getSignatureStatuses', [['a'],{}]), timeout=3)
     assert response['value'] == [None]
-    assert calls[-1][0] == service.config.execution_fallback_url
+    assert calls[-1][0] == service.config.execution_rpc_url

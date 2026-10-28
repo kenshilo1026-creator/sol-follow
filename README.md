@@ -10,7 +10,7 @@ RPC 單筆回傳 `null`、驗證不合格或要求的 slot 尚未可用，只讓
 每次買入前先同步登記 dev 與其 token account 的監察，刷新實際 MarketFeed，最多等待 2 秒取得訂閱確認；未接好就停止該筆買入。訂閱確認仍會觸發 dev sell 空窗補查。
 止盈及 dev 賣出使用獨立的公共／Alchemy WebSocket 同時監聽，事件由原有持久化鍵去重；不再與 CEX 入金共用訂閱。任一連線維持完整覆蓋時不發斷線 Telegram；覆蓋不足超過 60 秒才通知。入金／gRPC 斷線與確認／交易 RPC 故障亦先記本地，持續超過 60 秒才告警；真正的交易拒絕、鏈上失敗等交易通知照常。
 gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查使用下述固定時間窗口與持久續查游標，每輪 3 頁不再是整個缺口的上限。
-可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。空白時主端沿用 `SOL_RPC_HTTP_URL`，後備使用現有 Alchemy key。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`；health 增加 `execution_rpc`、`execution_reads`、`market_feed`，不輸出端點或 key。
+可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。HTTP 設定空白且有 Alchemy key 時，組單讀取、模擬及交易送出優先使用 Alchemy，`SOL_RPC_HTTP_URL` 作後備；沒有 key 才直接使用原有 RPC。明確設定的端點仍優先；WS 設定不變。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`，不輸出端點或 key。
 
 畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
 使用獨立研究資料庫，不依賴真實成交；啟動及報告定義見 [畢業研究監控](docs/graduation-research.md)。
@@ -89,7 +89,7 @@ cd C:\Users\kenho\Documents\learning\sol-follow
 ```
 
 目前本地 `.env` 是 `DRY_RUN=true`、N=3、窗口 120 秒、買額 0.01 SOL；這些是可調初值。
-正式運行請填公共 `SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL`；交易 HTTP 預設公共優先、Alchemy 後備。
+`SOL_RPC_HTTP_URL`、`SOL_RPC_WS_URL` 供背景處理使用；有 Alchemy key 時，交易 HTTP 預設 Alchemy 優先、原有 RPC 後備。背景公共 RPC 仍可能回報 429；Alchemy 亦受帳戶配額限制。
 在本專案 `.env` 加入 `ALCHEMY_API_KEY` 並設定 `SOL_FEED_MODE=alchemy_grpc`，
 hotlist 交易使用 Alchemy 完整交易串流。只要有此 key，CEX／Privacy Cash 來源地址的
 `getSignaturesForAddress` 補查亦使用 Alchemy HTTP（即使 feed 是 websocket）。

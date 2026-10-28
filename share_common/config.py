@@ -194,12 +194,14 @@ class Config:
 
     @property
     def execution_rpc_url(self):
-        return self.execution_http or self.rpc
+        return self.execution_http or (self.funding_history_url if self.alchemy_key else self.rpc)
 
     @property
     def execution_fallback_url(self):
-        url = self.execution_fallback_http or (self.funding_history_url if self.alchemy_key else '')
-        return url if url != self.execution_rpc_url else ''
+        if self.execution_fallback_http:
+            return self.execution_fallback_http if self.execution_fallback_http != self.execution_rpc_url else ''
+        candidates = ([self.funding_history_url] if self.alchemy_key else []) + [self.rpc]
+        return next((url for url in candidates if url != self.execution_rpc_url), '')
 
     @property
     def execution_ws_url(self):

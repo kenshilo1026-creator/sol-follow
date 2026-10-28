@@ -1,4 +1,4 @@
-"""Alchemy-first source pagination and public-first execution both have fallback."""
+"""Alchemy-first source pagination and execution both have public fallback."""
 from dataclasses import replace
 import json
 import time
@@ -21,7 +21,7 @@ from trade_execution.builder import payload_for
     ({'SOL_ALCHEMY_API_KEY':'alias'},'alias'),
     ({'ALCHEMY_API_KEY':'primary','SOL_ALCHEMY_API_KEY':'alias'},'primary'),
 ])
-def test_history_provider_uses_local_key_without_changing_execution(tmp_path,env,key):
+def test_history_and_execution_use_local_key_while_background_stays_public(tmp_path,env,key):
     (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}')
     cfg=load(tmp_path,env={**env,'SOL_FEED_MODE':'websocket','SOL_RPC_HTTP_URL':'https://public.example'})
     assert cfg.rpc=='https://public.example'
@@ -29,8 +29,8 @@ def test_history_provider_uses_local_key_without_changing_execution(tmp_path,env
     assert cfg.funding_history_url==('https://solana-mainnet.g.alchemy.com/v2/'+key if key else cfg.rpc)
     assert cfg.http_policy==('alchemy-source-history-public-funding-alchemy-fallback' if key else 'configured-public-only')
     payload=payload_for(cfg,{},address())
-    assert payload['rpc']==cfg.rpc
-    assert payload['rpcFallback']==(cfg.funding_history_url if key else '')
+    assert payload['rpc']==cfg.funding_history_url
+    assert payload['rpcFallback']==(cfg.rpc if key else '')
     if key:
         assert key not in repr(cfg)
 
@@ -104,7 +104,8 @@ async def test_discovery_routing_keeps_details_public_and_history_nonlive(config
     assert len(calls)==prior  # Never scan unrelated/hotlist wallets.
     await service.background_rpc.transaction('gap-funding')
     assert calls[-1][0]==cfg.rpc and calls[-1][1]['method']=='getTransaction'
-    assert all(url==cfg.rpc for url,body in calls if body['method']!='getSignaturesForAddress')
+    assert all(url==cfg.execution_rpc_url for url,body in calls if body['method']=='getGenesisHash')
+    assert all(url==cfg.rpc for url,body in calls if body['method']=='getTransaction')
 
 
 @pytest.mark.asyncio
@@ -116,7 +117,7 @@ async def test_both_history_providers_fail_retains_request_and_keeps_alert_local
     with rpc_notices(service.notices):
         with pytest.raises(RpcError,match='funding-rpc-unavailable'):
             await discovery.page(source)
-    assert len(calls)==3  # Public genesis, Alchemy history, public fallback.
+    assert len(calls)==3  # Alchemy genesis, Alchemy history, public fallback.
     assert calls[-2][0]==service.config.funding_history_url
     assert calls[-1][0]==service.config.rpc
     assert store.rows('funding','SELECT address FROM history_requests')==[{'address':source}]
