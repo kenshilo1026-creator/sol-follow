@@ -5,6 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 import sqlite3
+import threading
 import time
 import uuid
 from features.audit.writer import SCHEMA as DECISION_SCHEMA
@@ -105,10 +106,14 @@ AUDIT_SCHEMA = '''CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, time 
 
 
 class Store:
-    def __init__(self, directory):
+    def __init__(self, directory, *, reuse_connections=False):
         self.directory = Path(directory)
+        self.reuse_connections = reuse_connections
+        self._connection_thread = threading.get_ident()
+        self._idle_connections = {}
         # Live receipt evidence is deliberately not restored after a restart.
         self.stream_ready = asyncio.Event()
+        self.live_stream_jobs = OrderedDict()
         self.live_receipts = OrderedDict()
         self.new_jobs = 0
         self.revisited_jobs = 0
@@ -124,16 +129,39 @@ class Store:
 
     @contextmanager
     def db(self, name):
-        c = sqlite3.connect(self.directory/(name+'.sqlite3'), timeout=0.05, isolation_level=None)
-        c.row_factory = sqlite3.Row
-        c.execute('PRAGMA synchronous=NORMAL')
-        c.execute('PRAGMA foreign_keys=ON')
+        # A checked-out connection is never shared, including nested contexts.
+        # Other threads use short-lived connections and SQLite's existing locks.
+        pooled = self.reuse_connections and threading.get_ident() == self._connection_thread
+        c = self._idle_connections.pop(name, None) if pooled else None
+        if c is None:
+            c = sqlite3.connect(self.directory/(name+'.sqlite3'), timeout=0.05, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute('PRAGMA synchronous=NORMAL')
+            c.execute('PRAGMA foreign_keys=ON')
         try:
             yield c
         finally:
-            if c.in_transaction:
-                c.rollback()
+            try:
+                if c.in_transaction:
+                    c.rollback()
+                if pooled and self.reuse_connections and name not in self._idle_connections:
+                    # Callers may tighten durability or set a short audit timeout.
+                    # Reset only AFTER their commit/rollback, never before a send.
+                    c.execute('PRAGMA synchronous=NORMAL')
+                    c.execute('PRAGMA busy_timeout=50')
+                    c.execute('PRAGMA query_only=OFF')
+                    self._idle_connections[name] = c
+                else:
+                    c.close()
+            except BaseException:
+                c.close()
+                raise
+
+    def close(self):
+        self.reuse_connections = False
+        for c in self._idle_connections.values():
             c.close()
+        self._idle_connections.clear()
 
     def rows(self, name, sql, params=()):
         with self.db(name) as c:
@@ -293,9 +321,10 @@ class Store:
         now = time.time() if now is None else now
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
+            before = c.total_changes
             c.executemany("INSERT OR IGNORE INTO jobs(signature,state,first_seen,due) VALUES (?,'pending',?,?)",
                           [(s, now, now) for s in dict.fromkeys(signatures)])
-            changed = c.total_changes
+            changed = c.total_changes-before
             c.commit()
         self.new_jobs += changed
         if live:
@@ -335,7 +364,37 @@ class Store:
                         f'{lane} ORDER BY live_priority(signature) DESC, first_seen {order} LIMIT ?', (now, *excluded, limit))]
             c.executemany('UPDATE jobs SET due=? WHERE signature=?', [(now+60, r['signature']) for r in rows])
             c.commit()
+            c.create_function('live_priority', 1, None)
         return rows
+
+    def wake_stream(self, signature):
+        """Receipt hint only; workers recheck the committed job before claiming it."""
+        if self.is_live(signature, 300):
+            self.live_stream_jobs.setdefault(signature, None)
+            while len(self.live_stream_jobs) > 4096:
+                self.live_stream_jobs.popitem(last=False)
+        self.stream_ready.set()
+
+    def due_live_stream(self, now, excluded=()):
+        # Avoid sorting the whole durable backlog for a freshly delivered create.
+        # Evictions/retries remain in SQLite and use the ordinary recovery lane.
+        for _ in range(min(64, len(self.live_stream_jobs))):
+            signature = next(reversed(self.live_stream_jobs))
+            if signature in excluded or not self.is_live(signature, 300):
+                self.live_stream_jobs.pop(signature, None)
+                continue
+            with self.db('funding') as c:
+                c.execute('BEGIN IMMEDIATE')
+                row = c.execute("SELECT * FROM jobs WHERE signature=? AND state='pending' AND due<=? "
+                    'AND EXISTS (SELECT 1 FROM stream_payloads WHERE signature=jobs.signature)',
+                    (signature, now)).fetchone()
+                if row:
+                    c.execute('UPDATE jobs SET due=? WHERE signature=?', (now+60, signature))
+                c.commit()
+            self.live_stream_jobs.pop(signature, None)
+            if row:
+                return [dict(row)]
+        return []
 
     def job_result(self, sig, state, reason='', slot=0):
         with self.db('funding') as c:
@@ -397,7 +456,7 @@ class Store:
         if raw.get('_stream', {}).get('live'):
             self.mark_live(sig)
         # Same-loop producers wake the streamed worker only after durable commit.
-        if state=='pending':self.stream_ready.set()
+        if state=='pending':self.wake_stream(sig)
         return added
 
     def stream_payload(self, signature):
@@ -450,13 +509,15 @@ class Store:
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
             now = time.time()
+            before = c.total_changes
             c.executemany("INSERT OR IGNORE INTO jobs(signature,state,first_seen,due) VALUES (?,'pending',?,?)",
                           [(s, now, now) for s in signatures])
-            inserted=c.total_changes
+            inserted=c.total_changes-before
+            before=c.total_changes
             if revisit:
                 c.executemany("UPDATE jobs SET state='pending',due=? WHERE signature=? AND state='done'",
                               [(now,s) for s in signatures])
-            revisited=c.total_changes-inserted
+            revisited=c.total_changes-before
             c.execute('INSERT INTO cursors VALUES (?,?) ON CONFLICT(address) DO UPDATE SET value=excluded.value',
                       (address, json.dumps(value)))
             c.commit()

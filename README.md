@@ -12,6 +12,9 @@ RPC 單筆回傳 `null`、驗證不合格或要求的 slot 尚未可用，只讓
 gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查使用下述固定時間窗口與持久續查游標，每輪 3 頁不再是整個缺口的上限。
 可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。HTTP 設定空白且有 Alchemy key 時，組單讀取、模擬及交易送出優先使用 Alchemy，`SOL_RPC_HTTP_URL` 作後備；沒有 key 才直接使用原有 RPC。明確設定的端點仍優先；WS 設定不變。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`，不輸出端點或 key。
 
+即時發幣處理：已提交的 live 串流工作另有最多 4096 筆記憶體提示，優先按簽名領取，避免為新訊號排序整個歷史佇列；領取時仍核對資料庫狀態、重試時間及處理中的簽名。gRPC 模式使用兩個即時 worker，另一筆組單等待 RPC 時仍可處理新發幣；原有訂單去重、過期、分叉及 dev 檢查保留。提示不跨重啟恢復，溢出與重試工作仍保留在資料庫。
+服務重用 SQLite 連線、合併買入相關寫入；Node 組單請求一併傳入交易優先狀態，省去組單前的獨立往返。一般 decision 稽核保留事件原始時間，待交易空閒時分批寫入，正常停止會排空；強制終止可能缺少尚未寫入的診斷紀錄。訂單、來源證據、簽署交易仍同步保存，送出前的 FULL durability 不變。模擬仍保留一次，沒有新增 `.env` 參數。`dev_audit` 的 execution detail 新增 `submit_started_at`／`submit_ack_at`，可直接與 `received_at` 比較收訊到開始送單及 RPC 回覆的時間，毋須以稽核寫入時間推算。
+
 畢業代幣的 dev 入場／create 買入理論研究：`python graduation_watch.py watch`，持續收集至手動停止。
 使用獨立研究資料庫，不依賴真實成交；啟動及報告定義見 [畢業研究監控](docs/graduation-research.md)。
 

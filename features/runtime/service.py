@@ -229,7 +229,9 @@ class Service:
                 # Clear before the synchronous DB read: no producer can slip
                 # between the empty check and clearing a newly arrived event.
                 if streamed:self.store.stream_ready.clear()
-                rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed,excluded=self.active_jobs)
+                rows=self.store.due_live_stream(time.time(),self.active_jobs) if streamed is not False else []
+                if not rows:
+                    rows=self.store.due(1,time.time(),oldest=turn%5==0,streamed=streamed,excluded=self.active_jobs)
             except Exception as exc:
                 self.notices.emit('funding queue unavailable',{'type':type(exc).__name__},alert=True,key='queue-error')
                 await asyncio.sleep(0.5)
@@ -334,8 +336,24 @@ class Service:
             self.signals.prune()
 
     async def run(self):
-        async with self.notices.running():
-            await self._run()
+        from features.audit.writer import BufferedDecisions
+        self.store.reuse_connections=True
+        writer=BufferedDecisions(self.store,self.priority)
+        self.store.decision_writer=writer
+        try:
+            async with self.notices.running():
+                audit_task=asyncio.create_task(writer.run())
+                try:
+                    await self._run()
+                finally:
+                    audit_task.cancel()
+                    await asyncio.gather(audit_task,return_exceptions=True)
+        finally:
+            self.store.decision_writer=None
+            try:
+                writer.close()
+            finally:
+                self.store.close()
 
     async def _run(self):
         removed=self.store.prune_startup_jobs(time.time())
@@ -451,7 +469,9 @@ class Service:
                     coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
                                       for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:
-                        coroutines.extend([self.hotlist_feed.run(),self.create_feed.run(),self.worker(rpc,True),
+                        # One slow build must not hold the next fresh create behind it.
+                        # Durable claims and active_jobs still exclude duplicate work.
+                        coroutines.extend([self.hotlist_feed.run(),self.create_feed.run(),self.worker(rpc,True),self.worker(rpc,True),
                             self.proofs.run(self.confirmation_rpc,self.signals,self.notices,self.config.backfill_age)])
                     for coroutine in coroutines:
                         group.create_task(coroutine)

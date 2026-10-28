@@ -2,6 +2,9 @@
 import json
 import logging
 import time
+import asyncio
+from collections import deque
+from itertools import islice
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY, time REAL NOT NULL,
@@ -13,17 +16,66 @@ CREATE INDEX IF NOT EXISTS decisions_signature ON decisions(signature);
 CREATE INDEX IF NOT EXISTS decisions_time ON decisions(time);
 """
 
+INSERT = ('INSERT OR IGNORE INTO decisions(time,wallet,mint,signature,event,stage,outcome,reason,detail) '
+          'VALUES (?,?,?,?,?,?,?,?,?)')
+
+
+class BufferedDecisions:
+    """Only diagnostic decisions are deferred; trading/proof writes stay durable."""
+    def __init__(self,store,priority):
+        self.store,self.priority=store,priority
+        self.pending=deque()
+        self.reported_failure=False
+
+    def write(self,values):
+        if len(self.pending)>=4096:
+            # Bounded memory, with synchronous backpressure rather than silent loss.
+            self.flush()
+        self.pending.append(values)
+
+    def flush(self):
+        batch=list(islice(self.pending,128))
+        if not batch:return
+        with self.store.db('audit') as c:
+            c.execute('PRAGMA busy_timeout=5')
+            c.execute('BEGIN IMMEDIATE')
+            c.executemany(INSERT,batch)
+            c.commit()
+        for _ in batch:self.pending.popleft()
+        self.reported_failure=False
+
+    async def run(self):
+        while True:
+            await asyncio.sleep(0.05)
+            if self.priority.active:continue
+            try:
+                self.flush()
+            except Exception as exc:
+                if not self.reported_failure:
+                    logging.getLogger(__name__).error('[SOL] decision audit deferred type=%s',type(exc).__name__)
+                    self.reported_failure=True
+
+    def close(self):
+        try:
+            while self.pending:self.flush()
+        except Exception as exc:
+            logging.getLogger(__name__).error('[SOL] decision audit shutdown incomplete pending=%s type=%s',
+                                              len(self.pending),type(exc).__name__)
+
 
 def record(store,stage,outcome,reason,*,wallet='',mint='',signature='',event='',detail=None):
     try:
         encoded=json.dumps(detail or {},ensure_ascii=False,separators=(',',':'))
         if len(encoded)>8000:encoded=json.dumps({'detail_truncated':True})
+        values=(time.time(),wallet,mint,signature,event or signature,stage,outcome,reason,encoded)
+        writer=getattr(store,'decision_writer',None)
+        if writer is not None:
+            writer.write(values)
+            return
         with store.db('audit') as c:
             c.execute('PRAGMA busy_timeout=5')
             # Same replay/retry decision is a single durable fact, not a log flood.
-            c.execute('INSERT OR IGNORE INTO decisions(time,wallet,mint,signature,event,stage,outcome,reason,detail) '
-                      'VALUES (?,?,?,?,?,?,?,?,?)',
-                      (time.time(),wallet,mint,signature,event or signature,stage,outcome,reason,encoded))
+            c.execute(INSERT,values)
     except Exception as exc:
         logging.getLogger(__name__).error('[SOL] decision audit unavailable type=%s',type(exc).__name__)
 

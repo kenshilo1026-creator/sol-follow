@@ -30,7 +30,11 @@ def config(tmp_path):
 
 @pytest.fixture
 def store(config):
-    return Store(config.data)
+    instance=Store(config.data,reuse_connections=True)
+    try:
+        yield instance
+    finally:
+        instance.close()
 
 
 def address():

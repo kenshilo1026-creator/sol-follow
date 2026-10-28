@@ -54,8 +54,10 @@ class Executor:
         if row['state']!='reserved' or row['mode']!=self.config.mode:
             return
         with self.store.db('trading') as c:
+            c.execute('BEGIN IMMEDIATE')
             c.execute('INSERT OR IGNORE INTO order_routes VALUES (?,?)',(oid,json.dumps(route.request())))
-        self.store.update_order(oid,reason=MARKER)
+            c.execute('UPDATE orders SET reason=?,updated=? WHERE id=?',(MARKER,time.time(),oid))
+            c.commit()
         began=time.monotonic()
         timings={}
         simulation_source=None
@@ -67,6 +69,7 @@ class Executor:
         signed=False
         stage='precheck'
         signature=None
+        submit_started_at=submit_ack_at=None
         self.priority.active+=1
         try:
             if self.store.rows('trading',"SELECT 1 FROM positions WHERE mint=? AND mode=? AND amount!='0'",(row['mint'],row['mode'])):
@@ -76,7 +79,7 @@ class Executor:
             # A dry run may simulate with the observed funded address when no
             # local public wallet is configured. It never reads that wallet's key.
             wallet=self.config.wallet_address or route.trade.wallet
-            if hasattr(self.builder,"set_priority"):
+            if hasattr(self.builder,"set_priority") and not getattr(self.builder,'priority_with_request',False):
                 await self.builder.set_priority(self.priority.active)
             stage='build'
             result=await self.builder(self.config,route,wallet)
@@ -90,13 +93,16 @@ class Executor:
                 or result['mint']!=row['mint'] or int(result['amount'])!=int(row['amount'])
                 or not 0<int(result['minOut'])<=int(result['quotedOut'])):
                 raise ValueError('invalid-built-transaction')
-            self.store.update_order(oid,min_out=result['minOut'],quoted_out=result['quotedOut'])
             # The routed buy spends quoteIn on the final token leg, not its SOL budget.
             quote_input=int(result['quoteIn'])
             if quote_input<=0:raise ValueError('invalid-entry-quote')
             with self.store.db('trading') as c:
+                c.execute('BEGIN IMMEDIATE')
+                c.execute('UPDATE orders SET min_out=?,quoted_out=?,updated=? WHERE id=?',
+                          (result['minOut'],result['quotedOut'],time.time(),oid))
                 c.execute('INSERT OR REPLACE INTO buy_quote_inputs VALUES (?,?,?)',
                           (oid,route.quote_mint,str(quote_input)))
+                c.commit()
             stage='simulate'
             if reusable_simulation(result,tx,slot=route.trade.slot,commitment=self.config.hotlist_commitment):
                 simulation_source='sdk-reused'
@@ -151,16 +157,19 @@ class Executor:
             require_fresh()
             stage='submit'
             mark('submit_started_ms')
+            submit_started_at=time.time()
             # A successful SDK/fallback simulation already checked this plan.
             # Preserve slot, freshness and durable-signature gates; omit duplicate preflight.
             response=await self.rpc.call('sendTransaction',[raw,{'encoding':'base64','skipPreflight':True,
                 'preflightCommitment':self.config.hotlist_commitment,'maxRetries':0,'minContextSlot':route.trade.slot}])
+            submit_ack_at=time.time()
             mark('submit_ack_ms')
             if response!=signature:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
             trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings,
-                          'simulation_source':simulation_source,'builder_timing':builder_timing,'skip_preflight':True})
+                          'simulation_source':simulation_source,'builder_timing':builder_timing,'skip_preflight':True,
+                          'submit_started_at':submit_started_at,'submit_ack_at':submit_ack_at})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']})
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
         except asyncio.CancelledError:
@@ -175,6 +184,7 @@ class Executor:
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
                           'simulation_source':simulation_source,'builder_timing':builder_timing,
+                          'submit_started_at':submit_started_at,'submit_ack_at':submit_ack_at,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
                           'source_proof':Processed(self.store).row(route.trade.signature),**fees})
             self.notices.emit('buy deferred' if signed else 'buy rejected',

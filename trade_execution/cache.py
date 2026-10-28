@@ -11,6 +11,9 @@ from trade_execution.builder import BuildError, payload_for, child_environment, 
 
 
 class CachedBuilder:
+    # exchange() carries activeTrades in the build message itself.
+    priority_with_request = True
+
     def __init__(self, config, store, notices, priority):
         self.config, self.notices, self.priority = config, notices, priority
         self.seen = SeenTokens(store)

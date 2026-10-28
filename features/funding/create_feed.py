@@ -99,6 +99,7 @@ class CreateFeed(Discovery):
             db.execute('INSERT OR REPLACE INTO stream_payloads VALUES (?,?)',(sig,json.dumps(raw)))
             db.commit()
         self.store.mark_live(sig)
+        self.store.wake_stream(sig)
         self.added+=1
 
     async def receipts(self):
