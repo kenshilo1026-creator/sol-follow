@@ -67,7 +67,8 @@ class CreateDevGate:
             db.execute('INSERT OR REPLACE INTO token_dev_holdings VALUES (?,?,?,?,?,?,?)',
                 (item.mint,item.signature,item.user,item.slot,time.time(),state,json.dumps(detail)))
             db.commit()
-        self.notices.emit('dev create quantity check',{'mint':item.mint,'state':state,**detail},alert=state!='allowed')
+        # An over-limit create is a routine rejection: retain its local log/audit.
+        self.notices.emit('dev create quantity check',{'mint':item.mint,'state':state,**detail},alert=state=='unavailable')
         self.changed()
         return state=='allowed'
 
