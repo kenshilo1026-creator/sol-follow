@@ -3,6 +3,7 @@ const publicRpc=require('./public-rpc.cjs');
 // Pinned SDKs build fresh unsigned instructions. No key loading or broadcast.
 const BN = require('bn.js');
 const risk=require('./risk.cjs');
+const priorityFee=require('./priority-fee.cjs');
 const assert = require('node:assert/strict');
 const web3 = require('@solana/web3.js');
 const spl = require('@solana/spl-token');
@@ -15,7 +16,7 @@ const buyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_v2');
 const exactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_quote_in_v2');
 const nativeBuyIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy');
 const nativeExactIdl = pump.pumpIdl.instructions.find(x => x.name === 'buy_exact_sol_in');
-const REASONS = new Set(['execution-rpc-unavailable','execution-context-behind','execution-request-aborted',
+const REASONS = new Set(['create-state-changed','invalid-priority-fee','execution-rpc-unavailable','execution-context-behind','execution-request-aborted',
   'spot-index-unavailable','sweep-quote-expired','sell-balance-unavailable','sell-fill-rejected','invalid-integer','invalid-u64','invalid-percent','dust-route',
   'unsupported-graduation','graduated-pool-unavailable','cpmm-pool-rejected','cpmm-quote-rejected','cpmm-pool-not-open',
   'pumpswap-pool-rejected','pumpswap-quote-rejected','pumpswap-sell-disabled',
@@ -118,6 +119,7 @@ function connectionFor(input) {
 }
 
 async function finish(connection,input,user,ixs,check) {
+  check=require('./local-create.cjs').simulationCheck(input,check,safeMint);
   // Adjacent route adapters may request the same idempotent ATA setup. Avoid
   // spending packet space and compute on identical create instructions.
   const created=new Set();
@@ -129,21 +131,24 @@ async function finish(connection,input,user,ixs,check) {
   const tables = (await Promise.all(input.lookupTables.map(async key =>
     (await connection.getAddressLookupTable(new web3.PublicKey(key))).value))).filter(Boolean);
   if(input.prewarm)return {warmed:true};
+  const feeBudget=priorityFee.budget(input);
   const block=await connection.getLatestBlockhash(input.commitment||'confirmed');
-  let tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units:1400000}),...ixs],tables);
+  let tx=compile(user,block.blockhash,[...priorityFee.prefix(feeBudget,1400000,true),...ixs],tables);
   const simulatedTransaction=Buffer.from(tx.serialize()).toString('base64');
   const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',minContextSlot:input.minSlot,
-    ...(check?{accounts:{encoding:'base64',addresses:check.addresses}}:{})});
+    ...(check?.addresses?{accounts:{encoding:'base64',addresses:check.addresses}}:{}),
+    ...(check?.innerInstructions?{innerInstructions:true}:{})});
   if (simulated.value.err || !Number.isSafeInteger(simulated.value.unitsConsumed)
       || simulated.value.unitsConsumed<=0 || simulated.value.unitsConsumed>1400000) throw Error('simulation-rejected');
-  if(check)check.verify(simulated.value.accounts);
+  if(check)check.verify(simulated.value.accounts,simulated.value,tx);
   const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*6/5));
-  tx=compile(user,block.blockhash,[web3.ComputeBudgetProgram.setComputeUnitLimit({units}),...ixs],tables);
+  tx=compile(user,block.blockhash,[...priorityFee.prefix(feeBudget,units),...ixs],tables);
   return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units,
     // Python verifies the simulated message against the final unsigned message.
-    // Only the padded compute-unit limit may differ; all swap/minOut/accounts
+    ...priorityFee.detail(feeBudget,units),
+    // Only the validated CU limit/price may differ; all swap/minOut/accounts
     // and the blockhash must match. Missing RPC context uses Python fallback.
-    simulation:{version:1,transaction:simulatedTransaction,slot:simulated.context?.slot,
+    simulation:{version:feeBudget===null?1:2,transaction:simulatedTransaction,slot:simulated.context?.slot,
       commitment:input.commitment||'confirmed',unitsConsumed:simulated.value.unitsConsumed,err:null}};
 }
 
@@ -183,8 +188,11 @@ async function buildNative(input,injectedConnection) {
 }
 
 async function build(input, injectedConnection) {
-  const connection=injectedConnection||connectionFor(input);
-  return buildRoute(input,require('./create-preparation.cjs').prepare(input,connection));
+  const base=injectedConnection||connectionFor(input);
+  const connection=require('./local-create.cjs').connection(input,base);
+  const result=await buildRoute(input,require('./create-preparation.cjs').prepare(input,connection));
+  if(input.localCreate)result.localCreate=input.localCreate;
+  return result;
 }
 
 async function buildRoute(input, injectedConnection) {

@@ -347,3 +347,81 @@ longer blocks an otherwise covered buy. ACK/removal/disconnect events wake
 waiters directly, replacing the 10 ms polling loop. Missing required ACKs
 still time out and reject the buy; this does not turn a disconnected stream
 into permission to trade. The deadline, simulation and signing rules remain.
+
+
+### Per-transaction priority fee
+
+`SOL_PRIORITY_FEE_SOL=0.0002` is the default total priority-fee budget (200,000
+lamports) on every newly built buy, dev exit, take-profit sell and quote sweep.
+It excludes the base network fee, account rent and any separately configured
+delivery tip. Setting it to zero disables the priority fee. Existing signed
+transactions are never modified or re-signed merely to change this setting.
+
+The shared unsigned builder includes a Compute Unit Price instruction in its
+single simulation, then derives the final price from the padded CU limit.
+Integer rounding never exceeds the configured budget (at most one lamport
+below it over supported CU limits). Simulation reserves at least that budget;
+the version-2 evidence checks both CU-limit and CU-price arithmetic against the
+configured budget while requiring all swap/minOut/accounts/blockhash data to
+match. No extra quote RPC or simulation is added by enabling the fee. This
+does not enable a Jito/Nozomi tip or switch the submission endpoint.
+
+
+### Transaction-local Pump / Stonk create builder
+
+`SOL_LOCAL_CREATE_BUILD=true` (default) uses the successful source transaction's
+program-attributed create/trade events for the newly created mint and curve/pool.
+`features/strategy/create_snapshot.py` verifies a complete invocation stack,
+one creation, bounded event data, and rejects unknown launchpad operations or
+mint mutations outside creation. Foreign programs' event-shaped log messages
+are ignored. These projections belong to one build; they are never inserted
+into the shared RPC account cache or reused for subsequent buys/sells.
+
+For supported Pump creates, the builder uses the last TradeEvent's **after**
+reserves (or CreateEvent's initial reserves when there was no trade), the pinned
+SDK's fee/quote calculation and instruction encoding, plus the existing shared
+Global/FeeConfig cache. Stonk uses the decoded initialize parameters and the
+last LaunchLab TradeEvent's after reserves. Transfer-fee mint projections keep
+the rate and maximum fee from the supported initialize ABI. The event layout
+reference is Raydium's official
+[LaunchLab IDL](https://github.com/raydium-io/raydium-idl/blob/master/raydium_launchpad/raydium_launchpad.json).
+
+The native Stonk path needs only GlobalConfig/PlatformConfig from the common
+cache, with no mint/pool/wallet-balance/epoch RPC. Its WSOL ATA is created
+idempotently and retained, rather than closing an account whose prior balance
+has not been read. Only the configured SOL amount is wrapped and spent. One
+simulation verifies the buy's inner token transfers: exact payment to the quote
+vault, net token receipt at least minOut, and no unexpected token transfers.
+The actual mint is requested in that same simulation response to reject changed
+fee schedules/extensions; there is no additional mint query. Missing inner
+instructions or failed simulation reject the trade. Existing WSOL is preserved;
+the retained ATA's rent is not reclaimed by this buy.
+
+With common settings and blockhash warm, native builds no longer wait for an
+account-read RPC; **one simulation remains**. Non-SOL routes also omit their new
+mint/pool reads, but retain quote-hop, existing-balance and ALT checks as needed.
+Cold shared settings/blockhash still use the existing bounded RPC fallback.
+Incomplete logs, unsupported flags (including Pump Mayhem/holder-reward), unknown
+ABI tails, and Stonk creates without a supported trade event use the original
+builder. Set the environment switch to false to disable this optimization.
+
+The persistent Node process still encodes instructions; this is not a Python
+rewrite or a promise of zero RPC / same-slot inclusion. Signing stays in Python.
+Existing minOut/slippage, tax/impact checks, signal age, source validity,
+monitor readiness, simulation reuse and priority-fee settings remain active.
+Successful audit `builder_timing.localCreate` reports `eligible`, `reason` and
+`projectedAccounts`, allowing VPS measurements to distinguish local builds from
+fallback. The offline `local_create_inputs.json` fixture is derived from the
+existing source transaction fixtures; Python tests reproduce it exactly.
+
+
+For the verified local create path only, continuously subscribed common config
+PDAs may be used while the public WS head trails the processed trigger by at
+most two slots, provided the stream heartbeat is fresh and subscription coverage
+is intact. This avoids re-reading unchanged settings just to advance their
+context slot. A larger gap/disconnect falls back to the existing reads. This
+exception never applies to mint/pool/quote balances or lookup tables. The single
+simulation retains minContextSlot and the original minOut before signing.
+All projected mint states (including non-SOL routes) are also checked against
+the actual mint returned in that simulation for supply, decimals, supported
+extensions and both transfer-fee schedules.

@@ -27,6 +27,10 @@ def create_route(item, tx):
     hint={'version':1,'mint':item.mint,'quoteMint':item.quote_mint,
           'pool':item.pool,'slot':item.slot,'launchpad':item.launchpad}
 
+    from features.strategy.create_snapshot import capture
+    snapshot=capture(item,tx)
+    if snapshot:hint['localSnapshot']=snapshot
+
     trade=Trade(item.event,item.signature,item.slot,item.time,item.user,item.mint,'create',
                 0,0,tx.owner_tokens('post',item.user,item.mint),item.pool)
     if item.launchpad==pump_fun.NAME and item.program==pump_fun.PROGRAM:

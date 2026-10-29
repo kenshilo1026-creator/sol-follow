@@ -19,7 +19,7 @@ function prepare(input,connection){
     const name=key.toBase58();
     if(!tables.has(name))tables.set(name,capture(()=>connection.getAddressLookupTable(key)));
   }
-  if(input.route==='stonk_native_curve'||input.route==='sol_to_stonk_curve')
+  if((input.route==='stonk_native_curve'&&!input.localCreate?.eligible)||input.route==='sol_to_stonk_curve')
     epoch=capture(()=>connection.getEpochInfo());
   return new Proxy(connection,{get(target,key){
     if(key==='getAddressLookupTable')return (address,config)=>

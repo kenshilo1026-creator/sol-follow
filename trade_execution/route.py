@@ -27,7 +27,7 @@ class Route:
     def request(self):
         return dict(**({'createHint':self.create_hint} if self.create_hint else {}),route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,
                     tokenProgram=self.token_program, quoteProgram=self.quote_program,
-                    pool=self.trade.pool if self.kind=='sol_to_pump_curve' else self.dlmm_pool,
+                    pool=self.trade.pool if self.kind in ('pump_native_curve','sol_to_pump_curve') else self.dlmm_pool,
                     lookupTables=list(self.lookup_tables), minSlot=self.trade.slot,
                     **({'swapRecipe': {'version':1,'tables':list(self.lookup_tables),'steps':[
                         {'label':'Meteora DLMM','pool':self.dlmm_pool,'inputMint':WSOL,'outputMint':self.quote_mint}]}}

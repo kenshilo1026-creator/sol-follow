@@ -137,6 +137,7 @@ def payload_for(config, request, wallet):
             'rpcCooldownDir':str((config.data / 'rpc-cooldowns').resolve()),
             'rpcTimeoutMs':int(config.execution_timeout*1000), 'ws':config.execution_ws_url, 'wallet':wallet,
             'amount':str(config.buy_amount), 'slippagePercent':format(config.slippage_percent,'f'),
+            'priorityFeeLamports':str(config.priority_fee_lamports), 'localCreateEnabled':config.local_create_build,
             'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,
             'risk':{'quoteTokenTaxBps':config.max_quote_token_tax_bps,'tokenTaxBps':config.max_token_tax_bps,'impactBps':config.max_price_impact_bps}}
 

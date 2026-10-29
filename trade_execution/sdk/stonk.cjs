@@ -67,6 +67,8 @@ function buyInstruction({user,pool,mint,quote,baseProgram,quoteProgram,state,tar
     keys:addresses.map((pubkey,i)=>({pubkey,isSigner:i===0,isWritable:writable.has(i)}))});
 }
 async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fraction}) {
+  if(input.route==='stonk_native_curve'&&input.localCreate?.eligible)
+    return require('./local-stonk.cjs').build(input,{connection,safeMint,finish,minimums,integer,fraction});
   const user=new web3.PublicKey(input.wallet),mint=new web3.PublicKey(input.mint),quote=new web3.PublicKey(input.quoteMint);
   const pool=new web3.PublicKey(input.pool),baseProgram=new web3.PublicKey(input.tokenProgram),quoteProgram=new web3.PublicKey(input.quoteProgram);
   const native=input.route==='stonk_native_curve';

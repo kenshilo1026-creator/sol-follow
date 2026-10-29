@@ -158,7 +158,8 @@ def test_failed_stream_commit_never_wakes_worker(config,store,monkeypatch):
     assert not store.stream_ready.is_set()
 
 
-def test_real_node_attestation_is_accepted_by_python(config):
+@pytest.mark.parametrize('fee',[None,'200000','0'])
+def test_real_node_attestation_is_accepted_by_python(config,fee):
     import subprocess
     program=r"""
 const web3=require('@solana/web3.js');
@@ -168,10 +169,29 @@ const {finish}=require('./trade_execution/sdk/build.cjs');
   const conn={getLatestBlockhash:async()=>({blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:300}),
     simulateTransaction:async()=>({context:{slot:101},value:{err:null,unitsConsumed:89980}})};
   const ix=web3.SystemProgram.transfer({fromPubkey:user,toPubkey:web3.Keypair.generate().publicKey,lamports:1000});
-  process.stdout.write(JSON.stringify(await finish(conn,{lookupTables:[],minSlot:100,commitment:'processed'},user,[ix])));
+  process.stdout.write(JSON.stringify(await finish(conn,{lookupTables:[],minSlot:100,commitment:'processed',...JSON.parse(process.argv[1])},user,[ix])));
 })().catch(()=>{process.exitCode=1;});
 """
-    output=subprocess.run(['node','-e',program],cwd=config.root,check=True,capture_output=True,text=True,timeout=30)
+    output=subprocess.run(['node','-e',program,json.dumps({} if fee is None else {'priorityFeeLamports':fee})],cwd=config.root,check=True,capture_output=True,text=True,timeout=30)
     result=json.loads(output.stdout)
     tx=VersionedTransaction.from_bytes(base64.b64decode(result['transaction']))
-    assert reusable(result,tx,slot=100,commitment='processed')
+    assert reusable(result,tx,slot=100,commitment='processed',priority_fee_lamports=None if fee is None else int(fee))
+
+
+@pytest.mark.parametrize('mutation',[None,'price','limit','swap','budget','charged','simulation-price'])
+def test_priority_fee_simulation_only_reuses_budget_bound_compute_changes(mutation):
+    from solders.compute_budget import set_compute_unit_price
+    key=Keypair();receiver=Keypair().pubkey();budget=200000;units=113352
+    def packet(limit,price,amount=1):
+        msg=MessageV0.try_compile(key.pubkey(),[set_compute_unit_limit(limit),set_compute_unit_price(price),
+            transfer(TransferParams(from_pubkey=key.pubkey(),to_pubkey=receiver,lamports=amount))],[],Hash.default())
+        tx=VersionedTransaction.populate(msg,[Signature.default()])
+        return tx,base64.b64encode(bytes(tx)).decode()
+    price=budget*10**6//units
+    simulated_price=((budget-1)*10**6+1+1399999)//1400000
+    _,simulated=packet(1400000,simulated_price+(1 if mutation=='simulation-price' else 0))
+    tx,_=packet(units+(1 if mutation=='limit' else 0),price+(1 if mutation=='price' else 0),2 if mutation=='swap' else 1)
+    result={'units':units,'priorityFee':{'budgetLamports':str(budget+(1 if mutation=='budget' else 0)),
+        'microLamports':str(price),'chargedLamports':str(budget+(1 if mutation=='charged' else 0))},
+        'simulation':{'version':2,'transaction':simulated,'slot':100,'commitment':'processed','err':None,'unitsConsumed':94460}}
+    assert reusable(result,tx,slot=100,commitment='processed',priority_fee_lamports=budget)==(mutation is None)

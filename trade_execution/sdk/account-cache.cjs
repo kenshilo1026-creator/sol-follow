@@ -150,6 +150,14 @@ class AccountCache {
     const cache=this,rpc=this.rpc,shared=new Set(sharedKeys.map(k=>k.toBase58()));
     const config=c=>({...typeof c==='object'&&c,minContextSlot:Math.max(minSlot,c?.minContextSlot||0),commitment:cache.commitment});
     const methods={
+      // Only the verified create builder uses this bounded exception for
+      // shared config PDAs. New mint/pool/quote balances never use it. Public
+      // WS slot notifications can trail the processed source by one slot.
+      localCreateShared:keys=>keys.map(key=>{
+        const k=key.toBase58(),r=cache.rows.get(k);
+        return shared.has(k)&&r?.value&&r.continuous&&cache.watchState.get(k)?.subscribed
+          &&cache.healthy()&&cache.head>=minSlot-2&&Date.now()>=r.at?r.value:null;
+      }),
       getMultipleAccountsInfoAndContext:(keys,c)=>cache.get(keys,config(c),cacheOnly,wait,shared),
       getMultipleAccountsInfo:async(keys,c)=>(await cache.get(keys,config(c),cacheOnly,wait,shared)).value,
       getAccountInfoAndContext:async(k,c)=>{const r=await cache.get([k],config(c),cacheOnly,wait);return {context:r.context,value:r.value[0]};},

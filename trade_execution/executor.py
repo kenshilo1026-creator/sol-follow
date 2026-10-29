@@ -104,7 +104,8 @@ class Executor:
                           (oid,route.quote_mint,str(quote_input)))
                 c.commit()
             stage='simulate'
-            if reusable_simulation(result,tx,slot=route.trade.slot,commitment=self.config.hotlist_commitment):
+            if reusable_simulation(result,tx,slot=route.trade.slot,commitment=self.config.hotlist_commitment,
+                                   priority_fee_lamports=self.config.priority_fee_lamports):
                 simulation_source='sdk-reused'
             else:
                 simulation_source='python-fallback'
