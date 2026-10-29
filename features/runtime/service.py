@@ -422,7 +422,7 @@ class Service:
                 self.create_rpc=FundingRpc(proof_public,proof_alchemy)
                 self.create_feed=CreateFeed(self.config,self.store,self.create_rpc,self.notices)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.execution_reads)
-            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights)
+            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights,balance_rpc=self.execution_reads)
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.execution_reads)
             self.dev_sell=DevSell(self.config,self.store,self.execution_reads,self.notices,self.dev_exit)

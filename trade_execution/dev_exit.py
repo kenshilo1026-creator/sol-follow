@@ -9,13 +9,15 @@ from chain_common.primitives import WSOL
 from trade_execution.builder import build_sell, BuildError
 from features.notifications.buy_failures import fee_context
 from features.funding.work import WalletFlights
+from features.strategy.startup_positions import retire_empty_position
 from trade_execution.quote_sweep import enqueue as enqueue_sweep, recipe_for
 
 
 class DevExit:
-    def __init__(self,config,store,rpc,notices,priority,builder=build_sell,*,flights=None):
+    def __init__(self,config,store,rpc,notices,priority,builder=build_sell,*,flights=None,balance_rpc=None):
         self.config,self.store,self.rpc,self.notices,self.priority=config,store,rpc,notices,priority
         self.builder=builder
+        self.balance_rpc=balance_rpc or rpc
         self.flights=flights or WalletFlights()
         self.wake=asyncio.Event()
         self.next={}
@@ -73,6 +75,7 @@ class DevExit:
         if amount<=0:
             self.update(buy['id'],state='cancelled',reason='position-already-exited')
             return
+        if await retire_empty_position(self.config,self.store,self.balance_rpc,self.notices,buy['mint']):return
         events=self.store.rows('trading',"SELECT MAX(slot) AS slot FROM dev_sell_events WHERE buy_id=? AND state='triggered'",(buy['id'],))
         event_slot=events[0]['slot'] or 0
         request={**request,'minSlot':max(proof_slot,event_slot)}
@@ -172,6 +175,12 @@ class DevExit:
                     await self.step(buy,job,request)
             except asyncio.CancelledError:raise
             except Exception as exc:
+                # A manual sale may land after the pre-build balance read. Only
+                # explicit chain zero retires it; insufficient/frozen is not zero.
+                if (isinstance(exc,BuildError) and str(exc)=='sell-balance-unavailable'
+                    and await retire_empty_position(self.config,self.store,self.balance_rpc,self.notices,buy['mint'])):
+                    self.next.pop(buy['id'],None)
+                    continue
                 self.next[buy['id']]=time.monotonic()+5
                 reason=str(exc) if isinstance(exc,BuildError) else type(exc).__name__
                 self.notice('dev exit deferred',buy,reason=reason,quote_mint=request['quoteMint'],

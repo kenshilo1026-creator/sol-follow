@@ -10,6 +10,7 @@ import time
 from chain_common.primitives import TOKEN,TOKEN_2022,ata,b58decode,discriminator
 from chain_common.transaction import Tx
 from launchpads import pump_fun,stonk
+from features.strategy.startup_positions import retire_empty_position
 
 CPMM='CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C'
 
@@ -205,6 +206,14 @@ class DevSell:
                     if tx.signature!=signature or tx.slot!=event['slot']:raise ValueError('dev-sell-receipt-mismatch')
                     origins=self.store.rows('trading','SELECT dev,create_slot FROM dev_sell_watches WHERE buy_id=?',(buy['id'],))
                     amount=(sold_amount(tx,origins[0]['dev'],buy['mint']) if len(origins)==1 and tx.slot>=origins[0]['create_slot'] else 0)
+                if amount and await retire_empty_position(self.config,self.store,self.rpc,self.notices,buy['mint']):
+                    # No exit alert or unsigned job for an externally emptied
+                    # position. Refresh cached watches as well as durable rows.
+                    with self.store.db('trading') as c:
+                        c.execute("UPDATE dev_sell_events SET state='ignored',reason='wallet-balance-zero' WHERE signature=? AND buy_id=?",
+                                  (signature,buy['id']))
+                    self.watch_addresses()
+                    continue
                 with self.store.db('trading') as c:
                     c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
                     if amount:

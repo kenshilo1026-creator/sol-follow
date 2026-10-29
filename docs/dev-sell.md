@@ -42,3 +42,26 @@ only what remains. Signed exit bytes persist before sending, unknown sends never
 create replacement orders, and repeat dev events cannot create duplicate exits.
 Completed exits remove their subscriptions. Dry mode records/notifies detection
 and skips real selling. No new environment setting or separate API key is needed.
+
+## Manual/external full exits (2026-10-29)
+
+Before announcing a proven dev sale or building an unsigned dev exit, the service
+checks the configured wallet's token accounts through the existing public execution
+read lane. It also rechecks after `sell-balance-unavailable`, covering a manual sale
+that lands while the SDK is building. This is event-driven, not a polling loop.
+Each check has a two-second budget; a positive balance requires one RPC read.
+
+A zero must cover every token account for the mint (including closed accounts),
+use a finalized context at or after the verified finalized buy, and match the
+wallet that signed that buy. Pending buys/sells, signed or unknown dev exits,
+changed positions, stale contexts and RPC failures prevent retirement. Finalized
+chain state can lag a just-submitted manual sale; unknown evidence keeps the
+normal exit/retry behavior rather than pretending the wallet is empty.
+
+Once zero is proven, the position amount becomes zero, unsigned dev exits are
+cancelled, pending dev-sale events are ignored, and dev watches are removed.
+Historical fills and buy deduplication remain intact. Cleanup is logged locally;
+it emits neither a new dev-sale trigger alert nor a sell-failure retry alert.
+A partially sold position is retained; insufficient or frozen token accounts
+are not treated as zero. Already signed sells still reconcile their original
+signature. No new environment configuration is required.
