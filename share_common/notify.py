@@ -67,6 +67,8 @@ def message(kind, detail):
         for kind,label in [('block_meta','區塊'),('transaction','交易')]:
             value=detail.get(kind+'_accept_p95_ms')
             if value is not None:lines.append(f'本地{label}處理 P95: {value} ms')
+        if 'ipc_queue_ms' in detail:
+            lines.append(f"接收 process → 主服務等待: {detail['ipc_queue_ms']} ms")
         if 'read_ready_wait_ms' in detail:
             lines.append(f"讀取完成後等待處理: {detail['read_ready_wait_ms']} ms")
         if 'event_loop_lag_max_ms' in detail:

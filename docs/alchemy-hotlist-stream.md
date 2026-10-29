@@ -225,3 +225,42 @@ Health exposes `confirmation_rpc` counters; check/startup reports
 `confirmation_alchemy_fallback` without credentials.
 
 RPC reference: https://www.alchemy.com/docs/chains/solana/solana-api-endpoints/get-signature-statuses
+
+
+## Isolated receiver process (2026-10-29)
+
+The live `HotlistFeed.run()` starts `python -B -m features.funding.grpc_receiver`
+using the same virtual environment. No extra service, package or `.env` setting
+is required. Deploy both new `grpc_receiver.py` and `grpc_process.py` modules,
+then restart the existing service. The read-only diagnostic probe remains a
+direct, fixed-subscription comparison.
+
+The child owns the TLS gRPC channel, network reads, ping replies and subscription
+writes. The main process supplies full hotlist snapshots over stdin. Changes can
+coalesce to the newest snapshot; there is no historical replay. Protobuf updates
+return through stdout in arrival order, with the original wall and monotonic
+receipt timestamps. The parent still normalizes transactions, commits the durable
+inbox before its checkpoint, checks fork state and live deadlines, and trades.
+No signing, SQLite access or strategy execution occurs in the child.
+
+The child output queue is capped at 128 queued messages and 32 MiB including the
+frame being written. A frame is at most 16 MiB. Kernel/asyncio pipe buffers are
+also bounded; these are additional to that queue. If the queue fills, the child
+exits. The parent rejects IPC messages delayed over 2 seconds and reconnects to
+the live head. It does not pretend that an old message arrived just now, enlarge
+the buy deadline, or replay missed buys. Brief stalls can be absorbed; prolonged
+main-process overload still causes skipped signals and reconnects.
+
+Health includes `receiver_pid`, latest `ipc_queue_ms` and `delivery_timing.ipc_queue`
+percentiles. `last_source_age_s` now measures provider creation to child receipt;
+IPC queue time measures child receipt to parent read completion. The stale-stream
+notice includes IPC delay too. Compare these two timings after restart to locate
+remaining delay. The subscription address count records the requested snapshot,
+not an acknowledgement from the remote server.
+
+On cancellation, empty hotlist, stream failure or shutdown, the parent terminates
+and reaps the receiver. Closing the parent's stdin also ends the child. Queue
+overflow, transport errors and timeouts use sanitized reason/status codes;
+credentials are passed on the private stdin pipe, never argv. The child receives
+a minimal environment without wallet, Telegram or cloud credentials. It runs as
+the same OS user: this is scheduling isolation, not a filesystem security sandbox.

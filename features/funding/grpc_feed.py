@@ -10,6 +10,7 @@ from collections import Counter, deque
 from share_common.metrics import Metrics
 import grpc
 from chain_common.availability import Availability
+from features.funding.grpc_process import ReceiverProcess
 from features.audit.feed_trace import observed
 from chain_common.primitives import b58encode
 from chain_common.transaction import Unsupported
@@ -33,6 +34,7 @@ def failure_reason(exc):
         reason=exc.args[0]
         if isinstance(reason,str) and reason in {
             'grpc-stale-block-time','grpc-ended','grpc-idle-timeout','grpc-write-timeout',
+            'grpc-ipc-backlog','grpc-ipc-protocol','grpc-receiver-error',
         }:return reason
     return 'grpc-transport-error' if isinstance(exc,grpc.RpcError) else 'local-error'
 
@@ -89,6 +91,9 @@ class HotlistFeed:
         self.last_source_age=None
         self.source_clock_ahead=0
         self.read_ready_at=None
+        self.ingress_received_at=None
+        self.ipc_queue_ms=None
+        self.receiver_pid=None
         self.loop_due=None
         self.loop_delays=deque(maxlen=240)
 
@@ -129,8 +134,9 @@ class HotlistFeed:
                     [max(0,now-self.loop_due)]+[delay for stamp,delay in self.loop_delays if now-stamp<=60]),2)
             if update.HasField('created_at') and update.created_at.seconds>0:
                 created=update.created_at.seconds+update.created_at.nanos/1e9
-                diagnostic.update(source_age_s=round(received_at-created,3),
+                diagnostic.update(source_age_s=round((self.ingress_received_at or received_at)-created,3),
                                   source_block_lag_s=round(created-block.block_time.timestamp,3))
+            if self.ipc_queue_ms is not None:diagnostic['ipc_queue_ms']=round(self.ipc_queue_ms,2)
             timing=self.delivery.snapshot()
             for kind in ('block_meta','transaction'):
                 row=timing.get(kind+'_local_accept')
@@ -166,14 +172,15 @@ class HotlistFeed:
             'block_time_lag_s':round(now-self.anchor[1],3) if self.anchor else None,
             'anchor_slot':self.anchor[0] if self.anchor else None,
             'anchor_received_age_s':round(now-self.anchor[2],3) if self.anchor else None,
-            'last_transaction_slot':self.last_transaction_slot,
+            'last_transaction_slot':self.last_transaction_slot,'receiver_pid':self.receiver_pid,
+            'ipc_queue_ms':round(self.ipc_queue_ms,2) if self.ipc_queue_ms is not None else None,
             'last_delivery_age_s':round(now-self.last_delivery_at,3) if self.last_delivery_at is not None else None,
             'last_source_age_s':round(self.last_source_age,3) if self.last_source_age is not None else None,
             'source_clock_ahead':self.source_clock_ahead,'delivery_timing':self.delivery.snapshot()}
 
     def accept(self, update):
         began=time.monotonic()
-        now=time.time()
+        now=self.ingress_received_at or time.time()
         kind=update.WhichOneof('update_oneof')
         if kind in ('transaction','block_meta'):
             self.last_delivery_at=now
@@ -206,14 +213,14 @@ class HotlistFeed:
             slot = block.slot
             if block.HasField('block_time') and block.block_time.timestamp > 0:
                 self.store.block_time(slot,block.block_time.timestamp)
-                self.anchor=(slot,block.block_time.timestamp,time.time())
+                self.anchor=(slot,block.block_time.timestamp,self.ingress_received_at or time.time())
         elif kind == 'transaction':
-            received_at=time.time()
+            received_at=self.ingress_received_at or time.time()
             value = update.transaction
             slot = value.slot
             self.received += 1
             self.last_transaction_slot=slot
-            live_reason=self.live_reason(slot,received_at)
+            live_reason=self.live_reason(slot,time.time())
             live=live_reason=='live'
             if not live:self.drop_reasons[live_reason]+=1
             try:
@@ -235,10 +242,10 @@ class HotlistFeed:
                 observed(self.store,raw['transaction']['signatures'][0],'grpc-'+self.config.hotlist_commitment,
                          'received',slot,received_at,normalized=True,live=live,dropped=not live,
                          live_reason=live_reason,source_age_s=self.last_source_age,
-                         live_floor=self.live_floor,anchor_slot=a[0] if a else None,
+                         ipc_queue_ms=self.ipc_queue_ms,live_floor=self.live_floor,anchor_slot=a[0] if a else None,
                          anchor_age_s=now-a[2] if a else None,
                          block_time_lag_s=now-a[1] if a else None)
-                raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live,'source':'grpc'}
+                raw['_stream']={'commitment':self.config.hotlist_commitment,'live':live,'source':'grpc','received_at':received_at}
                 if live:self.added += self.store.stream_transaction(raw)
                 else:self.dropped += 1
         if slot > self.last_slot:
@@ -298,6 +305,9 @@ class HotlistFeed:
             except TimeoutError:
                 raise RuntimeError('grpc-idle-timeout') from None
             self.read_ready_at=time.monotonic()
+            self.ingress_received_at=getattr(call,'received_at',None)
+            self.ipc_queue_ms=getattr(call,'queue_ms',None)
+            if self.ipc_queue_ms is not None:self.delivery.add('ipc_queue',self.ipc_queue_ms/1000)
             if update is grpc.aio.EOF:raise RuntimeError('grpc-ended')
             self.connected=True
             if self.health.since is not None and self.read_ready_at-connected_at>=30:
@@ -315,7 +325,7 @@ class HotlistFeed:
                 batch_started=time.monotonic()
 
     async def connection(self, channel, addresses, start):
-        call = stream_call(channel,self.config)
+        call = channel if isinstance(channel,ReceiverProcess) else stream_call(channel,self.config)
         try:
             await self.write_control(call,subscription(addresses,start,commitment=self.config.hotlist_commitment))
             self.store.set_stream_state('grpc_watch',sorted(addresses))
@@ -323,6 +333,8 @@ class HotlistFeed:
             # Do not cancel call.read() just to refresh filters: cancelling an
             # aio gRPC read cancels the whole stream.
             self.read_ready_at=None
+            self.ingress_received_at=None
+            self.ipc_queue_ms=None
             ping=asyncio.Event()
             controls=asyncio.create_task(self.controls(call,addresses,ping))
             watchdog=asyncio.create_task(self.watch_loop())
@@ -335,6 +347,7 @@ class HotlistFeed:
                 for task in (read,controls,watchdog):task.cancel()
                 await asyncio.gather(read,controls,watchdog,return_exceptions=True)
                 self.read_ready_at=None
+                self.ingress_received_at=None
         finally:
             call.cancel()
 
@@ -353,8 +366,9 @@ class HotlistFeed:
             try:
                 start = await self.resume_slot(addresses)
                 stage = 'grpc-subscription'
-                async with channel_for(self.config) as channel:
-                    await self.connection(channel,addresses,start)
+                async with ReceiverProcess(self.config) as receiver:
+                    self.receiver_pid=receiver.process.pid
+                    await self.connection(receiver,addresses,start)
                 retry_delay = 1 if time.monotonic()-began > 30 else backoff
             except asyncio.CancelledError:
                 raise
@@ -364,11 +378,12 @@ class HotlistFeed:
                 retry_delay = 1 if time.monotonic()-began > 30 else backoff
                 # A local stale-stream restart should not create a minute-long
                 # blind period. Transport/rate-limit failures retain full backoff.
-                if reason=='grpc-stale-block-time':retry_delay=min(5,retry_delay)
+                if reason in ('grpc-stale-block-time','grpc-ipc-backlog'):retry_delay=min(5,retry_delay)
                 self.health.failure('hotlist Alchemy stream unavailable; retrying live subscription',
                     {'status':status,'reason':reason,'stage':stage,'retry_s':retry_delay})
                 self.reconnects += 1
             finally:
+                self.receiver_pid=None
                 self.connected = False
                 self.subscribed.clear()
             await asyncio.sleep(retry_delay)
