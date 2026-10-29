@@ -266,3 +266,74 @@ async def test_real_grpc_transport_dynamic_filter_and_durable_receive(config,sto
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
     finally:
         await server.stop(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('write_kind',['ping','filters'])
+async def test_slow_control_write_does_not_block_stream_reads(config,store,monkeypatch,write_kind):
+    from features.funding import grpc_feed
+    incoming=asyncio.Queue();writing=asyncio.Event();write_cancelled=asyncio.Event();accepted=asyncio.Event()
+    class Call:
+        writes=0
+        cancelled=False
+        async def write(self,request):
+            self.writes+=1
+            if self.writes>1:
+                assert request.HasField('ping')==(write_kind=='ping')
+                writing.set()
+                try:await asyncio.Future()
+                finally:write_cancelled.set()
+        async def read(self):return await incoming.get()
+        def cancel(self):self.cancelled=True
+    call=Call()
+    monkeypatch.setattr(grpc_feed,'stream_call',lambda *args:call)
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    monkeypatch.setattr(feed,'addresses',lambda:{'new'})
+    original=feed.accept
+    def accept(update):
+        original(update)
+        accepted.set()
+    monkeypatch.setattr(feed,'accept',accept)
+    task=asyncio.create_task(feed.connection(None,{'old'},None))
+    try:
+        if write_kind=='ping':await incoming.put(pb.SubscribeUpdate(ping=pb.SubscribeUpdatePing()))
+        await asyncio.wait_for(writing.wait(),3)
+        update=pb.SubscribeUpdate()
+        update.block_meta.slot=123
+        update.block_meta.block_time.timestamp=int(time.time())
+        await incoming.put(update)
+        await asyncio.wait_for(accepted.wait(),.5)
+        assert store.stream_state('grpc_slot')==123
+        assert feed.subscribed=={'old'}  # Pending filter write isn't acknowledged.
+        assert not task.done()
+    finally:
+        task.cancel();await asyncio.gather(task,return_exceptions=True)
+    assert call.cancelled and write_cancelled.is_set()
+    assert feed.loop_due is None
+
+
+@pytest.mark.asyncio
+async def test_control_write_timeout_ends_connection_and_cancels_reader(config,store,monkeypatch):
+    from features.funding import grpc_feed
+    reader_cancelled=asyncio.Event()
+    class Call:
+        writes=0
+        reads=0
+        cancelled=False
+        async def write(self,request):
+            self.writes+=1
+            if self.writes>1:await asyncio.Future()
+        async def read(self):
+            self.reads+=1
+            if self.reads==1:return pb.SubscribeUpdate(ping=pb.SubscribeUpdatePing())
+            try:await asyncio.Future()
+            finally:reader_cancelled.set()
+        def cancel(self):self.cancelled=True
+    call=Call()
+    monkeypatch.setattr(grpc_feed,'stream_call',lambda *args:call)
+    monkeypatch.setattr(grpc_feed,'CONTROL_WRITE_TIMEOUT_SECONDS',.03)
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    with pytest.raises(RuntimeError,match='grpc-write-timeout'):
+        await asyncio.wait_for(feed.connection(None,{'wallet'},None),1)
+    assert call.cancelled and reader_cancelled.is_set()
+    assert feed.loop_due is None

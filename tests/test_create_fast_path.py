@@ -186,6 +186,26 @@ def test_stale_alert_without_source_clock_does_not_invent_transport_latency():
     assert '本機與上游訊息時間差:' not in text
 
 
+def test_stale_alert_includes_current_scheduler_stall_before_watchdog_resumes(config,store,monkeypatch):
+    from features.funding.grpc_feed import HotlistFeed
+    from chain_common.yellowstone import geyser_pb2 as pb
+    from share_common.notify import message
+    notices=Notices();feed=HotlistFeed(config,store,None,notices,None)
+    monkeypatch.setattr(time,'time',lambda:10000.)
+    monkeypatch.setattr(time,'monotonic',lambda:100.)
+    feed.loop_due=90.
+    feed.loop_delays.extend([(0.,30.),(99.,.01)])
+    feed.read_ready_at=99.5
+    update=pb.SubscribeUpdate()
+    update.block_meta.slot=100
+    update.block_meta.block_time.timestamp=9900
+    with pytest.raises(RuntimeError,match='grpc-stale-block-time'):feed.check_freshness(update)
+    kind,detail=notices.items[-1][0]
+    assert detail['event_loop_lag_max_ms']==10000
+    assert detail['read_ready_wait_ms']==500
+    assert '近 60 秒事件迴圈最大延遲: 10000.0 ms' in message(kind,detail)
+
+
 def test_nonlive_grpc_does_not_create_http_recovery_jobs(config,store,monkeypatch):
     from features.funding.grpc_feed import HotlistFeed
     from tests.test_streaming import wire
@@ -259,6 +279,7 @@ async def test_stream_stale_timer_resets_on_reconnect(config,store):
     ('grpc-stale-block-time','grpc-stale-block-time'),
     ('grpc-ended','grpc-ended'),
     ('grpc-idle-timeout','grpc-idle-timeout'),
+    ('grpc-write-timeout','grpc-write-timeout'),
     ('https://example.invalid/private-key','local-error'),
     ('grpc-ended private-key','local-error'),
 ])

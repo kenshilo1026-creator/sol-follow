@@ -6,7 +6,7 @@ subscribe to live traffic only; they never queue public history scans.
 import asyncio
 import time
 from urllib.parse import urlparse
-from collections import Counter
+from collections import Counter, deque
 from share_common.metrics import Metrics
 import grpc
 from chain_common.availability import Availability
@@ -22,6 +22,7 @@ from chain_common.yellowstone.normalize import normalize
 STALE_BLOCK_SECONDS = 10
 STALE_PERSIST_SECONDS = 3
 STALE_HARD_SECONDS = 30
+CONTROL_WRITE_TIMEOUT_SECONDS = 5
 
 
 def failure_reason(exc):
@@ -30,7 +31,7 @@ def failure_reason(exc):
     if isinstance(exc,RuntimeError) and len(exc.args)==1:
         reason=exc.args[0]
         if isinstance(reason,str) and reason in {
-            'grpc-stale-block-time','grpc-ended','grpc-idle-timeout',
+            'grpc-stale-block-time','grpc-ended','grpc-idle-timeout','grpc-write-timeout',
         }:return reason
     return 'grpc-transport-error' if isinstance(exc,grpc.RpcError) else 'local-error'
 
@@ -86,6 +87,9 @@ class HotlistFeed:
         self.last_delivery_at=None
         self.last_source_age=None
         self.source_clock_ahead=0
+        self.read_ready_at=None
+        self.loop_due=None
+        self.loop_delays=deque(maxlen=240)
 
     def addresses(self):
         return set(self.store.hotlist(time.time()))
@@ -117,6 +121,11 @@ class HotlistFeed:
             # age includes transport/client scheduling and clock offset; it is
             # not a claim that either the network or the provider is at fault.
             diagnostic={}
+            if self.read_ready_at is not None:
+                diagnostic['read_ready_wait_ms']=round(max(0,now-self.read_ready_at)*1000,2)
+            if self.loop_due is not None:
+                diagnostic['event_loop_lag_max_ms']=round(1000*max(
+                    [max(0,now-self.loop_due)]+[delay for stamp,delay in self.loop_delays if now-stamp<=60]),2)
             if update.HasField('created_at') and update.created_at.seconds>0:
                 created=update.created_at.seconds+update.created_at.nanos/1e9
                 diagnostic.update(source_age_s=round(received_at-created,3),
@@ -236,23 +245,70 @@ class HotlistFeed:
             self.store.set_stream_state('grpc_slot',int(slot))
             self.last_slot = slot
 
+    async def watch_loop(self):
+        self.loop_delays.clear()
+        try:
+            while True:
+                self.loop_due=time.monotonic()+.25
+                await asyncio.sleep(.25)
+                now=time.monotonic()
+                self.loop_delays.append((now,max(0,now-self.loop_due)))
+        finally:self.loop_due=None
+
+    async def write_control(self, call, request):
+        began=time.monotonic()
+        try:
+            async with asyncio.timeout(CONTROL_WRITE_TIMEOUT_SECONDS):
+                await call.write(request)
+        except TimeoutError:
+            raise RuntimeError('grpc-write-timeout') from None
+        finally:self.delivery.add('control_write',time.monotonic()-began)
+
+    async def controls(self, call, addresses, ping):
+        # One writer serializes pings/filter updates while reads keep draining.
+        refresh_at=time.monotonic()+2
+        while True:
+            try:await asyncio.wait_for(ping.wait(),timeout=max(0,refresh_at-time.monotonic()))
+            except asyncio.TimeoutError:pass
+            if ping.is_set():
+                ping.clear()
+                await self.write_control(call,pb.SubscribeRequest(ping=pb.SubscribeRequestPing(id=1)))
+            if time.monotonic()>=refresh_at:
+                desired=self.addresses()
+                if not desired:return
+                if desired!=addresses:
+                    await self.write_control(call,subscription(desired,commitment=self.config.hotlist_commitment))
+                    addresses=desired
+                    self.subscribed=set(desired)
+                    self.store.set_stream_state('grpc_watch',sorted(desired))
+                refresh_at=time.monotonic()+2
+
     async def connection(self, channel, addresses, start):
         call = stream_call(channel,self.config)
         try:
-            await call.write(subscription(addresses,start,commitment=self.config.hotlist_commitment))
+            await self.write_control(call,subscription(addresses,start,commitment=self.config.hotlist_commitment))
             self.store.set_stream_state('grpc_watch',sorted(addresses))
             self.subscribed = set(addresses)
             last_update = time.monotonic()
-            last_write = time.monotonic()
             connected_at = time.monotonic()
             # Do not cancel call.read() just to refresh filters: cancelling an
             # aio gRPC read cancels the whole stream.
-            read = asyncio.create_task(call.read())
+            async def receive():
+                update=await call.read()
+                return update,time.monotonic()
+            self.read_ready_at=None
+            ping=asyncio.Event()
+            controls=asyncio.create_task(self.controls(call,addresses,ping))
+            watchdog=asyncio.create_task(self.watch_loop())
+            read = asyncio.create_task(receive())
             try:
                 while True:
-                    done,_ = await asyncio.wait({read},timeout=1)
+                    done,_ = await asyncio.wait({read,controls},timeout=1,return_when=asyncio.FIRST_COMPLETED)
+                    if controls in done:
+                        controls.result()
+                        return
                     if done:
-                        update = read.result()
+                        update,self.read_ready_at = read.result()
                         if update is grpc.aio.EOF:
                             raise RuntimeError('grpc-ended')
                         last_update = time.monotonic()
@@ -260,26 +316,17 @@ class HotlistFeed:
                         if self.health.since is not None and time.monotonic()-connected_at>=30:
                             self.health.recovered('hotlist stream recovered')
                         if update.WhichOneof('update_oneof') == 'ping':
-                            await call.write(pb.SubscribeRequest(ping=pb.SubscribeRequestPing(id=1)))
+                            ping.set()
                         else:
                             self.check_freshness(update)
                             self.accept(update)
-                        read = asyncio.create_task(call.read())
+                        read = asyncio.create_task(receive())
                     if time.monotonic()-last_update > 30:
                         raise RuntimeError('grpc-idle-timeout')
-                    if time.monotonic()-last_write >= 2:
-                        desired = self.addresses()
-                        if not desired:
-                            return
-                        if desired != addresses:
-                            await call.write(subscription(desired,commitment=self.config.hotlist_commitment))
-                            addresses = desired
-                            self.subscribed = set(desired)
-                            self.store.set_stream_state('grpc_watch',sorted(desired))
-                        last_write = time.monotonic()
             finally:
-                read.cancel()
-                await asyncio.gather(read,return_exceptions=True)
+                for task in (read,controls,watchdog):task.cancel()
+                await asyncio.gather(read,controls,watchdog,return_exceptions=True)
+                self.read_ready_at=None
         finally:
             call.cancel()
 

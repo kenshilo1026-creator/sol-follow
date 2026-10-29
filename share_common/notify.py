@@ -67,6 +67,10 @@ def message(kind, detail):
         for kind,label in [('block_meta','區塊'),('transaction','交易')]:
             value=detail.get(kind+'_accept_p95_ms')
             if value is not None:lines.append(f'本地{label}處理 P95: {value} ms')
+        if 'read_ready_wait_ms' in detail:
+            lines.append(f"讀取完成後等待處理: {detail['read_ready_wait_ms']} ms")
+        if 'event_loop_lag_max_ms' in detail:
+            lines.append(f"近 60 秒事件迴圈最大延遲: {detail['event_loop_lag_max_ms']} ms")
         lines.append('時間差可能受時鐘偏差影響；超時買入訊號仍會跳過。')
         return '\n'.join(lines)
     if kind=='positions retained for exit management':
