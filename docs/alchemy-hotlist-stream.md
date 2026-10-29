@@ -315,3 +315,35 @@ simulation and monitor readiness remain checked before signing/submission.
 
 This reduces serial waits; it is not zero-RPC prediction of a new pool, and
 cannot guarantee a same-slot fill if the state/simulation provider is behind.
+
+
+### Immediate exit-monitor subscription refresh
+
+The 2026-10-29 DrawFi entry audit recorded a 135.342 ms unsigned build,
+137.852 ms cumulative simulation completion, then 893.990 ms waiting for
+exit-monitor coverage. `MarketFeed.arm()` woke the WebSocket loop, but the loop
+cleared that event without bypassing its two-second subscription refresh.
+Explicit change events now immediately rebuild the desired subscriptions. The
+event is consumed before refresh, so changes during subscription sends survive;
+the outstanding WebSocket receive remains alive. A buy still waits for real
+subscription ACK coverage and retains its original expiry and simulation gates.
+
+This addresses a demonstrated local delay, not a promise of same-slot inclusion.
+That sample landed at create+7 slots versus the compared transaction at +2.
+The comparison also showed zero priority fee on our buy, which remains a
+separate configuration/fee-policy improvement, not part of this wakeup fix.
+
+
+The RH reference is `rh_follow_buyer.py::_arm_dev_sell_watch`, called before
+the Pons V2 send path: it installs a local watch in an existing transaction
+feed, rather than waiting for a fresh per-token remote subscription.
+Solana's current exit feed uses address-filtered WebSocket subscriptions, so
+local registration alone cannot certify remote coverage. `MarketFeed.arm()`
+now installs the local consumers synchronously, then returns its awaitable
+coverage gate so subscription ACKs and unsigned building proceed concurrently.
+Coverage uses each socket's server-ACKed address set (cleared on disconnect),
+not the socket's all-addresses-ready flag. A delayed unrelated address no
+longer blocks an otherwise covered buy. ACK/removal/disconnect events wake
+waiters directly, replacing the 10 ms polling loop. Missing required ACKs
+still time out and reject the buy; this does not turn a disconnected stream
+into permission to trade. The deadline, simulation and signing rules remain.

@@ -83,6 +83,7 @@ class Discovery:
         self.market_watch = None
         self.market_event = None
         self.market_subscribed = None
+        self.subscription_changed = None
         self.market_addresses = set()
         self.funding_sources = set(config.cex) | set(config.privacy_pools)
         self.ws_urls=tuple(dict.fromkeys([config.funding_ws_url,config.ws]))
@@ -188,7 +189,11 @@ class Discovery:
                         desired=set()
                         waiting=deque()
                         while True:
-                            if time.monotonic()-refreshed>2:
+                            if self.changed.is_set() or time.monotonic()-refreshed>2:
+                                # arm() must bypass the periodic refresh interval.
+                                # Consume before rebuilding so changes arriving
+                                # during subscription sends survive to the next turn.
+                                self.changed.clear()
                                 self.refresh()
                                 refreshed=time.monotonic()
                                 desired=set(self.addresses)
@@ -197,6 +202,7 @@ class Discovery:
                                         counter += 1
                                         await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[subs.pop(address)]})
                                         self.subscribed.discard(address)
+                                    if self.subscription_changed:self.subscription_changed()
                                     sent.pop(address,None)
                                 # Rebuild only on refresh, not on every ACK/log.
                                 waiting=deque(sorted(desired-set(sent)))
@@ -232,7 +238,8 @@ class Discovery:
                             finally:
                                 changed.cancel()
                                 await asyncio.gather(changed,return_exceptions=True)
-                            self.changed.clear()
+                            # The next refresh consumes changed. Clearing here
+                            # loses arm()'s request before desired is recomputed.
                             if read not in done:
                                 continue
                             msg=read.result()
@@ -261,6 +268,7 @@ class Discovery:
                                         subs[addr] = body['result']
                                         self.subscribed.add(addr)
                                         if self.market_subscribed:self.market_subscribed(addr)
+                                        if self.subscription_changed:self.subscription_changed()
                             self.notification(body,subs)
             except asyncio.CancelledError:
                 raise
@@ -281,6 +289,7 @@ class Discovery:
                     await asyncio.gather(read,return_exceptions=True)
                 self.connected = False
                 self.subscribed.clear()
+                if self.subscription_changed:self.subscription_changed()
             await asyncio.sleep(backoff)
             backoff = min(60,backoff*2)
 
