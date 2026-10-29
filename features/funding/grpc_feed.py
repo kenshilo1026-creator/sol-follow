@@ -23,6 +23,7 @@ STALE_BLOCK_SECONDS = 10
 STALE_PERSIST_SECONDS = 3
 STALE_HARD_SECONDS = 30
 CONTROL_WRITE_TIMEOUT_SECONDS = 5
+STREAM_IDLE_SECONDS = 30
 
 
 def failure_reason(exc):
@@ -283,46 +284,53 @@ class HotlistFeed:
                     self.store.set_stream_state('grpc_watch',sorted(desired))
                 refresh_at=time.monotonic()+2
 
+    async def receive(self, call, ping):
+        connected_at=time.monotonic()
+        batch_started=connected_at
+        batch_count=0
+        while True:
+            # Read in this task, then process immediately. A task + wait + task
+            # round trip for every slot update lets unrelated jobs interleave
+            # several times per message and can leave a growing gRPC backlog.
+            try:
+                async with asyncio.timeout(STREAM_IDLE_SECONDS):
+                    update=await call.read()
+            except TimeoutError:
+                raise RuntimeError('grpc-idle-timeout') from None
+            self.read_ready_at=time.monotonic()
+            if update is grpc.aio.EOF:raise RuntimeError('grpc-ended')
+            self.connected=True
+            if self.health.since is not None and self.read_ready_at-connected_at>=30:
+                self.health.recovered('hotlist stream recovered')
+            if update.WhichOneof('update_oneof')=='ping':ping.set()
+            else:
+                self.check_freshness(update)
+                self.accept(update)
+            batch_count+=1
+            # Bounded draining: let trading, subscription writes and cancellation
+            # run even when call.read() completes synchronously from its buffer.
+            if batch_count>=16 or time.monotonic()-batch_started>=.004:
+                await asyncio.sleep(0)
+                batch_count=0
+                batch_started=time.monotonic()
+
     async def connection(self, channel, addresses, start):
         call = stream_call(channel,self.config)
         try:
             await self.write_control(call,subscription(addresses,start,commitment=self.config.hotlist_commitment))
             self.store.set_stream_state('grpc_watch',sorted(addresses))
             self.subscribed = set(addresses)
-            last_update = time.monotonic()
-            connected_at = time.monotonic()
             # Do not cancel call.read() just to refresh filters: cancelling an
             # aio gRPC read cancels the whole stream.
-            async def receive():
-                update=await call.read()
-                return update,time.monotonic()
             self.read_ready_at=None
             ping=asyncio.Event()
             controls=asyncio.create_task(self.controls(call,addresses,ping))
             watchdog=asyncio.create_task(self.watch_loop())
-            read = asyncio.create_task(receive())
+            read = asyncio.create_task(self.receive(call,ping))
             try:
-                while True:
-                    done,_ = await asyncio.wait({read,controls},timeout=1,return_when=asyncio.FIRST_COMPLETED)
-                    if controls in done:
-                        controls.result()
-                        return
-                    if done:
-                        update,self.read_ready_at = read.result()
-                        if update is grpc.aio.EOF:
-                            raise RuntimeError('grpc-ended')
-                        last_update = time.monotonic()
-                        self.connected = True
-                        if self.health.since is not None and time.monotonic()-connected_at>=30:
-                            self.health.recovered('hotlist stream recovered')
-                        if update.WhichOneof('update_oneof') == 'ping':
-                            ping.set()
-                        else:
-                            self.check_freshness(update)
-                            self.accept(update)
-                        read = asyncio.create_task(receive())
-                    if time.monotonic()-last_update > 30:
-                        raise RuntimeError('grpc-idle-timeout')
+                # Supervise long-lived tasks once per connection, not per update.
+                done,_=await asyncio.wait({read,controls,watchdog},return_when=asyncio.FIRST_COMPLETED)
+                for task in done:task.result()
             finally:
                 for task in (read,controls,watchdog):task.cancel()
                 await asyncio.gather(read,controls,watchdog,return_exceptions=True)

@@ -337,3 +337,57 @@ async def test_control_write_timeout_ends_connection_and_cancels_reader(config,s
         await asyncio.wait_for(feed.connection(None,{'wallet'},None),1)
     assert call.cancelled and reader_cancelled.is_set()
     assert feed.loop_due is None
+
+
+@pytest.mark.asyncio
+async def test_buffered_stream_drains_without_per_message_scheduling_and_stays_fair(config,store,monkeypatch):
+    from features.funding import grpc_feed
+    import grpc
+    updates=asyncio.Queue()
+    total=1600
+    for slot in range(1,total+1):
+        update=pb.SubscribeUpdate()
+        update.slot.slot=slot
+        await updates.put(update)
+    await updates.put(grpc.aio.EOF)
+    seen=[];turns=[]
+    class Call:
+        cancelled=False
+        async def write(self,request):pass
+        async def read(self):return await updates.get()
+        def cancel(self):self.cancelled=True
+    call=Call()
+    monkeypatch.setattr(grpc_feed,'stream_call',lambda *args:call)
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    monkeypatch.setattr(feed,'accept',lambda update:seen.append(update.slot.slot))
+    async def other_work():
+        while True:
+            turns.append(len(seen))
+            await asyncio.sleep(0)
+    other=asyncio.create_task(other_work())
+    try:
+        with pytest.raises(RuntimeError,match='grpc-ended'):
+            await asyncio.wait_for(feed.connection(None,{'wallet'},None),3)
+    finally:
+        other.cancel();await asyncio.gather(other,return_exceptions=True)
+    assert seen==list(range(1,total+1))  # Ordered, no loss or duplicate processing.
+    assert any(0<n<total for n in turns)  # Draining never starves other tasks.
+    assert len(turns)<total//2  # Avoid multiple event-loop handoffs per message.
+    assert call.cancelled and feed.loop_due is None
+
+
+@pytest.mark.asyncio
+async def test_direct_reader_idle_timeout_closes_stream(config,store,monkeypatch):
+    from features.funding import grpc_feed
+    class Call:
+        cancelled=False
+        async def write(self,request):pass
+        async def read(self):await asyncio.Future()
+        def cancel(self):self.cancelled=True
+    call=Call()
+    monkeypatch.setattr(grpc_feed,'stream_call',lambda *args:call)
+    monkeypatch.setattr(grpc_feed,'STREAM_IDLE_SECONDS',.03)
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    with pytest.raises(RuntimeError,match='grpc-idle-timeout'):
+        await asyncio.wait_for(feed.connection(None,{'wallet'},None),1)
+    assert call.cancelled and feed.loop_due is None
