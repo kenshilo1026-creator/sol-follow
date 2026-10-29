@@ -2,6 +2,7 @@
 import asyncio
 import json
 import time
+from collections import deque
 from urllib.parse import urlparse
 import aiohttp
 from chain_common.public_rpc import report_429, defer_429_alerts
@@ -184,19 +185,25 @@ class Discovery:
                         history_requested=set(self.addresses) & self.funding_sources
                         self.store.request_histories(history_requested)
                         refreshed = 0
+                        desired=set()
+                        waiting=deque()
                         while True:
                             if time.monotonic()-refreshed>2:
                                 self.refresh()
                                 refreshed=time.monotonic()
-                            desired = set(self.addresses)
-                            for address in set(sent)-desired:
-                                if address in subs:
-                                    counter += 1
-                                    await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[subs.pop(address)]})
-                                sent.pop(address,None)
+                                desired=set(self.addresses)
+                                for address in set(sent)-desired:
+                                    if address in subs:
+                                        counter += 1
+                                        await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[subs.pop(address)]})
+                                        self.subscribed.discard(address)
+                                    sent.pop(address,None)
+                                # Rebuild only on refresh, not on every ACK/log.
+                                waiting=deque(sorted(desired-set(sent)))
                             # Limit outstanding acknowledgements instead of bursting
                             # every address subscription at the server on reconnect.
-                            for address in sorted(desired-set(sent))[:max(0,8-len(ids))]:
+                            while waiting and len(ids)<8:
+                                address=waiting.popleft()
                                 counter += 1
                                 ids[counter] = address
                                 requested[counter] = time.monotonic()
@@ -207,8 +214,11 @@ class Discovery:
                                     self.request_history(address)
                                     history_requested.add(address)
                             if any(time.monotonic()-stamp>15 for stamp in requested.values()):
-                                raise FeedError('subscription-ack-timeout')
-                            self.connected=bool(desired) and desired<=set(subs)
+                                raise FeedError('subscription-ack-timeout',pending=len(ids),subscribed=len(subs),
+                                                desired=len(desired),oldest_ms=round(1000*(time.monotonic()-min(requested.values()))))
+                            # Removed addresses are evicted on refresh; only ACKs
+                            # for desired addresses enter subs below.
+                            self.connected=bool(desired) and len(desired)==len(subs)
                             if backoff>1 and self.connected and time.monotonic()-connected_at>=30:
                                 self.feed_health.recovered('feed recovered; history catch-up remains active',
                                     {'provider':provider})
@@ -249,8 +259,8 @@ class Discovery:
                                         await ws.send_json({'jsonrpc':'2.0','id':counter,'method':'logsUnsubscribe','params':[body['result']]})
                                     else:
                                         subs[addr] = body['result']
+                                        self.subscribed.add(addr)
                                         if self.market_subscribed:self.market_subscribed(addr)
-                                    self.subscribed = set(subs)
                             self.notification(body,subs)
             except asyncio.CancelledError:
                 raise

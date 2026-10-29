@@ -33,12 +33,17 @@ class CreateFeed(Discovery):
     def notification(self, body, subs):
         params=body.get('params',{});result=params.get('result',{});value=result.get('value',{})
         sig=value.get('signature');slot=result.get('context',{}).get('slot')
-        address=next((a for a,s in subs.items() if s==params.get('subscription')),None)
-        if (address not in self.store.hotlist(time.time()) or value.get('err') is not None
-                or not isinstance(sig,str) or not sig or type(slot) is not int or slot<=0
+        # ACKs and ordinary wallet traffic dominate this backup. Reject them
+        # before looking up a subscription or touching the database.
+        if (value.get('err') is not None or not isinstance(sig,str) or not sig
+                or type(slot) is not int or slot<=0
                 or not CREATE_LOGS.intersection(value.get('logs') or [])):
             return
+        address=next((a for a,s in subs.items() if s==params.get('subscription')),None)
         now=time.time()
+        if address is None or not self.store.rows('funding',
+                'SELECT 1 FROM hotlist WHERE wallet=? AND expires>?',(address,now)):
+            return
         self.seen={s:t for s,t in self.seen.items() if now-t<=max(60,self.config.signal_age)}
         if sig in self.seen:return
         if len(self.pending)>=2048:

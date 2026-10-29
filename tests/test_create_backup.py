@@ -31,6 +31,28 @@ def setup(config,store):
     return raw,item,cfg,rpc,feed
 
 
+def test_backup_acks_and_ordinary_logs_do_not_read_hotlist(config,store,monkeypatch):
+    _,item,_,_,feed=setup(config,store)
+    def forbidden(*args,**kwargs):raise AssertionError('non-create traffic must not query database')
+    monkeypatch.setattr(store,'hotlist',forbidden)
+    monkeypatch.setattr(store,'rows',forbidden)
+    for i in range(5000):feed.notification({'id':i,'result':i+100},{item.user:1})
+    notify(feed,item,logs=['Program log: Instruction: Buy'])
+    notify(feed,item,err={'InstructionError':[0,'Custom']})
+    assert not feed.pending and feed.received==0
+
+
+def test_backup_create_uses_single_wallet_lookup_and_rechecks_expiry(config,store,monkeypatch):
+    _,item,_,_,feed=setup(config,store)
+    def forbidden(*args):raise AssertionError('must not materialize the whole hotlist')
+    monkeypatch.setattr(store,'hotlist',forbidden)
+    notify(feed,item)
+    assert item.signature in feed.pending
+    with store.db('funding') as db:db.execute('UPDATE hotlist SET expires=0 WHERE wallet=?',(item.user,))
+    notify(feed,item,signature='expired-wallet-create')
+    assert 'expired-wallet-create' not in feed.pending
+
+
 @pytest.mark.asyncio
 async def test_backup_alone_arms_dev_before_one_buy_in_processed_mode(config,store):
     raw,item,cfg,rpc,feed=setup(config,store)

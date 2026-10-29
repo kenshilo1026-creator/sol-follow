@@ -226,6 +226,65 @@ async def test_missing_subscription_ack_reconnects_instead_of_false_healthy(conf
     assert not discovery.connected
 
 
+@pytest.mark.asyncio
+async def test_large_backup_subscription_sorts_once_not_for_every_ack(config,store,monkeypatch):
+    import time
+    from features.funding import discovery as module
+    from features.funding.create_feed import CreateFeed
+    replies=asyncio.Queue();sent=[];sorts=[]
+    feed=CreateFeed(config,store,None,Notices())
+    feed.addresses=[f'wallet-{i}' for i in range(5250)]
+    monkeypatch.setattr(feed,'refresh',lambda:None)
+    monkeypatch.setattr(module,'time',SimpleNamespace(time=time.time,monotonic=lambda:100))
+    def ordered(values):
+        result=sorted(values);sorts.append(len(result));return result
+    monkeypatch.setattr(module,'sorted',ordered,raising=False)
+    def forbidden(*args):raise AssertionError('ACK must not load the hotlist')
+    monkeypatch.setattr(store,'hotlist',forbidden)
+    class Socket:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def send_json(self,body):
+            sent.append(body)
+            await replies.put({'id':body['id'],'result':body['id']+100})
+        async def receive(self):
+            if replies.empty() and len(sent)==len(feed.addresses):
+                assert feed.connected and feed.subscribed==set(feed.addresses)
+                raise asyncio.CancelledError
+            return SimpleNamespace(type=aiohttp.WSMsgType.TEXT,data=json.dumps(await replies.get()))
+    socket_session(monkeypatch,Socket(),[])
+    with pytest.raises(asyncio.CancelledError):await asyncio.wait_for(feed.websocket(),10)
+    assert len(sent)==5250 and sorts==[5250]
+    assert feed.received==0
+
+
+@pytest.mark.asyncio
+async def test_subscription_refresh_removes_old_and_adds_new_without_stale_coverage(config,store,monkeypatch):
+    import time
+    from features.funding import discovery as module
+    replies=asyncio.Queue();sent=[];clock=[100];desired=[['a','b']]
+    feed=Discovery(config,store,None,Notices())
+    monkeypatch.setattr(feed,'refresh',lambda:setattr(feed,'addresses',desired[0]))
+    monkeypatch.setattr(module,'time',SimpleNamespace(time=time.time,monotonic=lambda:clock[0]))
+    class Socket:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def send_json(self,body):
+            sent.append(body)
+            await replies.put({'id':body['id'],'result':body['id']+100 if body['method']=='logsSubscribe' else True})
+        async def receive(self):
+            if replies.empty() and len(sent)==4:
+                assert feed.connected and feed.subscribed=={'b','c'}
+                raise asyncio.CancelledError
+            body=await replies.get()
+            if body['id']==2:desired[0]=['b','c'];clock[0]=103
+            return SimpleNamespace(type=aiohttp.WSMsgType.TEXT,data=json.dumps(body))
+    socket_session(monkeypatch,Socket(),[])
+    with pytest.raises(asyncio.CancelledError):await asyncio.wait_for(feed.websocket(),2)
+    assert [row['method'] for row in sent]==['logsSubscribe','logsSubscribe','logsUnsubscribe','logsSubscribe']
+    assert sent[2]['params']==[101] and sent[3]['params'][0]['mentions']==['c']
+
+
 def test_alchemy_socket_rate_limit_label():
     notices=Notices()
     with rpc_notices(notices):report_429('alchemy-websocket','subscription','WS-RPC')
