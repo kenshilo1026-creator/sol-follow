@@ -21,6 +21,41 @@ def test_cleanup_deadline_does_not_interrupt_next_queue_claim(store,monkeypatch)
     assert len(store.rows('funding','SELECT * FROM jobs'))==2000
 
 
+def test_activity_retention_does_not_scan_unexpired_history(store,monkeypatch):
+    with store.db('funding') as db:
+        db.execute('BEGIN')
+        db.executemany('INSERT INTO funding_activity_checks VALUES (?,?,?,?)',
+                       [(f'active-{i}',1,10000,'{}') for i in range(25000)])
+        db.executemany('INSERT INTO funding_activity_checks VALUES (?,?,?,?)',
+                       [(f'expired-{i}',1,10,'{}') for i in range(10)])
+        db.commit()
+    # Deterministic VM-work budget: a full scan burns > 4 progress callbacks,
+    # whereas a small indexed expiry batch fits. No machine-speed assertion.
+    clock=[0.]
+    def tick():
+        clock[0]+=.01
+        return clock[0]
+    monkeypatch.setattr('features.database.maintenance.time.monotonic',tick)
+    assert batch(store,'funding','funding_activity_checks','expires<?',(100,),limit=6)==6
+    assert batch(store,'funding','funding_activity_checks','expires<?',(100,),limit=6)==4
+    assert batch(store,'funding','funding_activity_checks','expires<?',(100,),limit=6)==0
+    assert store.rows('funding','SELECT count(*) n FROM funding_activity_checks')[0]['n']==25000
+
+
+@pytest.mark.asyncio
+async def test_cleanup_deferred_logs_sqlite_code(config,store,monkeypatch):
+    import features.database.maintenance as module
+    with sqlite3.connect(':memory:') as db:
+        db.set_progress_handler(lambda:1,1)
+        with pytest.raises(sqlite3.OperationalError) as raised:db.execute('SELECT 1')
+    def interrupted(*args):raise raised.value
+    monkeypatch.setattr(module,'batch',interrupted)
+    notices=Notices()
+    await Maintenance(config,store,Priority(),notices).pass_once()
+    detail=next(args[1] for args,kwargs in notices.items if args[0]=='cleanup deferred')
+    assert detail['sqlite_name']=='SQLITE_INTERRUPT'
+
+
 @pytest.mark.asyncio
 async def test_full_maintenance_checkpoints_do_not_poison_any_database(config,store,monkeypatch):
     now=time.time()

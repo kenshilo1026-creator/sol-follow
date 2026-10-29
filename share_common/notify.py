@@ -55,6 +55,20 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='hotlist stream stale; reconnecting':
+        lines=['⚠️ [SOL] Hotlist 串流區塊時間落後，正在重連',
+               f"Slot: {detail['slot']}",
+               f"本機與區塊時間差: {detail['lag_seconds']} 秒（門檻 {detail['maximum_seconds']} 秒）",
+               f"持續超標: {detail['stale_for_seconds']} 秒"]
+        if 'source_age_s' in detail:
+            lines.extend([f"本機與上游訊息時間差: {detail['source_age_s']} 秒",
+                          f"上游訊息與區塊時間差: {detail['source_block_lag_s']} 秒"])
+        else:lines.append('上游訊息時間: 未提供，暫無法區分傳輸延遲與區塊時間落後')
+        for kind,label in [('block_meta','區塊'),('transaction','交易')]:
+            value=detail.get(kind+'_accept_p95_ms')
+            if value is not None:lines.append(f'本地{label}處理 P95: {value} ms')
+        lines.append('時間差可能受時鐘偏差影響；超時買入訊號仍會跳過。')
+        return '\n'.join(lines)
     if kind=='positions retained for exit management':
         mints='、'.join(detail.get('position_mints',[])) or '無'
         return (f"[SOL] 啟動後保留持倉管理\n本地持倉紀錄: {mints}"

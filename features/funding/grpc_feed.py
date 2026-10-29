@@ -103,7 +103,8 @@ class HotlistFeed:
         if update.WhichOneof('update_oneof')!='block_meta':return
         block=update.block_meta
         if not block.HasField('block_time') or block.block_time.timestamp<=0:return
-        lag=time.time()-block.block_time.timestamp
+        received_at=time.time()
+        lag=received_at-block.block_time.timestamp
         if lag<=STALE_BLOCK_SECONDS:
             self.stale_since=None
             return
@@ -111,10 +112,23 @@ class HotlistFeed:
         if self.stale_since is None:self.stale_since=now
         duration=now-self.stale_since
         if lag>STALE_HARD_SECONDS or duration>=STALE_PERSIST_SECONDS:
+            # Inspect THIS rejected message: accept() has not run yet, so its
+            # last_source_age belongs to a previous message. Provider-created
+            # age includes transport/client scheduling and clock offset; it is
+            # not a claim that either the network or the provider is at fault.
+            diagnostic={}
+            if update.HasField('created_at') and update.created_at.seconds>0:
+                created=update.created_at.seconds+update.created_at.nanos/1e9
+                diagnostic.update(source_age_s=round(received_at-created,3),
+                                  source_block_lag_s=round(created-block.block_time.timestamp,3))
+            timing=self.delivery.snapshot()
+            for kind in ('block_meta','transaction'):
+                row=timing.get(kind+'_local_accept')
+                if row:diagnostic[kind+'_accept_p95_ms']=row['p95_ms']
             self.notices.emit('hotlist stream stale; reconnecting',
                 {'slot':block.slot,'lag_seconds':round(lag,3),
                  'maximum_seconds':STALE_BLOCK_SECONDS,'stale_for_seconds':round(duration,3),
-                 'hard_maximum_seconds':STALE_HARD_SECONDS},
+                 'hard_maximum_seconds':STALE_HARD_SECONDS,**diagnostic},
                 alert=True,key='grpc-stale',interval=60)
             raise RuntimeError('grpc-stale-block-time')
 

@@ -2,6 +2,7 @@
 import asyncio
 import shutil
 import time
+from features.database.errors import detail as database_error
 
 
 def usage(store):
@@ -12,11 +13,14 @@ def batch(store, name, table, where, params, limit=128):
     allowed={'decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks','dry_create_alerts'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
+    # Activity evidence lives for 31 days. ORDER BY rowid forces a table scan
+    # even when there is nothing to expire, repeatedly exhausting the deadline.
+    order='expires,rowid' if table=='funding_activity_checks' else 'rowid'
     start=time.monotonic()
     with store.db(name) as c:
         c.set_progress_handler(lambda:time.monotonic()-start>0.04,1000)
         c.execute('BEGIN IMMEDIATE')
-        deleted=c.execute(f'DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where} ORDER BY rowid LIMIT ?)',
+        deleted=c.execute(f'DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {where} ORDER BY {order} LIMIT ?)',
                           (*params,limit)).rowcount
         c.commit()
         return deleted
@@ -60,7 +64,7 @@ class Maintenance:
                 self.limit=min(512,self.limit+16)
             except Exception as exc:
                 self.limit=max(8,self.limit//2)
-                self.notices.emit('cleanup deferred',{'table':table,'type':type(exc).__name__,'next_batch':self.limit},
+                self.notices.emit('cleanup deferred',{'table':table,**database_error(exc),'next_batch':self.limit},
                                   key='cleanup-defer',interval=60)
             await asyncio.sleep(0)
         if not self.priority.active:

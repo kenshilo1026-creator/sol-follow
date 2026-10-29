@@ -151,6 +151,41 @@ def test_stale_block_metadata_disconnects_instead_of_draining_old_stream(config,
     feed.check_freshness(update)
 
 
+@pytest.mark.parametrize('source_age',[.1,11.,-2.])
+def test_stale_diagnostic_uses_rejected_message_timestamp(config,store,monkeypatch,source_age):
+    from features.funding.grpc_feed import HotlistFeed
+    from chain_common.yellowstone import geyser_pb2 as pb
+    from share_common.notify import message
+    notices=Notices();feed=HotlistFeed(config,store,None,notices,None)
+    monkeypatch.setattr(time,'time',lambda:10000.)
+    feed.last_source_age=999  # Previous accepted update must not be attributed here.
+    feed.delivery.add('block_meta_local_accept',.012)
+    feed.delivery.add('transaction_local_accept',.025)
+    update=pb.SubscribeUpdate()
+    update.block_meta.slot=100
+    update.block_meta.block_time.timestamp=9900
+    stamp=10000-source_age
+    update.created_at.seconds=int(stamp)
+    update.created_at.nanos=round((stamp-int(stamp))*1e9)
+    with pytest.raises(RuntimeError,match='grpc-stale-block-time'):feed.check_freshness(update)
+    kind,detail=notices.items[-1][0]
+    assert detail['source_age_s']==source_age
+    assert detail['source_block_lag_s']==round(100-source_age,3)
+    assert detail['block_meta_accept_p95_ms']==12
+    assert detail['transaction_accept_p95_ms']==25
+    text=message(kind,detail)
+    assert f'本機與上游訊息時間差: {source_age} 秒' in text
+    assert '超時買入訊號仍會跳過' in text
+
+
+def test_stale_alert_without_source_clock_does_not_invent_transport_latency():
+    from share_common.notify import message
+    text=message('hotlist stream stale; reconnecting',{
+        'slot':100,'lag_seconds':11.101,'maximum_seconds':10,'stale_for_seconds':3.033})
+    assert '上游訊息時間: 未提供' in text
+    assert '本機與上游訊息時間差:' not in text
+
+
 def test_nonlive_grpc_does_not_create_http_recovery_jobs(config,store,monkeypatch):
     from features.funding.grpc_feed import HotlistFeed
     from tests.test_streaming import wire
