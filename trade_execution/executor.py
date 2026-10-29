@@ -177,6 +177,8 @@ class Executor:
         except Exception as exc:
             mark('failed_ms')
             fees=fee_context(exc,self.config)
+            rpc_detail=getattr(exc,'rpc_details',{})
+            diagnostics={'rpc_details':rpc_detail} if rpc_detail else {}
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:
@@ -186,11 +188,11 @@ class Executor:
                           'simulation_source':simulation_source,'builder_timing':builder_timing,
                           'submit_started_at':submit_started_at,'submit_ack_at':submit_ack_at,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
-                          'source_proof':Processed(self.store).row(route.trade.signature),**fees})
+                          'source_proof':Processed(self.store).row(route.trade.signature),**fees,**diagnostics})
             self.notices.emit('buy deferred' if signed else 'buy rejected',
                 {'order':oid,**buy_context(self.config,route),'stage':stage,'reason':failure_reason(exc),
                  'type':type(exc).__name__,'signed':signed,'signature':signature,
-                 'outcome':'unknown' if signed else 'not-submitted',**fees},alert=True)
+                 'outcome':'unknown' if signed else 'not-submitted',**fees,**diagnostics},alert=True)
         finally:
             self.priority.active-=1
             if hasattr(self.builder,"set_priority"):

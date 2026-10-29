@@ -4,6 +4,7 @@ from contextvars import ContextVar
 import logging
 import re
 import time
+from chain_common.rpc_diagnostics import rpc_details
 
 _sink=ContextVar('public_rpc_notice_sink',default=None)
 _defer_429=ContextVar('defer_rpc_429_alerts',default=False)
@@ -85,7 +86,7 @@ def sdk_event(row):
                 since,notified=sink.sdk_outages.setdefault(method,(time.monotonic(),False))
                 alert=time.monotonic()-since>60 and not notified
                 if alert:sink.sdk_outages[method]=(since,True)
-                sink.emit('trading RPC unavailable',{'lane':'node-sdk','method':method},alert=alert,
+                sink.emit('trading RPC unavailable',{'lane':'node-sdk','method':method,**rpc_details(row)},alert=alert,
                           key='sdk-rpc-'+method+('-alert' if alert else '-local'),interval=60)
         return True
     return False

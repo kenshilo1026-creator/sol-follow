@@ -112,6 +112,41 @@ def test_fee_error_rejects_unsafe_details_and_handles_missing_values(config):
 
 
 @pytest.mark.asyncio
+async def test_rpc_failure_details_reach_order_audit_and_chinese_alert(config,store):
+    from trade_execution.builder import result_or_error
+    from share_common.notify import message
+    cfg,route,oid,_=setup_order(config,store)
+    async def fail(*args):
+        result_or_error({'error':'execution-context-behind','rpcDetails':{
+            'method':'getMultipleAccounts','secret':'https://private-key', 'failures':[
+                {'provider':'primary','source':'alchemy','reason':'execution-context-behind',
+                 'rpc_code':-32016,'required_slot':100,'context_slot':99,'attempt':3,'url':'https://private-key'},
+                {'provider':'fallback','reason':'execution-endpoint-cooling'},
+            ]}})
+    notices=Notices()
+    await Executor(cfg,store,RPC(),notices,Priority(),fail).buy(oid,route)
+    detail=alerts(notices,'buy rejected')[0]
+    text=message('buy rejected',detail)
+    assert '主 RPC（Alchemy）: 節點尚未追上所需 slot' in text
+    assert '備援 RPC: 端點冷卻中，未再請求' in text
+    assert 'RPC 方法: getMultipleAccounts' in text
+    assert '所需 slot 100，回報 slot 99' in text
+    assert detail['signed'] is False and detail['outcome']=='not-submitted'
+    recorded=store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")
+    assert json.loads(recorded[-1]['detail'])['rpc_details']==detail['rpc_details']
+    assert 'private-key' not in json.dumps(detail)+recorded[-1]['detail']+text
+
+
+def test_rpc_diagnostics_reject_untrusted_fields():
+    from chain_common.rpc_diagnostics import rpc_details
+    assert rpc_details({'method':'https://secret','failures':[]})=={}
+    rows=[{'reason':[]},{'reason':'https://secret'},{'reason':'execution-timeout',
+          'provider':'https://secret','http_status':True,'context_slot':'secret','rpc_code':-32016}]
+    assert rpc_details({'method':'getMultipleAccounts','failures':rows})=={
+        'method':'getMultipleAccounts','failures':[{'reason':'execution-timeout','rpc_code':-32016}]}
+
+
+@pytest.mark.asyncio
 async def test_alert_reaches_telegram_sender_without_real_network(config,store,monkeypatch):
     sent=[]
     notices=TelegramNotices(replace(config,telegram_token='fixture-token',telegram_chat='fixture-chat'),store)

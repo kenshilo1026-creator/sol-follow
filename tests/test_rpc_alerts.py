@@ -209,3 +209,17 @@ def test_alchemy_execution_429_is_named_correctly_and_kept_local(config,store):
                    'source':'alchemy-execution','fallbackManaged':True})
     kind,detail,alert=notices.queue.get_nowait()
     assert kind=='Alchemy RPC 429' and detail['source']=='alchemy-execution' and not alert
+
+
+def test_sdk_outage_log_retains_safe_provider_diagnostics(config,store):
+    notices=Notices(config,store)
+    with rpc_notices(notices):
+        sdk_event({'event':'execution-rpc-unavailable','method':'getMultipleAccounts','failures':[
+            {'provider':'primary','source':'alchemy','reason':'execution-context-behind',
+             'rpc_code':-32016,'required_slot':100,'context_slot':99,'message':'private-key'},
+            {'provider':'fallback','reason':'execution-endpoint-cooling','url':'https://private-key'}]})
+    kind,detail,alert=notices.queue.get_nowait()
+    assert kind=='trading RPC unavailable' and not alert
+    assert detail['failures'][0]['rpc_code']==-32016
+    assert detail['failures'][1]['reason']=='execution-endpoint-cooling'
+    assert 'private-key' not in str(detail)

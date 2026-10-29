@@ -1,6 +1,7 @@
 """JSON IPC to the pinned unsigned SDK builder; private keys stay in Python."""
 import asyncio
 from chain_common.public_rpc import sdk_event
+from chain_common.rpc_diagnostics import rpc_details as safe_rpc_details
 from contextlib import asynccontextmanager
 import json
 import math
@@ -11,10 +12,11 @@ from weakref import WeakKeyDictionary
 
 
 class BuildError(RuntimeError):
-    def __init__(self, reason, retry_after=0, fee_details=None):
+    def __init__(self, reason, retry_after=0, fee_details=None, rpc_details=None):
         super().__init__(reason)
         self.retry_after=retry_after
         self.fee_details={}
+        self.rpc_details=safe_rpc_details(rpc_details)
         if reason in ('pool-fee-limit','total-fee-limit','token-tax-limit','quote-token-tax-limit') and isinstance(fee_details,dict):
             keys=('actualPpm','limitPpm')
             if all(isinstance(fee_details.get(k),str) and fee_details[k].isascii()
@@ -141,4 +143,5 @@ def result_or_error(result):
         if not isinstance(delay,(int,float)) or not math.isfinite(delay) or delay<0:
             delay=60
         raise BuildError(reason if isinstance(reason,str) and len(reason)<80 and all(c.islower() or c=='-' for c in reason)
-                         else 'route-build-or-simulation-rejected',retry_after=delay,fee_details=result.get('feeDetails'))
+                         else 'route-build-or-simulation-rejected',retry_after=delay,fee_details=result.get('feeDetails'),
+                         rpc_details=result.get('rpcDetails'))

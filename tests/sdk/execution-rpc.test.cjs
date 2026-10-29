@@ -65,7 +65,90 @@ test('SDK rejects wrong-chain provider and both-failed errors expose no credenti
   });
   await assert.rejects(read('',input()),/^Error: execution-rpc-unavailable$/);
   assert.deepEqual(calls,['getGenesisHash','getGenesisHash']);
-  assert.deepEqual(events,[{event:'execution-rpc-unavailable',method:'simulateTransaction'}]);
+  assert.equal(events.length,1);
+  assert.equal(events[0].method,'simulateTransaction');
+  assert.deepEqual(events[0].failures.map(row=>row.reason),['execution-genesis-unavailable','execution-network-failed']);
+  assert(!JSON.stringify(events).includes('secret'));
+});
+
+test('fresh-slot account read recovers while backup is cooling, without changing request',async()=>{
+  const calls=[];let primaryReads=0;
+  const read=executionFetch({primary:'https://sol.alchemy.com/private',fallback:'https://backup/private'},async(url,options)=>{
+    const body=JSON.parse(options.body);calls.push({url,body});
+    if(url.includes('backup'))return new Response('',{status:429});
+    if(body.method==='getGenesisHash')return ok(MAINNET);
+    if(++primaryReads===1)return new Response(JSON.stringify({error:{code:-32016,data:{contextSlot:99}}}));
+    return ok({context:{slot:100},value:[]});
+  });
+  const options={body:JSON.stringify({method:'getMultipleAccounts',params:[[],{commitment:'processed',minContextSlot:100}]})};
+  assert.deepEqual((await (await read('',options)).json()).result.value,[]);
+  assert.equal(primaryReads,2);
+  assert.equal(calls.filter(c=>c.url.includes('backup')).length,1);
+  const reads=calls.filter(c=>c.body.method==='getMultipleAccounts');
+  assert.deepEqual(reads[0].body,reads[1].body);
+});
+
+test('persistent slot lag retries at most twice and carries safe details through real web3',async t=>{
+  let reads=0;const requests=[];
+  t.mock.method(globalThis,'fetch',async(url,options)=>{
+    const body=JSON.parse(options.body);
+    if(body.method==='getGenesisHash')return ok(MAINNET);
+    reads++;requests.push(body);
+    return new Response(JSON.stringify({error:{code:-32016,message:'private URL secret',data:{contextSlot:99}}}));
+  });
+  const rpc=connectionFor({rpc:'https://sol.alchemy.com/secret',rpcTimeoutMs:4000,
+    commitment:'processed',minSlot:100,lookupTables:[]});
+  await assert.rejects(rpc.getMultipleAccountsInfo([]),error=>{
+    assert.equal(error.message,'execution-context-behind');
+    assert.equal(error.rpcDetails.method,'getMultipleAccounts');
+    assert.equal(error.rpcDetails.failures.length,3);
+    assert(error.rpcDetails.failures.every(row=>row.required_slot===100&&row.context_slot===99));
+    assert(!JSON.stringify(error).includes('secret'));
+    return true;
+  });
+  assert.equal(reads,3);
+  assert(requests.every(body=>JSON.stringify(body)===JSON.stringify(requests[0])));
+  assert(require('../../trade_execution/sdk/build.cjs').REASONS.has('execution-context-behind'));
+});
+
+test('catch-up retry has a shared time budget and observes cancellation',async()=>{
+  for(const cancel of [false,true]){
+    let reads=0;const controller=new AbortController();
+    const read=executionFetch({primary:'https://rpc',timeoutMs:4000},async(url,options)=>{
+      if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+      if(++reads===1)return ok({context:{slot:99},value:{err:null}});
+      if(cancel)controller.abort();
+      return new Promise((resolve,reject)=>{
+        if(options.signal.aborted)return reject(options.signal.reason);
+        options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+      });
+    });
+    // Keep Node alive while the fake fetch waits on AbortSignal.timeout (unref'd).
+    const keepAlive=setTimeout(()=>{},1500),start=performance.now();
+    try{
+      await assert.rejects(read('',{...input(),signal:controller.signal}),error=>{
+        assert.equal(error.message,cancel?'execution-request-aborted':'execution-rpc-unavailable');
+        if(!cancel)assert.equal(error.rpcDetails.failures.at(-1).reason,'execution-timeout');
+        return true;
+      });
+      assert.equal(reads,2);
+      assert(performance.now()-start<1000);
+    }finally{clearTimeout(keepAlive);}
+  }
+});
+
+test('429 and deterministic RPC failures never enter catch-up retries',async()=>{
+  for(const code of [429,-32602,-32002]){
+    let reads=0;
+    const read=executionFetch({primary:'https://rpc'},async(url,options)=>{
+      if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+      reads++;
+      return new Response(JSON.stringify({error:{code,message:'private response'}}));
+    });
+    if(code===429)await assert.rejects(read('',input()),/execution-rpc-unavailable/);
+    else assert.equal((await (await read('',input())).json()).error.code,code);
+    assert.equal(reads,1);
+  }
 });
 
 test('SDK cannot broadcast or sign via fallback transport',async()=>{

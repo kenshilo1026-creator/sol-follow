@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from chain_common.public_rpc import rpc_notices
+from chain_common.rpc_diagnostics import REASONS as RPC_REASONS, rpc_details
 import logging
 import html
 import re
@@ -145,6 +146,8 @@ def message(kind, detail):
         if field=='signature' and detail.get('signature')==detail.get('source_signature'):
             continue
         value=detail.get(field)
+        if field=='reason' and value in ('execution-rpc-unavailable','execution-context-behind'):
+            value=f'{RPC_REASONS[value]}（{value}）'
         if field=='reason' and value in ('pool-fee-limit','total-fee-limit','token-tax-limit','quote-token-tax-limit'):
             translated={'pool-fee-limit':'單一交易池費率超過上限（含協議及適用的 creator 費）',
                         'total-fee-limit':'交易路徑合計費率超過上限',
@@ -153,6 +156,20 @@ def message(kind, detail):
             value=f'{translated[value]}（{value}）'
         if value is not None:
             lines.append(f'{label}: {value}')
+    diagnostic=rpc_details(detail.get('rpc_details'))
+    if diagnostic:
+        lines.append(f"RPC 方法: {diagnostic['method']}")
+        latest={row.get('provider','unknown'):row for row in diagnostic['failures']}
+        for provider,row in latest.items():
+            label={'primary':'主 RPC','fallback':'備援 RPC'}.get(provider,'RPC')
+            if row.get('source')=='alchemy':label+='（Alchemy）'
+            cause=RPC_REASONS[row['reason']]
+            if 'http_status' in row:cause+=f"，HTTP {row['http_status']}"
+            if 'rpc_code' in row:cause+=f"，RPC code {row['rpc_code']}"
+            if 'required_slot' in row and row['reason']=='execution-context-behind':
+                cause+=f"，所需 slot {row['required_slot']}"
+                if 'context_slot' in row:cause+=f"，回報 slot {row['context_slot']}"
+            lines.append(f'{label}: {cause}')
     return '\n'.join(lines)[:3900]
 
 
