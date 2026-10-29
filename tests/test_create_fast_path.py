@@ -329,3 +329,25 @@ async def test_grpc_retry_reports_actual_wait_and_caps_only_stale(config,store,m
     if reason=='transport':
         assert reports[-1]['status']=='RESOURCE_EXHAUSTED'
         assert reports[-1]['reason']=='grpc-transport-error'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('launchpad',['pump','stonk'])
+@pytest.mark.parametrize('non_sol',[False,True])
+async def test_create_executes_before_funding_history_and_retry_does_not_buy_twice(config,store,monkeypatch,launchpad,non_sol):
+    from tests.create_snipe_helpers import setup_create
+    from features.funding.activity_filter import HistoryPending
+    case=setup_create(config,store,processed=False,launchpad=launchpad,non_sol=non_sol)
+    funding=object();attempts=[]
+    monkeypatch.setattr('features.runtime.service.funding_decode',lambda *args:[funding])
+    monkeypatch.setattr('features.runtime.service.funding_candidates',lambda *args:None)
+    async def qualify(item,rpc):
+        assert item is funding
+        assert len(case.calls)==1  # build/execute is ahead of this slow RPC path
+        attempts.append(item)
+        if len(attempts)==1:raise HistoryPending('history-not-ready')
+    monkeypatch.setattr(case.service,'qualify',qualify)
+    with pytest.raises(HistoryPending,match='history-not-ready'):
+        await case.service.process(case.row,case.rpc)
+    await case.service.process(case.row,case.rpc)
+    assert len(case.calls)==1 and len(attempts)==2

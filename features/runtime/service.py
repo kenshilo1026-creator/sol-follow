@@ -161,9 +161,6 @@ class Service:
                         self.store.release_create_alert(item.event)
                         raise
         self.metrics.add('decode',time.monotonic()-parse_started)
-        funding_reads=TransactionReads(rpc,raw)
-        for item in funding_items:
-            await self.qualify(item,funding_reads)
         for item in creation.creates:
             self.quote_builder.observe_create(item)
         for item in ([] if processed else self.store.record_creates(creation.creates)):
@@ -205,7 +202,8 @@ class Service:
                 else:
                     discovery=getattr(self,'discovery',None)
                     if discovery is not None:discovery.refresh()
-                executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority)
+                executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority,
+                                                               builder=self.quote_builder)
                 try:
                     if readiness is None:await executor.buy(oid,route)
                     else:await executor.buy(oid,route,readiness=readiness)
@@ -213,6 +211,13 @@ class Service:
                     if readiness is not None:
                         if not readiness.done():readiness.cancel()
                         await asyncio.gather(readiness,return_exceptions=True)
+        # A live create must reach the cached builder before unrelated funding
+        # history/account RPCs. The entry above still requires an existing
+        # qualified hotlist wallet and the original source/quantity gates.
+        # Keep funding on this durable job: failures retry without a second buy.
+        funding_reads=TransactionReads(rpc,raw)
+        for item in funding_items:
+            await self.qualify(item,funding_reads)
         if processed:
             self.store.finish_processed(row['signature'],'processed-provisional',tx.slot)
         else:

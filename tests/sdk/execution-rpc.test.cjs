@@ -4,6 +4,7 @@ const {executionFetch,MAINNET}=require('../../trade_execution/sdk/execution-rpc.
 const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
 const {connectionFor}=require('../../trade_execution/sdk/build.cjs');
 const {withReporter}=require('../../trade_execution/sdk/public-rpc.cjs');
+const {withCatchupBudget,catchupPolicy}=require('../../trade_execution/sdk/catchup-budget.cjs');
 const ok=result=>new Response(JSON.stringify({jsonrpc:'2.0',id:1,result}));
 const input=()=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,
   method:'simulateTransaction',params:['unsigned',{commitment:'processed',minContextSlot:100,sigVerify:false}]})});
@@ -151,6 +152,56 @@ test('429 and deterministic RPC failures never enter catch-up retries',async()=>
   }
 });
 
+test('buy can catch up after the old 250ms window with backup cooling',async()=>{
+  let firstRead,reads=0,backupReads=0;const bodies=[];
+  const read=executionFetch({primary:'https://sol.alchemy.com/key',fallback:'https://backup'},async(url,options)=>{
+    const body=JSON.parse(options.body);
+    if(url.includes('backup')){backupReads++;return new Response('',{status:429});}
+    if(body.method==='getGenesisHash')return ok(MAINNET);
+    firstRead??=performance.now();reads++;bodies.push(options.body);
+    if(performance.now()-firstRead<280)
+      return new Response(JSON.stringify({error:{code:-32016,data:{contextSlot:99}}}));
+    return ok({context:{slot:100},value:{err:null}});
+  });
+  const result=await withCatchupBudget({buySignalExpiresAtMs:Date.now()+2000},()=>read('',input()));
+  assert.equal((await result.json()).result.context.slot,100);
+  assert(reads>=4&&reads<=9);assert.equal(backupReads,1);
+  assert(bodies.every(body=>body===bodies[0]));
+});
+
+test('buy catch-up window is shared across RPCs and isolated between concurrent builds',async()=>{
+  const expiring={buySignalExpiresAtMs:Date.now()+100};
+  const fresh={buySignalExpiresAtMs:Date.now()+3000};
+  await Promise.all([
+    withCatchupBudget(expiring,async()=>{
+      const policy=catchupPolicy();
+      assert(policy.deadline<=performance.now());
+      await new Promise(resolve=>setTimeout(resolve,10));
+      assert.equal(catchupPolicy().deadline,policy.deadline);
+    }),
+    withCatchupBudget(fresh,async()=>{
+      const policy=catchupPolicy();
+      assert(policy.deadline-performance.now()>900);
+      await new Promise(resolve=>setTimeout(resolve,25));
+      assert.equal(catchupPolicy().deadline,policy.deadline);
+    }),
+  ]);
+  assert.equal(catchupPolicy().rounds,2); // Background/sell callers retain the short policy.
+});
+
+test('expired or near-expiry buy does not keep polling a lagging node',async()=>{
+  for(const remaining of [-1000,100]){
+    let reads=0;
+    const read=executionFetch({primary:'https://rpc'},async(url,options)=>{
+      if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+      reads++;return new Response(JSON.stringify({error:{code:-32016,data:{contextSlot:99}}}));
+    });
+    await assert.rejects(withCatchupBudget({buySignalExpiresAtMs:Date.now()+remaining},()=>read('',input())),
+      /execution-context-behind/);
+    assert.equal(reads,1);
+  }
+});
+
 test('SDK cannot broadcast or sign via fallback transport',async()=>{
   let called=false;
   const read=executionFetch({primary:'https://public'},async()=>{called=true;});
@@ -213,4 +264,23 @@ test('fresh SDK clients share the full Retry-After deadline on disk',async()=>{
     assert(path.basename(directory).startsWith('sol-rpc-cooldown-'));
     fs.rmSync(directory,{recursive:true,force:true});
   }
+});
+
+
+test('WS winner cancellation never cools the endpoint or aborts another build',async()=>{
+  const {withReadSignal}=require('../../trade_execution/sdk/read-cancel.cjs');
+  const controller=new AbortController();let started,reads=0;
+  const ready=new Promise(resolve=>{started=resolve;});
+  const read=executionFetch({primary:'https://rpc'},async(url,options)=>{
+    if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+    if(++reads===1){started();return new Promise((resolve,reject)=>{
+      options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+    });}
+    return ok({context:{slot:100},value:{err:null}});
+  });
+  const first=withReadSignal(controller.signal,()=>read('',input()));
+  const rejected=assert.rejects(first,/execution-request-aborted/);
+  await ready;controller.abort();await rejected;
+  assert.equal((await (await read('',input())).json()).result.context.slot,100);
+  assert.equal(reads,2);
 });

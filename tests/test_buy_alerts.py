@@ -120,7 +120,7 @@ async def test_rpc_failure_details_reach_order_audit_and_chinese_alert(config,st
         result_or_error({'error':'execution-context-behind','rpcDetails':{
             'method':'getMultipleAccounts','secret':'https://private-key', 'failures':[
                 {'provider':'primary','source':'alchemy','reason':'execution-context-behind',
-                 'rpc_code':-32016,'required_slot':100,'context_slot':99,'attempt':3,'url':'https://private-key'},
+                 'rpc_code':-32016,'required_slot':100,'context_slot':99,'attempt':7,'url':'https://private-key'},
                 {'provider':'fallback','reason':'execution-endpoint-cooling'},
             ]}})
     notices=Notices()
@@ -131,6 +131,7 @@ async def test_rpc_failure_details_reach_order_audit_and_chinese_alert(config,st
     assert '備援 RPC: 端點冷卻中，未再請求' in text
     assert 'RPC 方法: getMultipleAccounts' in text
     assert '所需 slot 100，回報 slot 99' in text
+    assert '嘗試 7 次' in text
     assert detail['signed'] is False and detail['outcome']=='not-submitted'
     recorded=store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")
     assert json.loads(recorded[-1]['detail'])['rpc_details']==detail['rpc_details']

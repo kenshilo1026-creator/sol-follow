@@ -183,6 +183,11 @@ async function buildNative(input,injectedConnection) {
 }
 
 async function build(input, injectedConnection) {
+  const connection=injectedConnection||connectionFor(input);
+  return buildRoute(input,require('./create-preparation.cjs').prepare(input,connection));
+}
+
+async function buildRoute(input, injectedConnection) {
   if(input.side==='sweep')return require('./sweep.cjs').buildSweep(input,
     {connection:injectedConnection||connectionFor(input),safeMint,finish,integer,fraction});
   if(input.side==='sell')return require('./sell.cjs').buildSell(input,
@@ -279,8 +284,10 @@ if (require.main === module) {
   process.stdin.setEncoding('utf8');
   process.stdin.on('data',chunk=>{input+=chunk;if(input.length>100000)process.exit(1);});
   process.stdin.on('end',async()=>{
-    try {process.stdout.write(JSON.stringify(await publicRpc.withReporter(
-      event=>process.stderr.write(JSON.stringify(event)+'\n'),()=>build(JSON.parse(input)))));}
+    try {const request=JSON.parse(input);
+      process.stdout.write(JSON.stringify(await publicRpc.withReporter(
+      event=>process.stderr.write(JSON.stringify(event)+'\n'),
+      ()=>require('./catchup-budget.cjs').withCatchupBudget(request,()=>build(request)))));}
     catch (error) {process.stdout.write(JSON.stringify({error:REASONS.has(error.message)
       ? error.message : 'sdk-or-rpc-failed',
       ...(error.rpcDetails?{rpcDetails:error.rpcDetails}:{}),

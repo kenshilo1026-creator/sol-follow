@@ -65,6 +65,9 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
   }
   return async(_url,options)=>{
     const input=JSON.parse(options.body),method=input.method;
+    const verificationOptions=options;
+    const scoped=require('./read-cancel.cjs').readSignal();
+    if(scoped)options={...options,signal:options.signal?AbortSignal.any([options.signal,scoped]):scoped};
     // Never accidentally enable a second broadcast path in an SDK adapter.
     if(typeof method!=='string'||(!method.startsWith('get')&&method!=='simulateTransaction'))
       throw Error('execution-sdk-read-only');
@@ -72,7 +75,9 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
     const failures=[],behind=new Set();
     async function attempt(url,round=0,timeout=timeoutMs){
       try{
-        await verify(url,options);
+        if(options.signal?.aborted)throw Error('execution-request-aborted');
+        await verify(url,verificationOptions);
+        if(options.signal?.aborted)throw Error('execution-request-aborted');
         const {body,text}=await request(url,options,method,timeout);
         if(body.error){
           // Deterministic request/preflight failures are not availability failures.
@@ -106,9 +111,10 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
     // Try the backup immediately. Only slot lag warrants a short catch-up window;
     // never retry 429/cooling endpoints or mask deterministic simulation failures.
     for(const url of urls){const result=await attempt(url);if(result)return result;}
-    const deadline=performance.now()+250;
-    for(let round=1;round<=2&&behind.size;round++){
-      const pause=round*25;
+    const policy=require('./catchup-budget.cjs').catchupPolicy();
+    const deadline=policy.deadline;
+    for(let round=1;round<=policy.rounds&&behind.size;round++){
+      const pause=policy.pause(round);
       if(performance.now()+pause>=deadline)break;
       await delay(pause,undefined,{signal:options.signal});
       for(const url of [...behind]){

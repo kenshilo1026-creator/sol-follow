@@ -264,3 +264,54 @@ overflow, transport errors and timeouts use sanitized reason/status codes;
 credentials are passed on the private stdin pipe, never argv. The child receives
 a minimal environment without wallet, Telegram or cloud credentials. It runs as
 the same OS user: this is scheduling isolation, not a filesystem security sandbox.
+
+
+## Account readiness during buys (2026-10-29)
+
+The persistent builder now races its existing account WebSocket updates against
+an on-demand HTTP account read. If a complete, valid cache batch becomes ready
+first, it continues the build and cancels that HTTP read and its catch-up retries.
+Cancellation belongs to that read only: it does not cool down the endpoint,
+disconnect WebSocket, or cancel another build. Health quote_cache.wsReadWins
+counts batches completed this way. There is no new periodic polling.
+
+Mutable mint/pool accounts still require actual account data at or after minSlot;
+a slot heartbeat alone is insufficient. Existing shared-config coverage rules,
+post-ACK HTTP baselines, generation invalidation, fees, slippage/minOut and final
+simulation remain. Create-derived addresses are hints, not synthetic pool state.
+If neither transport supplies fresh data, the build still fails safely. This
+also cannot bypass a simulation node that remains behind the target slot.
+
+Buy HTTP slot-lag recovery uses the signal's original expiry, with a shared
+catch-up window of at most one second and a 200ms reserve for later work. This
+window starts after initial provider attempts; it is not a total build deadline
+or a same-slot guarantee. Existing Python freshness checks remain mandatory.
+Background/sell requests retain their shorter retry policy. Cooling/rate-limited
+endpoints and deterministic simulation failures are not retried by this policy.
+
+Deploy the new sdk/read-cancel.cjs and sdk/catchup-budget.cjs along with their
+callers; no new environment setting is needed. Restart the service to reload
+the persistent SDK worker. Tests use local fake HTTP/WebSocket servers only.
+
+
+### Create-first unsigned preparation
+
+Live Pump/Stonk creates now reach the cached executor before the same receipt's
+funding qualification HTTP/history work. Existing hotlist/source/quantity and
+reservation checks still run first; a wallet funded within the create receipt
+does not become eligible for that create. Funding remains part of the durable
+job, and its retry cannot reserve another buy for an already consumed create.
+The service's fallback executor also uses the persistent cached builder.
+
+For validated create hints, known ALT reads start alongside the first pool/mint
+read. Stonk's epoch read also starts there, and native Stonk reuses the wrapped
+SOL balance from that first batch for its simulation protection instead of
+reading it twice. Prepared reads are scoped to one unsigned build. Any ALT
+introduced later by a non-SOL hop is still resolved normally. Background warmups
+and sells retain their existing paths. Blockhash is selected from the shared
+cache at compilation time; preparation does not extend its lifetime or the
+original signal deadline. Pool ownership, slot freshness, taxes, fees, minOut,
+simulation and monitor readiness remain checked before signing/submission.
+
+This reduces serial waits; it is not zero-RPC prediction of a new pool, and
+cannot guarantee a same-slot fill if the state/simulation provider is behind.

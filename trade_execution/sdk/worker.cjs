@@ -69,7 +69,7 @@ async function handle(message){
     if(input.operation==='build')result.buildTiming={totalMs:Math.round((performance.now()-started)*1000)/1000,
       createFast:!!createFast.hint(input),calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
-    send({id,result,stats:{hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,
+    send({id,result,stats:{hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,wsReadWins:cache.wsReadWins,
       blockhashHits:blocks.hits,blockhashMisses:blocks.misses}});
   }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
@@ -80,6 +80,8 @@ async function handle(message){
 const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
 lines.on('line',line=>{
   if(line.length>100000){process.exitCode=1;lines.close();return;}
-  try{void withReporter(send,()=>handle(JSON.parse(line)));}catch{process.exitCode=1;lines.close();}
+  try{const message=JSON.parse(line);
+    void withReporter(send,()=>require('./catchup-budget.cjs').withCatchupBudget(message.input,()=>handle(message)));
+  }catch{process.exitCode=1;lines.close();}
 });
 lines.on('close',()=>{blocks?.close();cache?.close();process.exit();});

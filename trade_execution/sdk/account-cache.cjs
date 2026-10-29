@@ -6,7 +6,7 @@ class AccountCache {
   constructor(connection,{ttlMs=2000,maxAccounts=512,commitment='confirmed'}={}){
     this.commitment=commitment;this.rpc=connection;this.ttlMs=ttlMs;this.max=maxAccounts;
     this.rows=new Map();this.misc=new Map();this.subscriptions=new Map();this.watchState=new Map();
-    this.sharedWait=new Map();
+    this.sharedWait=new Map();this.readWaiters=new Set();this.wsReadWins=0;
     this.generation=0;this.hits=0;this.misses=0;this.closed=false;this.head=0;this.pulseAt=null;this.clock=null;
     connection._rpcWebSocket?.on('close',()=>this.invalidate());
     connection._rpcWebSocket?.on('error',()=>this.invalidate());
@@ -14,6 +14,7 @@ class AccountCache {
       this.slotId=connection.onSlotChange(({slot})=>{
         if(this.closed||!Number.isSafeInteger(slot)||slot<this.head)return;
         this.head=slot;this.pulseAt=Date.now();
+        for(const changed of this.readWaiters)changed();
       });
       this.clockId=connection.onAccountChange(web3.SYSVAR_CLOCK_PUBKEY,(row,context)=>{
         if(this.closed||!row?.data||row.data.length<40)return;
@@ -31,6 +32,7 @@ class AccountCache {
     const id=this.rpc.onAccountChange(new web3.PublicKey(k),(value,context)=>{
       if(!this.closed&&this.watchState.get(k)===state){
         state.subscribed=true;this.record(k,value,context.slot,this.generation,true);
+        for(const changed of this.readWaiters)changed();
       }
     },this.commitment);
     this.subscriptions.set(k,id);
@@ -82,6 +84,27 @@ class AccountCache {
     return this.valid(row,minSlot,k)||(shared.has(k)&&row?.value&&row.continuous
       &&this.watchState.get(k)?.subscribed&&this.healthy()&&this.head>=minSlot&&Date.now()>=row.at);
   }
+  async firstReady(keys,names,config,gen,shared,force){
+    const minSlot=config.minContextSlot||0,controller=new AbortController();
+    let changed,settled=false;
+    const websocket=new Promise((resolve,reject)=>{
+      changed=()=>{
+        if(settled)return;
+        if(this.closed||gen!==this.generation){settled=true;reject(Error('cache-disconnected'));return;}
+        if(force)return; // Post-ACK baselines must actually complete their HTTP read.
+        const rows=names.map(k=>this.rows.get(k));
+        if(rows.every((row,i)=>this.validShared(row,minSlot,names[i],shared))){
+          settled=true;this.wsReadWins++;
+          resolve({context:{slot:Math.min(...rows.map(row=>row.slot))},value:rows.map(row=>row.value),fromWebsocket:true});
+        }
+      };
+      this.readWaiters.add(changed);changed();
+    });
+    const http=Promise.resolve().then(()=>require('./read-cancel.cjs').withReadSignal(controller.signal,
+      ()=>this.rpc.getMultipleAccountsInfoAndContext(keys,{...config,commitment:this.commitment})));
+    try{return await Promise.race([websocket,http]);}
+    finally{settled=true;this.readWaiters.delete(changed);controller.abort();}
+  }
   async get(keys,config={},cacheOnly=false,wait=async()=>{},shared=new Set(),force=false){
     const minSlot=config.minContextSlot||0;
     if(!keys.length)return {context:{slot:minSlot},value:[]};
@@ -94,11 +117,11 @@ class AccountCache {
     missing.forEach(i=>this.watch(names[i]));
     const versions=missing.map(i=>this.watchState.get(names[i])?.version);
     const acked=missing.map(i=>this.watchState.get(names[i])?.subscribed);
-    const result=await this.rpc.getMultipleAccountsInfoAndContext(missing.map(i=>keys[i]),{...config,commitment:this.commitment});
+    const result=await this.firstReady(missing.map(i=>keys[i]),missing.map(i=>names[i]),config,gen,shared,force);
     if(gen!==this.generation)throw Error('cache-disconnected');
-    if(result.context.slot<minSlot)throw Error('cache-slot-behind');
+    if(!result.fromWebsocket&&result.context.slot<minSlot)throw Error('cache-slot-behind');
     const fetched=new Map(missing.map((index,i)=>[names[index],{value:result.value[i],slot:result.context.slot,at:Date.now(),continuous:false}]));
-    missing.forEach((index,i)=>{
+    if(!result.fromWebsocket)missing.forEach((index,i)=>{
       const state=this.watchState.get(names[index]);
       this.record(names[index],result.value[i],result.context.slot,gen,!!acked[i]&&state?.subscribed&&state.version===versions[i]);
     });
@@ -110,6 +133,7 @@ class AccountCache {
   invalidate(){
     this.generation++;this.rows.clear();this.misc.clear();this.clock=null;this.pulseAt=null;this.head=0;
     for(const state of this.watchState.values()){state.subscribed=false;state.version++;}
+    for(const changed of this.readWaiters)changed();
     this.onInvalidate?.();
   }
   async table(key,config,cacheOnly,wait){
@@ -158,7 +182,9 @@ class AccountCache {
     }});
   }
   close(){
-    this.closed=true;this.rows.clear();this.sharedWait.clear();
+    this.closed=true;
+    for(const changed of this.readWaiters)changed();
+    this.rows.clear();this.sharedWait.clear();
     for(const state of this.watchState.values())state.dispose();
     for(const id of this.subscriptions.values())Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
     if(this.clockId!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(this.clockId)).catch(()=>{});

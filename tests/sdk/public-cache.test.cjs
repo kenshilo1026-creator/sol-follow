@@ -134,3 +134,61 @@ test('shared warmup takes one post-ACK baseline and yields that read to trading'
   await cache.view(110,true,{sharedKeys:[k]}).getMultipleAccountsInfo([k]);
   await tick();assert.equal(r.reads,2); // no periodic HTTP refresh
 });
+
+
+function stalledRpc(r){
+  const pending=[];
+  r.getMultipleAccountsInfoAndContext=(keys,config)=>{
+    const signal=require('../../trade_execution/sdk/read-cancel.cjs').readSignal();
+    return new Promise((resolve,reject)=>{
+      pending.push({keys,config,signal,resolve,reject});
+      signal.addEventListener('abort',()=>reject(Error('cancelled-read')),{once:true});
+    });
+  };
+  return pending;
+}
+test('fresh complete WS batch replaces lagging HTTP and cancels only that read',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r,{commitment:'processed'});t.after(()=>cache.close());
+  const pending=stalledRpc(r),a=key(),b=key(),other=key();
+  let done=false;
+  const read=cache.view(101).getMultipleAccountsInfo([a,b]).then(rows=>{done=true;return rows;});
+  const parallel=cache.view(101).getAccountInfo(other);
+  await tick();assert.equal(pending.length,2);
+  assert.equal(pending[0].config.commitment,'processed');
+  r.update(a,{data:Buffer.from('a')},101);r.update(b,{data:Buffer.from('old')},100);
+  r.pulse({slot:105});await tick();assert.equal(done,false); // heartbeat/partial batch is not state proof
+  r.update(b,{data:Buffer.from('b')},101);
+  assert.deepEqual((await read).map(row=>row.data.toString()),['a','b']);
+  assert.equal(pending[0].signal.aborted,true);assert.equal(pending[1].signal.aborted,false);
+  pending[1].resolve({context:{slot:101},value:[{data:Buffer.from('other')}]});
+  assert.equal((await parallel).data.toString(),'other');
+  assert.equal(cache.wsReadWins,1);assert.equal(cache.readWaiters.size,0);
+});
+test('WS race rejects disconnect and cleans up pending HTTP and listeners',async t=>{
+  for(const mode of ['invalidate','close']){
+    const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+    const pending=stalledRpc(r),p=cache.view(101).getAccountInfo(key());
+    const rejected=assert.rejects(p,/cache-disconnected/);
+    await tick();cache[mode]();await rejected;
+    assert(pending[0].signal.aborted);assert.equal(cache.readWaiters.size,0);
+  }
+});
+test('failed HTTP with incomplete WS evidence fails closed; synchronous errors do not leak waiters',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const pending=stalledRpc(r),a=key(),b=key();
+  const read=cache.view(101).getMultipleAccountsInfo([a,b]);
+  const rejected=assert.rejects(read,/offline/);await tick();
+  r.update(a,{data:Buffer.from('a')},101);pending[0].reject(Error('offline'));await rejected;
+  assert.equal(cache.readWaiters.size,0);assert.equal(cache.wsReadWins,0);
+  r.getMultipleAccountsInfoAndContext=()=>{throw Error('sync-failure');};
+  await assert.rejects(cache.view(101).getAccountInfo(b),/sync-failure/);
+  assert.equal(cache.readWaiters.size,0);
+});
+test('forced post-ACK baseline cannot be bypassed by the WS race',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const pending=stalledRpc(r),a=key();let done=false;
+  const read=cache.get([a],{minContextSlot:101},false,async()=>{},new Set(),true).then(x=>{done=true;return x;});
+  await tick();r.update(a,{data:Buffer.from('ws')},101);await tick();assert.equal(done,false);
+  pending[0].resolve({context:{slot:101},value:[{data:Buffer.from('baseline')}]});
+  await read;assert.equal(cache.wsReadWins,0);assert.equal(cache.readWaiters.size,0);
+});

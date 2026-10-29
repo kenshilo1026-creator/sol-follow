@@ -173,6 +173,7 @@ async def test_build_carries_priority_once_and_signed_bytes_are_committed_before
             assert method=='sendTransaction'
             assert [c['operation'] for c in commands]==['build']
             assert commands[0]['activeTrades']==1
+            assert commands[0]['buySignalExpiresAtMs']==int((route.trade.time+cfg.signal_age)*1000)
             # Read from an independent connection, not the execution connection.
             saved=Store(config.data).order(oid)
             assert saved['state']=='signed' and saved['raw']==params[0]

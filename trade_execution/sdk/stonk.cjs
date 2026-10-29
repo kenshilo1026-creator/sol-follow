@@ -116,7 +116,10 @@ async function buildStonk(input,{connection,safeMint,finish,minimums,integer,fra
   // A SOL-funded route must not consume pre-existing quote/intermediate assets.
   const touched=native?[nativeAta.toBase58()]:[...new Set((hop.swaps||[hop.swap]).flatMap(ix=>ix.keys).filter(k=>k.isWritable).map(k=>k.pubkey.toBase58()))];
   if(touched.length>96)throw Error('jupiter-route-rejected');
-  const existing=await connection.getMultipleAccountsInfo(touched.map(k=>new web3.PublicKey(k)));
+  // Native create already read our wrapped-SOL balance in the pool batch.
+  // Reuse that exact baseline for simulation's protected-balance check.
+  const existing=native&&create?[rows[4]]:
+    await connection.getMultipleAccountsInfo(touched.map(k=>new web3.PublicKey(k)));
   const protectedAccounts=[];
   for(let i=0;i<touched.length;i++){
     const row=existing[i];

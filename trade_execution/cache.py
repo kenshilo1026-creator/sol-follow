@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from chain_common.primitives import WSOL
 from features.database.quote_cache import SeenTokens
-from trade_execution.builder import BuildError, payload_for, child_environment, result_or_error
+from trade_execution.builder import BuildError, payload_for, child_environment, result_or_error, buy_deadline
 
 
 class CachedBuilder:
@@ -201,7 +201,7 @@ class CachedBuilder:
         return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation="quote_limit")
 
     async def __call__(self, config, route, wallet):
-        return await self.request(route.request(), wallet)
+        return await self.request({**route.request(),**buy_deadline(config,route)}, wallet)
 
     async def warm(self):
         # Initialise the shared blockhash before any target is known.

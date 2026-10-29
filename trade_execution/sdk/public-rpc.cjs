@@ -13,7 +13,9 @@ function rpcFetch(report,fetcher=fetch){
   return async(url,options)=>{
     let method='unknown';
     try{method=JSON.parse(options.body).method;}catch{}
-    const response=await fetcher(url,{...options,signal:AbortSignal.timeout(8000)});
+    const scoped=require('./read-cancel.cjs').readSignal();
+    const signals=[AbortSignal.timeout(8000),options.signal,scoped].filter(Boolean);
+    const response=await fetcher(url,{...options,signal:AbortSignal.any(signals)});
     if(response.status===429)report(method,'HTTP');
     else if(response.ok){
       // web3.js consumes text(), so inspect that same body without cloning it.

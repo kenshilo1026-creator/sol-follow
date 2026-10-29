@@ -27,14 +27,14 @@ def rpc_details(value):
     if not isinstance(failures, list):
         return {}
     rows = []
-    for item in failures[:6]:
+    for item in failures[:18]:
         if not isinstance(item, dict) or not isinstance(item.get('reason'), str) or item['reason'] not in REASONS:
             continue
         row = {'reason': item['reason']}
         for key, allowed in [('provider', ('primary', 'fallback')), ('source', ('alchemy', 'configured'))]:
             if item.get(key) in allowed:
                 row[key] = item[key]
-        for key, low, high in [('attempt', 1, 3), ('http_status', 100, 599),
+        for key, low, high in [('attempt', 1, 9), ('http_status', 100, 599),
                                ('rpc_code', -2**31, 2**31-1),
                                ('required_slot', 0, 2**53-1), ('context_slot', 0, 2**53-1)]:
             number = item.get(key)

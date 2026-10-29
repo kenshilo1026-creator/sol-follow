@@ -87,6 +87,8 @@ async def build_sweep(config,request,wallet,amount):
 
 async def _build(config, route, wallet, *, sell_amount=None,side='sell'):
     payload=payload_for(config,route.request(),wallet)
+    if sell_amount is None and hasattr(route,'trade'):
+        payload.update(buy_deadline(config,route))
     if sell_amount is not None:
         payload.update(side=side,amount=str(sell_amount),commitment='confirmed')
     process=await asyncio.create_subprocess_exec(
@@ -124,6 +126,10 @@ async def _build(config, route, wallet, *, sell_amount=None,side='sell'):
 def child_environment():
     return {k:v for k,v in os.environ.items()
             if not k.startswith(('SOL_','TELEGRAM_','ALCHEMY_','JUPITER_')) and k!='NODE_OPTIONS'}
+
+
+def buy_deadline(config,route):
+    return {'buySignalExpiresAtMs':int((route.trade.time+config.signal_age)*1000)}
 
 
 def payload_for(config, request, wallet):

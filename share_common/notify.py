@@ -184,6 +184,7 @@ def message(kind, detail):
             label={'primary':'主 RPC','fallback':'備援 RPC'}.get(provider,'RPC')
             if row.get('source')=='alchemy':label+='（Alchemy）'
             cause=RPC_REASONS[row['reason']]
+            if 'attempt' in row:cause+=f"，嘗試 {row['attempt']} 次"
             if 'http_status' in row:cause+=f"，HTTP {row['http_status']}"
             if 'rpc_code' in row:cause+=f"，RPC code {row['rpc_code']}"
             if 'required_slot' in row and row['reason']=='execution-context-behind':
