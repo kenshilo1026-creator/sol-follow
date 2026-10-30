@@ -1,6 +1,7 @@
 """Independent public/Alchemy subscriptions for exits, with durable dedup downstream."""
 import asyncio
 import time
+from collections import Counter
 from dataclasses import replace
 
 from chain_common.public_rpc import defer_429_alerts
@@ -22,6 +23,7 @@ class MarketFeed:
         self.notices, self.watch = notices, watch
         self.feeds = []
         self.coverage_changed = asyncio.Event()
+        self.urgent = Counter()
         self.since = None
         self.notified = False
         for url in config.market_ws_urls:
@@ -44,10 +46,34 @@ class MarketFeed:
         # caller schedules its build. Only waiting for ACKs is asynchronous.
         # ACKs call DevSell.subscribed again to close the pre-subscription gap.
         required=frozenset(required)
+        # Install local consumers once, rather than scanning all positions for
+        # each provider. A cached ACK can only cover a registered consumer.
+        watched=set(self.watch())
+        self.urgent.update(required)
         for feed in self.feeds:
-            feed.refresh()
+            feed.subscription_priority=set(self.urgent)
+            feed.refresh(market_addresses=watched)
             feed.changed.set()
-        return self.wait_ready(required,time.monotonic()+timeout)
+        released=False
+        def release():
+            nonlocal released
+            if released:return
+            released=True
+            self.urgent.subtract(required)
+            self.urgent=+self.urgent
+            for feed in self.feeds:
+                feed.subscription_priority=set(self.urgent)
+                feed.changed.set()
+        # Even a task cancelled before its coroutine starts releases priority.
+        timer=asyncio.get_running_loop().call_later(timeout,release)
+        return self.wait_armed(required,time.monotonic()+timeout,release,timer)
+
+    async def wait_armed(self, required, deadline, release, timer):
+        try:
+            return await self.wait_ready(required,deadline)
+        finally:
+            timer.cancel()
+            release()
 
     async def wait_ready(self, required, deadline):
         while True:

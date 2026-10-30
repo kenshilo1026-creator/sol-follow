@@ -199,6 +199,8 @@ class Service:
                     from chain_common.primitives import ata
                     required={route.trade.wallet,ata(route.trade.wallet,route.trade.mint,route.request()["tokenProgram"])}
                     readiness=asyncio.create_task(market.arm(required))
+                    if hasattr(market,'covered'):
+                        readiness.coverage_check=lambda required=frozenset(required),market=market: required <= market.covered()
                 else:
                     discovery=getattr(self,'discovery',None)
                     if discovery is not None:discovery.refresh()
@@ -388,7 +390,8 @@ class Service:
                     primary=BackgroundRpc(primary,cooldown,self.config.history_rps)
                     if fallback is not None:
                         fallback=BackgroundRpc(fallback,cooldown,self.config.funding_alchemy_rps)
-                return ExecutionRpc(primary,fallback,notices=self.notices,lane=name,reads=reads)
+                return ExecutionRpc(primary,fallback,notices=self.notices,lane=name,reads=reads,
+                                    hedge_ms=self.config.execution_hedge_ms if name=='execution' else 0)
             self.execution_reads=execution_lane(read_session,'execution-reads')
             rpc=self.execution_rpc=execution_lane(session,'execution',self.execution_reads)
             self.background_rpc=BackgroundRpc(Rpc(background_session,self.config.rpc,self.priority,

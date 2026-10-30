@@ -15,7 +15,7 @@ from tests.test_pump_buy import setup_order,RPC
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome',['ready','unavailable','fork','expired','dev-rejected','confirmed'])
+@pytest.mark.parametrize('outcome',['ready','unavailable','fork','expired','dev-rejected','confirmed','disconnected'])
 async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,store,outcome):
     key=Keypair()
     cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
@@ -39,6 +39,7 @@ async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,s
         await release.wait()
         return outcome!='unavailable'
     ready=asyncio.create_task(coverage())
+    ready.coverage_check=lambda:outcome!='disconnected'
     engine=Executor(cfg,store,rpc,Notices(),Priority(),build)
     task=asyncio.create_task(engine.buy(oid,route,readiness=ready))
     try:
@@ -60,7 +61,7 @@ async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,s
         for pending in (task,ready):
             if not pending.done():pending.cancel()
         await asyncio.gather(task,ready,return_exceptions=True)
-    expected={'unavailable':'dev-sell-monitor-unavailable','fork':'source-proof-unusable',
+    expected={'disconnected':'dev-sell-monitor-unavailable','unavailable':'dev-sell-monitor-unavailable','fork':'source-proof-unusable',
               'expired':'signal-expired','dev-rejected':'dev-entry-not-permitted'}
     order=store.order(oid)
     if outcome in expected:

@@ -173,7 +173,7 @@ async def test_arm_registers_locally_before_scheduling_and_uses_only_required_ac
     assert not any(f.connected for f in market.feeds)
     pending=market.arm({wallet,token_account})
     try:
-        assert len(registered)==len(market.feeds)
+        assert len(registered)==1
         assert all(f.changed.is_set() for f in market.feeds)
         assert await asyncio.wait_for(pending,.1) is True
     finally:pending.close()
@@ -202,3 +202,65 @@ async def test_ack_events_wake_multiple_buyers_without_polling_and_cancel_indepe
         for task in tasks:
             if not task.done():task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_active_buy_subscriptions_overtake_queued_position_watches(config,store,monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import features.funding.discovery as module
+    messages=asyncio.Queue();sent=asyncio.Queue()
+    watched={f'background-{n:02}' for n in range(12)}
+    class Socket:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def send_json(self,body):await sent.put(body)
+        async def receive(self):return await messages.get()
+    class Session:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        def ws_connect(self,*args,**kwargs):return Socket()
+    monkeypatch.setattr(module.aiohttp,'ClientSession',lambda **kwargs:Session())
+    market=MarketFeed(config,store,None,Notices(),lambda:set(watched),lambda *a:None,lambda _:None)
+    market.feeds=market.feeds[:1]
+    running=asyncio.create_task(market.feeds[0].websocket());arming=None
+    async def ack(request):
+        await messages.put(SimpleNamespace(type=aiohttp.WSMsgType.TEXT,
+            data=json.dumps({'id':request['id'],'result':request['id']+100})))
+    try:
+        initial=[await asyncio.wait_for(sent.get(),1) for _ in range(8)]
+        urgent={'zz-dev','zz-dev-ata'};watched.update(urgent)
+        arming=asyncio.create_task(market.arm(urgent))
+        await ack(initial[0])
+        first=await asyncio.wait_for(sent.get(),1)
+        assert first['params'][0]['mentions'][0] in urgent
+        await ack(first)
+        second=await asyncio.wait_for(sent.get(),1)
+        assert {first['params'][0]['mentions'][0],second['params'][0]['mentions'][0]}==urgent
+        await ack(second)
+        assert await asyncio.wait_for(arming,1)
+        assert not market.urgent
+        # Ordinary position subscriptions remain queued and are not cancelled.
+        next_request=await asyncio.wait_for(sent.get(),1)
+        assert next_request['method']=='logsSubscribe'
+        assert next_request['params'][0]['mentions'][0].startswith('background-')
+    finally:
+        for task in (arming,running):
+            if task is not None and not task.done():task.cancel()
+        await asyncio.gather(*(t for t in (arming,running) if t is not None),return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_overlapping_priority_leases_and_cancel_before_start_are_bounded(config,store):
+    market=MarketFeed(config,store,None,Notices(),lambda:{'dev','ata'},lambda *a:None,lambda _:None)
+    first=asyncio.create_task(market.arm({'dev'},timeout=.05))
+    second=asyncio.create_task(market.arm({'dev','ata'},timeout=.1))
+    await asyncio.sleep(0)
+    first.cancel();await asyncio.gather(first,return_exceptions=True)
+    assert market.urgent=={'dev':1,'ata':1}
+    second.cancel();await asyncio.gather(second,return_exceptions=True)
+    assert not market.urgent
+    unstarted=asyncio.create_task(market.arm({'dev'},timeout=.01))
+    unstarted.cancel();await asyncio.gather(unstarted,return_exceptions=True)
+    await asyncio.sleep(.03)
+    assert not market.urgent and all(not feed.subscription_priority for feed in market.feeds)

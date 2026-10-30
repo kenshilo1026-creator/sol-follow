@@ -135,7 +135,7 @@ def buy_deadline(config,route):
 def payload_for(config, request, wallet):
     return {**request, 'rpc':config.execution_rpc_url, 'rpcFallback':config.execution_fallback_url,
             'rpcCooldownDir':str((config.data / 'rpc-cooldowns').resolve()),
-            'rpcTimeoutMs':int(config.execution_timeout*1000), 'ws':config.execution_ws_url, 'wallet':wallet,
+            'rpcHedgeMs':config.execution_hedge_ms, 'rpcTimeoutMs':int(config.execution_timeout*1000), 'ws':config.execution_ws_url, 'wallet':wallet,
             'amount':str(config.buy_amount), 'slippagePercent':format(config.slippage_percent,'f'),
             'priorityFeeLamports':str(config.priority_fee_lamports), 'localCreateEnabled':config.local_create_build,
             'minLiquidity':str(config.min_liquidity),'commitment':config.hotlist_commitment,

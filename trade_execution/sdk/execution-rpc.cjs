@@ -17,7 +17,7 @@ function validResult(method,result){
   if(method==='getEpochInfo')return Number.isSafeInteger(result.absoluteSlot)&&Number.isSafeInteger(result.epoch);
   return true;
 }
-function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>{},event=()=>{}},fetcher=fetch){
+function executionFetch({primary,fallback,timeoutMs=4000,hedgeMs=0,cooldownDir,report=()=>{},event=()=>{}},fetcher=fetch){
   const urls=[...new Set([primary,fallback].filter(Boolean))];
   const verified=new Map(),rejected=new Set(),cooldown=new Map();
   const shared=require("./endpoint-cooldown.cjs").sharedCooldown(cooldownDir);
@@ -72,17 +72,20 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
     if(typeof method!=='string'||(!method.startsWith('get')&&method!=='simulateTransaction'))
       throw Error('execution-sdk-read-only');
     const minSlot=Math.max(0,...(input.params||[]).filter(v=>v&&typeof v==='object').map(v=>v.minContextSlot||0));
-    const failures=[],behind=new Set();
-    async function attempt(url,round=0,timeout=timeoutMs){
+    const failures=[],behind=new Set();let hedged=false;
+    async function attempt(url,round=0,timeout=timeoutMs,signal=options.signal){
+      const began=performance.now();let outcome='unavailable';
       try{
         if(options.signal?.aborted)throw Error('execution-request-aborted');
         await verify(url,verificationOptions);
         if(options.signal?.aborted)throw Error('execution-request-aborted');
-        const {body,text}=await request(url,options,method,timeout);
+        if(signal?.aborted)return;
+        const {body,text}=await request(url,{...options,signal},method,timeout);
+        if(signal?.aborted)return;
         if(body.error){
           // Deterministic request/preflight failures are not availability failures.
           if([-32600,-32601,-32602,-32002].includes(body.error.code))
-            {event({event:'execution-rpc-recovered',method});return new Response(text,{headers:{'content-type':'application/json'}});}
+            {outcome='rpc-rejection';event({event:'execution-rpc-recovered',method});return new Response(text,{headers:{'content-type':'application/json'}});}
           const detail=Number.isSafeInteger(body.error.code)?{rpc_code:body.error.code}:{};
           if(Number.isSafeInteger(body.error.data?.contextSlot))detail.context_slot=body.error.data.contextSlot;
           throw failure(body.error.code===-32016?'execution-context-behind':'execution-rpc-unavailable',detail);
@@ -95,10 +98,12 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
           throw Error('execution-invalid-simulation');
         // A successful simulation response with value.err remains a failure;
         // never ask the backup for a more permissive answer.
+        outcome=method==='simulateTransaction'&&body.result.value.err?'simulation-rejected':'response';
         event({event:'execution-rpc-recovered',method});
         return new Response(text,{headers:{'content-type':'application/json'}});
       }catch(error){
         if(options.signal?.aborted)throw Error('execution-request-aborted');
+        if(signal?.aborted)return; // losing hedge is cancellation, not endpoint failure
         const known=new Set(['execution-endpoint-cooling','execution-invalid-json','execution-wrong-chain',
           'execution-genesis-unavailable','execution-result-unavailable','execution-invalid-simulation']);
         const detail=error.rpcFailure||{reason:known.has(error.message)?error.message:'execution-network-failed'};
@@ -106,11 +111,40 @@ function executionFetch({primary,fallback,timeoutMs=4000,cooldownDir,report=()=>
           source:new URL(url).hostname.endsWith('.alchemy.com')?'alchemy':'configured',
           attempt:round+1,...detail,...(minSlot?{required_slot:minSlot}:{})});
         if(detail.reason==='execution-context-behind'&&minSlot>0)behind.add(url);else behind.delete(url);
+      }finally{
+        require('./catchup-budget.cjs').recordTransport({method,provider:url===urls[0]?'primary':'fallback',
+          attempt:round+1,ms:Math.round((performance.now()-began)*1000)/1000,hedged,
+          outcome:signal?.aborted?'cancelled':outcome});
       }
     }
     // Try the backup immediately. Only slot lag warrants a short catch-up window;
     // never retry 429/cooling endpoints or mask deterministic simulation failures.
-    for(const url of urls){const result=await attempt(url);if(result)return result;}
+    if(hedgeMs>0&&urls.length>1&&method==='simulateTransaction'
+        &&require('./catchup-budget.cjs').isBuy()){
+      // Race availability, never retry a received deterministic failure to seek
+      // a success. The first valid response (including value.err) is final.
+      const controllers=urls.map(()=>new AbortController());let timer;
+      const start=index=>attempt(urls[index],0,timeoutMs,options.signal?
+        AbortSignal.any([options.signal,controllers[index].signal]):controllers[index].signal);
+      const first=start(0);
+      try{
+        const early=await Promise.race([first.then(result=>({result})),
+          new Promise(resolve=>{timer=setTimeout(()=>resolve(null),hedgeMs);})]);
+        clearTimeout(timer);
+        if(early?.result)return early.result;
+        hedged=early===null;
+        const second=start(1);
+        const pending=early?[second]:[first,second];
+        // Undefined means provider unavailable, not a valid simulation failure.
+        const result=await Promise.any(pending.map(p=>p.then(value=>{
+          if(!value)throw Error('unavailable');return value;
+        }))).catch(()=>null);
+        if(options.signal?.aborted)throw Error('execution-request-aborted');
+        if(result)return result;
+      }finally{
+        clearTimeout(timer);controllers.forEach(controller=>controller.abort());
+      }
+    }else for(const url of urls){const result=await attempt(url);if(result)return result;}
     const policy=require('./catchup-budget.cjs').catchupPolicy();
     const deadline=policy.deadline;
     for(let round=1;round<=policy.rounds&&behind.size;round++){

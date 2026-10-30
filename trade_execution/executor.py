@@ -120,6 +120,8 @@ class Executor:
             monitor_began=time.monotonic()
             if readiness is not None and not await readiness:
                 raise ValueError('dev-sell-monitor-unavailable')
+            if readiness is not None and not getattr(readiness,'coverage_check',lambda:True)():
+                raise ValueError('dev-sell-monitor-unavailable')
             timings['monitor_wait_ms']=round((time.monotonic()-monitor_began)*1000,3)
             mark('monitor_ready_ms')
             require_fresh()

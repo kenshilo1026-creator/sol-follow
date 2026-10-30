@@ -77,6 +77,7 @@ class Discovery:
         self.changed = asyncio.Event()
         self.connected = False
         self.subscribed = set()
+        self.subscription_priority = set()
         self.received = self.added = 0
         self.addresses = []
         self.locks = {}
@@ -132,9 +133,10 @@ class Discovery:
                 self.history_health.failure('event catch-up deferred; durable request retained',
                                   {'type':type(exc).__name__,'address':row['address']})
 
-    def refresh(self):
+    def refresh(self, market_addresses=None):
         # CEX/source coverage is never silently replaced by hotlist subscriptions.
-        self.market_addresses = self.market_watch() if self.market_watch else set()
+        self.market_addresses = (set(market_addresses) if market_addresses is not None else
+                                 self.market_watch() if self.market_watch else set())
         self.addresses = list(dict.fromkeys([*self.config.cex, *self.config.privacy_pools,
                                              *([] if self.sources_only else self.store.hotlist(time.time())),
                                              *sorted(self.market_addresses)]))
@@ -205,7 +207,8 @@ class Discovery:
                                     if self.subscription_changed:self.subscription_changed()
                                     sent.pop(address,None)
                                 # Rebuild only on refresh, not on every ACK/log.
-                                waiting=deque(sorted(desired-set(sent)))
+                                waiting=deque(sorted(desired-set(sent),
+                                    key=lambda address:(address not in self.subscription_priority,address)))
                             # Limit outstanding acknowledgements instead of bursting
                             # every address subscription at the server on reconnect.
                             while waiting and len(ids)<8:

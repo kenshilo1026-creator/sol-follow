@@ -236,8 +236,8 @@ async def test_large_backup_subscription_sorts_once_not_for_every_ack(config,sto
     feed.addresses=[f'wallet-{i}' for i in range(5250)]
     monkeypatch.setattr(feed,'refresh',lambda:None)
     monkeypatch.setattr(module,'time',SimpleNamespace(time=time.time,monotonic=lambda:100))
-    def ordered(values):
-        result=sorted(values);sorts.append(len(result));return result
+    def ordered(values,**kwargs):
+        result=sorted(values,**kwargs);sorts.append(len(result));return result
     monkeypatch.setattr(module,'sorted',ordered,raising=False)
     def forbidden(*args):raise AssertionError('ACK must not load the hotlist')
     monkeypatch.setattr(store,'hotlist',forbidden)

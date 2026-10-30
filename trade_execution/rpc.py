@@ -16,7 +16,9 @@ READ_METHODS = {'getSignatureStatuses', 'getTransaction', 'getBlockHeight'}
 
 
 class ExecutionRpc:
-    def __init__(self, primary, fallback=None, *, notices=None, lane='execution', reads=None):
+    def __init__(self, primary, fallback=None, *, notices=None, lane='execution', reads=None, hedge_ms=0):
+        self.hedge_ms = hedge_ms
+        self.send_hedges = self.send_primary_wins = self.send_fallback_wins = 0
         self.providers = [primary] + ([fallback] if fallback is not None else [])
         self.notices, self.lane, self.reads = notices, lane, reads
         self.verified = set()
@@ -35,7 +37,8 @@ class ExecutionRpc:
         return sum(p.snapshot()['rate_limited'] for p in self.providers)
 
     def snapshot(self):
-        return {'calls': self.calls, 'rate_limited': self.limited,
+        return {'send_hedges':self.send_hedges,'send_primary_wins':self.send_primary_wins,
+                'send_fallback_wins':self.send_fallback_wins,'calls': self.calls, 'rate_limited': self.limited,
                 'fallback_recovered': self.recovered, 'unavailable': self.unavailable,
                 'providers': len(self.providers), 'verified_providers': len(self.verified),
                 'cooldown_remaining_s': [round(max(0,self.cooldown.get(i,0)-time.monotonic()),1)
@@ -88,6 +91,58 @@ class ExecutionRpc:
             self.notices.emit('trading RPC unavailable', {'lane': self.lane, 'method': method},
                 alert=alert, key=f'rpc-{self.lane}-{method}-'+('alert' if alert else 'local'), interval=60)
 
+    async def send_hedged(self, params, signature):
+        # Every attempt broadcasts the same durable signed bytes. Losing an ACK
+        # is ambiguous, never permission to build/sign a replacement transaction.
+        async def attempt(index):
+            try:
+                await self.verify(index)
+                result=await self.providers[index].call('sendTransaction',copy.deepcopy(params))
+                return result if self.valid('sendTransaction',result,params,signature) else None
+            except asyncio.CancelledError:
+                raise
+            except (RpcError,asyncio.TimeoutError,ValueError,TypeError,KeyError,IndexError,AttributeError) as exc:
+                reason=str(exc) if isinstance(exc,RpcError) else ''
+                if (isinstance(exc,asyncio.TimeoutError) or reason.startswith('HTTP-5')
+                    or reason.endswith((':TimeoutError',':ClientConnectorError',':ServerDisconnectedError'))):
+                    self.cooldown[index]=time.monotonic()+5
+                return None
+
+        tasks={}
+        def start(index):
+            task=asyncio.create_task(attempt(index));tasks[task]=index
+            return task
+        def accepted(task):
+            result=task.result()
+            if result is None:return None
+            index=tasks[task]
+            if index:
+                self.send_fallback_wins+=1;self.recovered+=1
+            else:self.send_primary_wins+=1
+            self.outages.pop('sendTransaction',None)
+            return result
+        with defer_429_alerts():
+            try:
+                primary=start(0)
+                done,_=await asyncio.wait({primary},timeout=self.hedge_ms/1000)
+                if done:
+                    result=accepted(primary)
+                    if result is not None:return result
+                else:self.send_hedges+=1
+                backup=start(1)
+                pending={backup} | (set() if done else {primary})
+                while pending:
+                    done,pending=await asyncio.wait(pending,return_when=asyncio.FIRST_COMPLETED)
+                    for task in sorted(done,key=lambda task:tasks[task]):
+                        result=accepted(task)
+                        if result is not None:return result
+                self.failure('sendTransaction')
+                raise RpcError('execution-rpc-unavailable')
+            finally:
+                for task in tasks:
+                    if not task.done():task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
+
     async def call(self, method, params):
         if not method.startswith('get') and method not in ('simulateTransaction','sendTransaction'):
             raise ValueError('execution-rpc-method-not-supported')
@@ -103,6 +158,8 @@ class ExecutionRpc:
             tx = VersionedTransaction.from_bytes(base64.b64decode(params[0], validate=True))
             tx.verify_and_hash_message()
             signature = str(tx.signatures[0])
+            if self.hedge_ms>0 and len(self.providers)>1:
+                return await self.send_hedged(params,signature)
         missing = None
         with defer_429_alerts():
             for index, provider in enumerate(self.providers):

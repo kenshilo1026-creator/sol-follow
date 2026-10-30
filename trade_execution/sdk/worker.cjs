@@ -67,7 +67,8 @@ async function handle(message){
     }else result=await build(input,connection);
     if(generation!==cache.generation)throw Error('cache-disconnected');
     if(input.operation==='build')result.buildTiming={totalMs:Math.round((performance.now()-started)*1000)/1000,
-      createFast:!!createFast.hint(input),localCreate:result.localCreate,calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
+      createFast:!!createFast.hint(input),localCreate:result.localCreate,
+      rpc:require('./catchup-budget.cjs').transport(),calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
     send({id,result,stats:{hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,wsReadWins:cache.wsReadWins,
       blockhashHits:blocks.hits,blockhashMisses:blocks.misses}});

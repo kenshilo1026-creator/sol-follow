@@ -143,6 +143,8 @@ test('worker builds from WS accounts when HTTP is one slot behind and still simu
   child.stdin.write(JSON.stringify({id:1,input})+'\n');
   const row=await response;assert.equal(row.error,undefined);
   assert.equal(row.result.buildTiming.createFast,true);assert.equal(row.stats.wsReadWins,1);
+  assert(row.result.buildTiming.rpc.some(r=>r.method==='simulateTransaction'&&r.provider==='primary'&&r.outcome==='response'));
+  assert(!JSON.stringify(row.result.buildTiming.rpc).includes('127.0.0.1'));
   assert.equal(row.result.buildTiming.calls.simulateTransaction.count,1);
   assert(row.result.buildTiming.calls.getMultipleAccountsInfo.ms>=0);
   assert.equal(queries.filter(q=>q.method==='simulateTransaction').length,1);

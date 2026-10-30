@@ -284,3 +284,110 @@ test('WS winner cancellation never cools the endpoint or aborts another build',a
   assert.equal((await (await read('',input())).json()).result.context.slot,100);
   assert.equal(reads,2);
 });
+
+
+const buy=work=>withCatchupBudget({buySignalExpiresAtMs:Date.now()+3000},work);
+const stalled=signal=>new Promise((resolve,reject)=>{
+  if(signal.aborted)return reject(signal.reason);
+  signal.addEventListener('abort',()=>reject(signal.reason),{once:true});
+});
+
+test('hedged buy simulation cancels slow primary without cooling it and keeps identical body',async()=>{
+  const calls=[];let slow=true,cancelled=false;
+  const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+    if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+    calls.push([url,options.body]);
+    if(url==='https://primary'&&slow){
+      try{return await stalled(options.signal);}finally{cancelled=true;}
+    }
+    return ok({context:{slot:100},value:{err:null}});
+  });
+  await buy(async()=>{
+    assert.equal((await (await read('',input())).json()).result.value.err,null);
+    assert(require('../../trade_execution/sdk/catchup-budget.cjs').transport().some(row=>
+      row.provider==='fallback'&&row.hedged&&row.outcome==='response'));
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  assert(cancelled);assert.deepEqual(calls.map(c=>c[0]),['https://primary','https://backup']);
+  assert.equal(calls[0][1],calls[1][1]);
+  slow=false;calls.length=0;
+  await buy(()=>read('',input()));
+  assert.deepEqual(calls.map(c=>c[0]),['https://primary']);
+});
+
+test('fast valid failure is final, without speculative backup or failure shopping',async()=>{
+  for(const rpcError of [false,true]){
+    const calls=[];
+    const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+      if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+      calls.push(url);
+      return rpcError?new Response(JSON.stringify({error:{code:-32002}})):
+        ok({context:{slot:100},value:{err:{InstructionError:[1,'Custom']}}});
+    });
+    const body=await (await buy(()=>read('',input()))).json();
+    assert(rpcError?body.error:body.result.value.err);
+    assert.deepEqual(calls,['https://primary']);
+  }
+});
+
+test('a racing backup simulation failure remains a failure and stops the slow primary',async()=>{
+  const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+    if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+    if(url==='https://primary')return stalled(options.signal);
+    return ok({context:{slot:100},value:{err:{InstructionError:[1,'Custom']}}});
+  });
+  const body=await (await buy(()=>read('',input()))).json();
+  assert(body.result.value.err);
+});
+
+test('invalid speculative backup cannot replace a valid in-flight primary',async()=>{
+  let release;const ready=new Promise(resolve=>{release=resolve;});
+  const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+    if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+    if(url==='https://primary'){await ready;return ok({context:{slot:100},value:{err:null}});}
+    release();return ok({context:{slot:99},value:{err:null}});
+  });
+  assert.equal((await (await buy(()=>read('',input()))).json()).result.context.slot,100);
+});
+
+test('hedge root cancellation aborts both simulations and cleans up',async()=>{
+  const root=new AbortController();let started=0,ended=0;
+  const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+    if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+    if(++started===2)root.abort();
+    try{return await stalled(options.signal);}finally{ended++;}
+  });
+  await assert.rejects(buy(()=>read('',{...input(),signal:root.signal})),/execution-request-aborted/);
+  assert.equal(started,2);assert.equal(ended,2);
+});
+
+test('read-only background calls and disabled hedge retain sequential RPC policy',async()=>{
+  for(const mode of ['disabled','background','account']){
+    let active=0,overlap=false;const calls=[];
+    const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:mode==='disabled'?0:5},async(url,options)=>{
+      if(JSON.parse(options.body).method==='getGenesisHash')return ok(MAINNET);
+      calls.push(url);overlap ||= active>0;active++;
+      await new Promise(resolve=>setTimeout(resolve,20));active--;
+      return ok({context:{slot:100},value:mode==='account'?[]:{err:null}});
+    });
+    const options=mode==='account'?{...input(),body:JSON.stringify({method:'getMultipleAccounts',params:[[],{minContextSlot:100}]})}:input();
+    await (mode==='background'?read('',options):buy(()=>read('',options)));
+    assert.deepEqual(calls,['https://primary']);assert(!overlap);
+  }
+});
+
+test('hedge respects wrong-chain and rate-limit rejection without polling cooling providers',async()=>{
+  for(const rejected of ['genesis','429']){
+    let primaryReads=0;
+    const read=executionFetch({primary:'https://primary',fallback:'https://backup',hedgeMs:5},async(url,options)=>{
+      const genesis=JSON.parse(options.body).method==='getGenesisHash';
+      if(url==='https://primary'){
+        if(genesis&&rejected==='genesis')return ok('wrong-chain');
+        if(!genesis){primaryReads++;return new Response('',{status:429});}
+      }
+      return ok(genesis?MAINNET:{context:{slot:100},value:{err:null}});
+    });
+    for(let i=0;i<2;i++)assert.equal((await (await buy(()=>read('',input()))).json()).result.value.err,null);
+    assert.equal(primaryReads,rejected==='429'?1:0);
+  }
+});

@@ -193,6 +193,7 @@ class Config:
     execution_timeout: float = 4.0
     priority_fee_lamports: int = 200_000
     local_create_build: bool = True
+    execution_hedge_ms: int = 75
 
     @property
     def execution_rpc_url(self):
@@ -341,6 +342,7 @@ def load(root=ROOT, env=None):
         execution_fallback_http=get('SOL_EXECUTION_RPC_FALLBACK_HTTP_URL','') or '',
         execution_ws=get('SOL_EXECUTION_RPC_WS_URL','') or '',
         execution_timeout=integer('SOL_EXECUTION_RPC_TIMEOUT_MS',4000,100,8000)/1000,
+        execution_hedge_ms=integer('SOL_EXECUTION_HEDGE_MS',75,0,1000),
         cex=cex_load(root/'cex_addresses.json'), source_programs=programs, privacy_pools=pools,
         min_funding=low, max_funding=high,
         min_funding_usdc=usdc_low, max_funding_usdc=usdc_high,

@@ -101,7 +101,7 @@ function connectionFor(input) {
     commitment:input.commitment||'confirmed', disableRetryOnRateLimit:true,
     ...(input.ws?{wsEndpoint:input.ws}:{}),
     fetch:managed?require('./execution-rpc.cjs').executionFetch({primary:input.rpc,fallback:input.rpcFallback,
-      timeoutMs:input.rpcTimeoutMs||4000,cooldownDir:input.rpcCooldownDir,report,event:publicRpc.executionReporter()}):publicRpc.rpcFetch(report),
+      timeoutMs:input.rpcTimeoutMs||4000,hedgeMs:input.rpcHedgeMs||0,cooldownDir:input.rpcCooldownDir,report,event:publicRpc.executionReporter()}):publicRpc.rpcFetch(report),
     // Apply the signal slot to SDK account reads as well as our own reads.
     fetchMiddleware: (url, options, next) => {
       const body = JSON.parse(options.body);

@@ -161,7 +161,8 @@ async def test_cancellation_never_broadcasts_on_backup():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('recovered', [False, True])
-async def test_real_executor_keeps_one_durable_signature_after_ambiguous_send(config, store, recovered):
+@pytest.mark.parametrize('hedge_ms',[0,5])
+async def test_real_executor_keeps_one_durable_signature_after_ambiguous_send(config, store, recovered, hedge_ms):
     _, _, cfg, route, oid, builder, key = await signed_request(replace(config,dry_run=False), store)
     cfg = replace(cfg, dry_run=False, wallet_keypair=key)
     def primary(method, params):
@@ -175,7 +176,7 @@ async def test_real_executor_keeps_one_durable_signature_after_ambiguous_send(co
         assert store.order(oid)['raw'] == params[0]
         return store.order(oid)['signature'] if recovered else RpcError('HTTP-503')
     a, b = Client(primary), Client(backup)
-    router = ExecutionRpc(a, b)
+    router = ExecutionRpc(a, b, hedge_ms=hedge_ms)
     executor = Executor(cfg, store, router, Notices(), Priority(), builder=builder)
     await executor.buy(oid, route)
     row = store.order(oid)
@@ -228,3 +229,92 @@ async def test_runtime_lanes_share_real_cooldown_but_isolate_activity(config, st
     response = await asyncio.wait_for(reader.call('getSignatureStatuses', [['a'],{}]), timeout=3)
     assert response['value'] == [None]
     assert calls[-1][0] == service.config.execution_rpc_url
+
+
+@pytest.mark.asyncio
+async def test_hedge_fast_primary_avoids_backup(config,store):
+    raw,signature,*_=await signed_request(config,store)
+    backup=Client(signature)
+    rpc=ExecutionRpc(Client(signature),backup,hedge_ms=50)
+    assert await rpc.call('sendTransaction',[raw,{'encoding':'base64'}])==signature
+    assert not backup.calls and rpc.snapshot()['send_hedges']==0
+    assert rpc.snapshot()['send_primary_wins']==1
+
+
+@pytest.mark.asyncio
+async def test_hedge_slow_primary_cancelled_without_cooling_and_identical_bytes(config,store):
+    raw,signature,*_=await signed_request(config,store)
+    cancelled=asyncio.Event()
+    class Slow(Client):
+        async def call(self,method,params):
+            if method=='getGenesisHash':return await super().call(method,params)
+            self.calls.append((method,deepcopy(params)))
+            try:await asyncio.Future()
+            finally:cancelled.set()
+    primary,backup=Slow(),Client(signature)
+    rpc=ExecutionRpc(primary,backup,hedge_ms=5)
+    params=[raw,{'encoding':'base64','skipPreflight':True,'minContextSlot':123,'maxRetries':0}]
+    assert await asyncio.wait_for(rpc.call('sendTransaction',params),1)==signature
+    assert primary.calls[-1]==backup.calls[-1]==('sendTransaction',params)
+    assert cancelled.is_set() and not rpc.cooldown
+    assert rpc.snapshot()['send_hedges']==rpc.snapshot()['send_fallback_wins']==1
+
+
+@pytest.mark.asyncio
+async def test_hedge_invalid_backup_does_not_cancel_primary(config,store):
+    raw,signature,*_=await signed_request(config,store)
+    release=asyncio.Event()
+    class Primary(Client):
+        async def call(self,method,params):
+            if method!='getGenesisHash':await release.wait()
+            return await super().call(method,params)
+    class Backup(Client):
+        async def call(self,method,params):
+            if method!='getGenesisHash':release.set()
+            return await super().call(method,params)
+    rpc=ExecutionRpc(Primary(signature),Backup('wrong-signature'),hedge_ms=5)
+    assert await asyncio.wait_for(rpc.call('sendTransaction',[raw,{'encoding':'base64'}]),1)==signature
+    assert rpc.snapshot()['send_primary_wins']==1
+
+
+@pytest.mark.asyncio
+async def test_hedge_cancellation_cleans_up_both_requests(config,store):
+    raw,signature,*_=await signed_request(config,store)
+    started=[asyncio.Event(),asyncio.Event()];cancelled=[]
+    class Slow(Client):
+        def __init__(self,index):super().__init__();self.index=index
+        async def call(self,method,params):
+            if method=='getGenesisHash':return MAINNET
+            started[self.index].set()
+            try:await asyncio.Future()
+            finally:cancelled.append(self.index)
+    rpc=ExecutionRpc(Slow(0),Slow(1),hedge_ms=5)
+    task=asyncio.create_task(rpc.call('sendTransaction',[raw,{'encoding':'base64'}]))
+    await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)),1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):await task
+    assert sorted(cancelled)==[0,1] and not rpc.cooldown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocked',['wrong-chain','cooling','429'])
+async def test_hedge_preserves_provider_gates(config,store,blocked):
+    import time
+    raw,signature,*_=await signed_request(config,store)
+    primary=Client(RpcError('HTTP-429') if blocked=='429' else signature,
+                   genesis=str(Hash.new_unique()) if blocked=='wrong-chain' else MAINNET)
+    rpc=ExecutionRpc(primary,Client(signature),hedge_ms=5)
+    if blocked=='cooling':rpc.cooldown[0]=time.monotonic()+60
+    assert await rpc.call('sendTransaction',[raw,{'encoding':'base64'}])==signature
+    sends=[method for method,_ in primary.calls if method=='sendTransaction']
+    assert len(sends)==(1 if blocked=='429' else 0)
+
+
+def test_hedge_configuration_reaches_sdk_and_can_be_disabled(tmp_path):
+    (tmp_path/'cex_addresses.json').write_text('{"exchanges":{}}')
+    for value in [0,75,1000]:
+        cfg=load(tmp_path,env={'SOL_EXECUTION_HEDGE_MS':str(value)})
+        assert payload_for(cfg,{},'wallet')['rpcHedgeMs']==value
+    assert load(tmp_path,env={}).execution_hedge_ms==75
+    for value in ['-1','1001','nan']:
+        with pytest.raises(ValueError):load(tmp_path,env={'SOL_EXECUTION_HEDGE_MS':value})

@@ -425,3 +425,19 @@ simulation retains minContextSlot and the original minOut before signing.
 All projected mint states (including non-SOL routes) are also checked against
 the actual mint returned in that simulation for supply, decimals, supported
 extensions and both transfer-fee schedules.
+
+
+## 2026-10-30 買入等待優化
+
+這次優化保留 processed 來源、dev 數量限制、minOut、滑點、實際 mint／手續費模擬檢查及簽名前的持久化。
+
+- `MarketFeed.arm` 只掃描一次持倉／dev watch，將同一快照交給兩個 socket；待買入的 dev／ATA 訂閱優先於尚未送出的其他訂閱。已有 ACK 可重用，仍維持最多 8 個待 ACK 請求，不替整個 hotlist 增加 WebSocket 訂閱。
+- 監聽準備繼續與組單並行。簽名前重新檢查當前 ACK 覆蓋；先前 ready 後斷線不能當作仍可監控。取消或逾時會釋放訂閱優先權。
+- `SOL_EXECUTION_HEDGE_MS=75`（預設）：買入 SDK 模擬及已簽名交易廣播在主端尚未回應時，75ms 後啟動已設定的備援。主端提早回應不增加備援請求；主端立即不可用則即時啟動備援。僅一個端點時維持原路徑。
+- 模擬使用第一個有效、符合 `minContextSlot` 的結果，包含有效的模擬失敗；不因失敗再尋找成功答案。資料缺失、落後 slot 或限流不算有效結果。其他帳戶查詢及背景工作維持原有順序備援。
+- 廣播兩端使用同一筆已持久化的已簽名位元組，檢查回傳簽名一致。此功能也適用同一 execution lane 的賣出／清掃廣播。中斷 HTTP 等待不代表鏈上取消；所有端點無有效 ACK 時，原訂單仍保持 unknown，由原有 reconcile 查明，不重新簽名。
+- 保留每端主網核對、429 通知及共用冷卻。取消競速落後的一端不會把正常端點標成失效。每次競速最多增加一個備援請求，可能增加 Alchemy 用量；不新增 tip、不改 priority fee。
+
+部署後可在原有 `dev_audit` 的 `builder_timing.rpc` 查看每次 RPC 的 `provider`（primary/fallback）、`ms`、`attempt`、`hedged`、`outcome`。這些是建置結果產生前已完成的嘗試；被取消且尚未結束的嘗試可能未列入。沒有端點 URL 或 API key。Health 的 `execution_rpc` 增加 `send_hedges`、`send_primary_wins`、`send_fallback_wins` 累計計數。先比較 `monitor_wait_ms`、`builder_timing.calls.simulateTransaction.ms`、`submit_started_ms` 及 `submit_ack_ms` 的分布，再看 `slot_delta`，不能以 RPC ACK 當作入塊證明。
+
+不需新增 key；沿用 `SOL_EXECUTION_RPC_HTTP_URL`／`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL` 現有解析規則。若要逐步驗證，可先設 `SOL_EXECUTION_HEDGE_MS=0` 只測訂閱優先及診斷，再設 `75` 比較競速；設回 `0` 並重啟即可恢復順序備援。未設定時預設啟用 75ms。背景 blockhash 刷新、訊號有效期限及 slot 新鮮度門檻不變。這是降低本地／RPC 等待，不能保證同 slot。

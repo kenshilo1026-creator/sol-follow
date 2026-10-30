@@ -4,7 +4,7 @@ const contexts=new AsyncLocalStorage();
 function withCatchupBudget(input,work){
   const expires=input.buySignalExpiresAtMs;
   const budget=Number.isSafeInteger(expires)&&expires>0
-    ? {signalDeadline:performance.now()+Math.max(0,expires-Date.now()-200),retryDeadline:null}:null;
+    ? {signalDeadline:performance.now()+Math.max(0,expires-Date.now()-200),retryDeadline:null,transport:[]}:null;
   return contexts.run(budget,work);
 }
 function catchupPolicy(){
@@ -15,4 +15,6 @@ function catchupPolicy(){
   budget.retryDeadline??=Math.min(budget.signalDeadline,performance.now()+1000);
   return {deadline:budget.retryDeadline,rounds:8,pause:round=>Math.min(200,round*50)};
 }
-module.exports={withCatchupBudget,catchupPolicy};
+function recordTransport(row){const rows=contexts.getStore()?.transport;if(rows&&rows.length<32)rows.push(row);}
+module.exports={withCatchupBudget,catchupPolicy,isBuy:()=>!!contexts.getStore(),recordTransport,
+  transport:()=>[...(contexts.getStore()?.transport||[])]};
