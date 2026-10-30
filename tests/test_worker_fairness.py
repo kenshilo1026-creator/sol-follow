@@ -26,6 +26,10 @@ async def test_worker_yields_while_backlog_remains(config, store, monkeypatch, p
 
     monkeypatch.setattr(service, 'process', process)
     if path == 'retry-expired':
+        # Explicitly cross the zero-age retry deadline. On coarse Windows
+        # clocks enqueue and retry can otherwise share exactly one timestamp.
+        with store.db('funding') as db:
+            db.execute('UPDATE jobs SET first_seen=?', (time.time()-1,))
         retry = store.retry
         monkeypatch.setattr(store, 'retry', lambda row, reason, now, max_age: retry(row, reason, now, 0))
     worker = asyncio.create_task(service.worker(None))

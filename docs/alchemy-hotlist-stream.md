@@ -311,42 +311,25 @@ introduced later by a non-SOL hop is still resolved normally. Background warmups
 and sells retain their existing paths. Blockhash is selected from the shared
 cache at compilation time; preparation does not extend its lifetime or the
 original signal deadline. Pool ownership, slot freshness, taxes, fees, minOut,
-simulation and monitor readiness remain checked before signing/submission.
+simulation remain checked before signing/submission; dev-watch registration is local.
 
 This reduces serial waits; it is not zero-RPC prediction of a new pool, and
 cannot guarantee a same-slot fill if the state/simulation provider is behind.
 
 
-### Immediate exit-monitor subscription refresh
+### Exit monitoring without an entry ACK gate
 
 The 2026-10-29 DrawFi entry audit recorded a 135.342 ms unsigned build,
 137.852 ms cumulative simulation completion, then 893.990 ms waiting for
-exit-monitor coverage. `MarketFeed.arm()` woke the WebSocket loop, but the loop
-cleared that event without bypassing its two-second subscription refresh.
-Explicit change events now immediately rebuild the desired subscriptions. The
-event is consumed before refresh, so changes during subscription sends survive;
-the outstanding WebSocket receive remains alive. A buy still waits for real
-subscription ACK coverage and retains its original expiry and simulation gates.
+exit-monitor coverage. Earlier fixes woke the WebSocket refresh immediately
+and overlapped ACKs with building, but still gated signing on remote coverage.
 
-This addresses a demonstrated local delay, not a promise of same-slot inclusion.
-That sample landed at create+7 slots versus the compared transaction at +2.
-The comparison also showed zero priority fee on our buy, which remains a
-separate configuration/fee-policy improvement, not part of this wakeup fix.
-
-
-The RH reference is `rh_follow_buyer.py::_arm_dev_sell_watch`, called before
-the Pons V2 send path: it installs a local watch in an existing transaction
-feed, rather than waiting for a fresh per-token remote subscription.
-Solana's current exit feed uses address-filtered WebSocket subscriptions, so
-local registration alone cannot certify remote coverage. `MarketFeed.arm()`
-now installs the local consumers synchronously, then returns its awaitable
-coverage gate so subscription ACKs and unsigned building proceed concurrently.
-Coverage uses each socket's server-ACKed address set (cleared on disconnect),
-not the socket's all-addresses-ready flag. A delayed unrelated address no
-longer blocks an otherwise covered buy. ACK/removal/disconnect events wake
-waiters directly, replacing the 10 ms polling loop. Missing required ACKs
-still time out and reject the buy; this does not turn a disconnected stream
-into permission to trade. The deadline, simulation and signing rules remain.
+The current buy path follows `rh_follow_buyer.py::_arm_dev_sell_watch`: register
+one order locally before building, retain its dev in the shared transaction
+stream, and refresh market sockets in the background. `MarketFeed.arm()` remains
+an explicit coverage probe, but execution no longer calls or awaits it.
+See the RH-style registration section below for buffering, reconnect repair,
+confirmed sale evidence and the remaining inclusion limits.
 
 
 ### Per-transaction priority fee
@@ -408,7 +391,7 @@ builder. Set the environment switch to false to disable this optimization.
 The persistent Node process still encodes instructions; this is not a Python
 rewrite or a promise of zero RPC / same-slot inclusion. Signing stays in Python.
 Existing minOut/slippage, tax/impact checks, signal age, source validity,
-monitor readiness, simulation reuse and priority-fee settings remain active.
+local dev-watch registration, simulation reuse and priority-fee settings remain active.
 Successful audit `builder_timing.localCreate` reports `eligible`, `reason` and
 `projectedAccounts`, allowing VPS measurements to distinguish local builds from
 fallback. The offline `local_create_inputs.json` fixture is derived from the
@@ -431,8 +414,7 @@ extensions and both transfer-fee schedules.
 
 這次優化保留 processed 來源、dev 數量限制、minOut、滑點、實際 mint／手續費模擬檢查及簽名前的持久化。
 
-- `MarketFeed.arm` 只掃描一次持倉／dev watch，將同一快照交給兩個 socket；待買入的 dev／ATA 訂閱優先於尚未送出的其他訂閱。已有 ACK 可重用，仍維持最多 8 個待 ACK 請求，不替整個 hotlist 增加 WebSocket 訂閱。
-- 監聽準備繼續與組單並行。簽名前重新檢查當前 ACK 覆蓋；先前 ready 後斷線不能當作仍可監控。取消或逾時會釋放訂閱優先權。
+- 買入採用下節的本地登記及共用 gRPC 監控，已移除簽名前 WebSocket ACK 等待；市場 WebSocket 仍維持最多 8 個待 ACK 請求，作為背景備援。
 - `SOL_EXECUTION_HEDGE_MS=75`（預設）：買入 SDK 模擬及已簽名交易廣播在主端尚未回應時，75ms 後啟動已設定的備援。主端提早回應不增加備援請求；主端立即不可用則即時啟動備援。僅一個端點時維持原路徑。
 - 模擬使用第一個有效、符合 `minContextSlot` 的結果，包含有效的模擬失敗；不因失敗再尋找成功答案。資料缺失、落後 slot 或限流不算有效結果。其他帳戶查詢及背景工作維持原有順序備援。
 - 廣播兩端使用同一筆已持久化的已簽名位元組，檢查回傳簽名一致。此功能也適用同一 execution lane 的賣出／清掃廣播。中斷 HTTP 等待不代表鏈上取消；所有端點無有效 ACK 時，原訂單仍保持 unknown，由原有 reconcile 查明，不重新簽名。
@@ -440,4 +422,31 @@ extensions and both transfer-fee schedules.
 
 部署後可在原有 `dev_audit` 的 `builder_timing.rpc` 查看每次 RPC 的 `provider`（primary/fallback）、`ms`、`attempt`、`hedged`、`outcome`。這些是建置結果產生前已完成的嘗試；被取消且尚未結束的嘗試可能未列入。沒有端點 URL 或 API key。Health 的 `execution_rpc` 增加 `send_hedges`、`send_primary_wins`、`send_fallback_wins` 累計計數。先比較 `monitor_wait_ms`、`builder_timing.calls.simulateTransaction.ms`、`submit_started_ms` 及 `submit_ack_ms` 的分布，再看 `slot_delta`，不能以 RPC ACK 當作入塊證明。
 
-不需新增 key；沿用 `SOL_EXECUTION_RPC_HTTP_URL`／`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL` 現有解析規則。若要逐步驗證，可先設 `SOL_EXECUTION_HEDGE_MS=0` 只測訂閱優先及診斷，再設 `75` 比較競速；設回 `0` 並重啟即可恢復順序備援。未設定時預設啟用 75ms。背景 blockhash 刷新、訊號有效期限及 slot 新鮮度門檻不變。這是降低本地／RPC 等待，不能保證同 slot。
+不需新增 key；沿用 `SOL_EXECUTION_RPC_HTTP_URL`／`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL` 現有解析規則。若要逐步驗證，可先設 `SOL_EXECUTION_HEDGE_MS=0` 只測本地監控登記及診斷，再設 `75` 比較競速；設回 `0` 並重啟即可恢復順序備援。未設定時預設啟用 75ms。背景 blockhash 刷新、訊號有效期限及 slot 新鮮度門檻不變。這是降低本地／RPC 等待，不能保證同 slot。
+
+
+## 2026-10-30 RH 式本地登記，買入不等賣出訂閱 ACK
+
+收到 create、通過原有入場限制並保留訂單後，`DevSell.register` 只登記該訂單的 dev／ATA，
+不掃描所有持倉、不發 RPC、不等待 WebSocket。隨即進入組單、單次模擬、簽名及廣播。
+`monitor_wait_ms` 為 0；背景訂閱未完成或斷線不再產生 `dev-sell-monitor-unavailable` 買入拒絕。
+minOut、滑點、dev 數量、來源分叉與訊號期限、持久化簽名均保留。
+
+共用 gRPC 的地址為 hotlist 與待買入／現有持倉 dev watch 的聯集。原 hotlist 在 create 時
+照常移除，但已保留訂單的 dev 不會因此被取消訂閱；新增 ATA 隨背景 filter 更新加入。
+賣出交易通知直接進入持久化 dev-sell inbox，不經 funding worker；入場 live-window 的
+丟棄規則不會丟掉既有持倉的賣出通知。無法正常解碼的交易仍以簽名、slot、靜態與 ALT
+帳戶提示排入原有 confirmed receipt 驗證。
+
+接收端保留最多 2048 筆、30 秒內的交易帳戶提示，接回 create 解析排隊期間的早到事件。
+本地登記會重播相符事件，資料庫用 signature／buy_id 去重。已進 inbox 的事件可跨重啟恢復；
+尚未登記的提示只在記憶體中，重啟／斷線間隔由原有有界歷史補查修復。
+WS 訂閱與確認、重連補查都在背景執行。gRPC 建立新連線時亦排入持倉的補查。
+
+processed 通知只是賣出候選，不直接當成成功賣出；confirmed receipt 仍驗證 dev 所有權、
+實際 venue 轉帳及相同 slot，已知 dead slot 不觸發退出。若組單期間賣出已被確認，原有
+簽名前 dev gate 會拒絕買入；若買單已送出，durable dev exit 等待可退出的買入持倉後跟賣。
+純 RPC 故障不當作餘額為零。失敗買單及已結束持倉會從背景監控集合清除。
+
+不需新增 .env 參數、API key 或 tip。需部署並重啟服務才生效；本地測試不代表 VPS 實際
+入塊結果。此變更消除原本約 865ms 的 ACK 等待項目，但不保證同 slot 成交。

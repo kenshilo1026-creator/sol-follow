@@ -391,3 +391,38 @@ async def test_direct_reader_idle_timeout_closes_stream(config,store,monkeypatch
     with pytest.raises(RuntimeError,match='grpc-idle-timeout'):
         await asyncio.wait_for(feed.connection(None,{'wallet'},None),1)
     assert call.cancelled and feed.loop_due is None
+
+
+@pytest.mark.parametrize('malformed',[False,True])
+def test_position_dispatch_survives_buy_live_filter_and_normalization_failure(config,store,malformed):
+    raw=json.loads((FIX/'pump_non_sol_buy.json').read_text())
+    update=wire(raw)
+    if malformed:update.transaction.transaction.meta.pre_balances.pop()
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    events=[];feed.position_event=lambda *args:events.append(args)
+    feed.live_floor=raw['slot']+1  # No anchor and no live buy permission.
+    feed.accept(update)
+    assert len(events)==1
+    signature,slot,keys=events[0]
+    assert signature==raw['transaction']['signatures'][0] and slot==raw['slot']
+    assert set(keys)=={k['pubkey'] for k in raw['transaction']['message']['accountKeys']}
+    assert store.stream_payload(signature) is None and feed.added==0
+
+
+@pytest.mark.asyncio
+async def test_shared_stream_reconnect_requests_position_gap_repair(config,store,monkeypatch):
+    from features.funding import grpc_feed
+    called=asyncio.Event()
+    class Call:
+        async def write(self,request):pass
+        async def read(self):await asyncio.Future()
+        def cancel(self):pass
+    monkeypatch.setattr(grpc_feed,'stream_call',lambda *args:Call())
+    feed=HotlistFeed(config,store,None,Notices(),None)
+    feed.position_reconnected=called.set
+    task=asyncio.create_task(feed.connection(None,{'position-dev'},None))
+    try:
+        await asyncio.wait_for(called.wait(),1)
+        assert feed.subscribed=={'position-dev'}
+    finally:
+        task.cancel();await asyncio.gather(task,return_exceptions=True)

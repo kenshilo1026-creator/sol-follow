@@ -252,3 +252,80 @@ async def test_history_failure_stops_at_ten_minutes_without_blocking_live(config
     assert worker.notices.items[-1][0][0]=='dev sell catch-up incomplete'
     worker.market_event(dev,'dev-sale',raw['slot']);await worker.once();await exit.once()
     assert builds==[1000]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('early',[False,True])
+async def test_shared_stream_captures_sale_before_or_after_local_registration(config,store,early):
+    from types import SimpleNamespace
+    from features.funding.grpc_feed import HotlistFeed
+    worker,exit,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.watches={};worker.history={}
+    buy=store.order(oid)
+    route=SimpleNamespace(trade=SimpleNamespace(wallet=dev,slot=raw['slot']-1,signature='create'),
+                          request=lambda:json.loads(store.rows('trading','SELECT request FROM order_routes WHERE order_id=?',(oid,))[0]['request']))
+    signature=raw['transaction']['signatures'][0]
+    keys=[k['pubkey'] for k in raw['transaction']['message']['accountKeys']]
+    if early:worker.stream_event(signature,raw['slot'],keys)
+    worker.register(oid,route)
+    feed=HotlistFeed(config,store,None,Notices(),None);feed.position_watch=worker.watch_addresses
+    assert not store.hotlist(time.time()) and dev in feed.addresses()
+    if not early:worker.stream_event(signature,raw['slot'],keys)
+    # Multiple accounts, gRPC duplicate and WS duplicate share one durable event.
+    worker.stream_event(signature,raw['slot'],keys)
+    worker.market_event(dev,signature,raw['slot'])
+    assert len(store.rows('trading','SELECT * FROM dev_sell_events'))==1
+    assert reader.calls==0 and not store.rows('trading','SELECT * FROM dev_exits')
+    await worker.once();await exit.once()
+    assert reader.calls==1 and builds==[1000]
+    assert dev not in feed.addresses()
+
+
+@pytest.mark.asyncio
+async def test_shared_stream_dead_fork_never_triggers_exit(config,store):
+    from features.funding.processed import Processed
+    worker,exit,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.stream_event('dev-sale',raw['slot'],[dev])
+    Processed(store).dead_slot(raw['slot'])
+    await worker.once();await exit.once()
+    assert reader.calls==0 and not builds
+    assert store.rows('trading','SELECT state,reason FROM dev_sell_events')==[{'state':'ignored','reason':'dead-slot'}]
+
+
+@pytest.mark.asyncio
+async def test_shared_stream_buffer_bounds_and_reconnect_catchup(config,store,monkeypatch):
+    worker,exit,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.history.clear()
+    for i in range(2100):worker.stream_event(str(i),i,['unwatched'])
+    assert len(worker.recent)==2048 and reader.calls==0
+    clock=time.monotonic()+31
+    monkeypatch.setattr(time,'monotonic',lambda:clock)
+    worker.prune_recent();assert not worker.recent
+    worker.reconnected()
+    assert set(worker.history)==set(worker.watches)
+    assert reader.calls==0  # Reconnect only schedules background repair.
+
+
+@pytest.mark.asyncio
+async def test_shared_stream_event_survives_restart_without_volatile_buffer(config,store):
+    worker,exit,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.stream_event('dev-sale',raw['slot'],[dev])
+    restarted=DevSell(exit.config,Store(config.data),reader,Notices(),exit)
+    assert not restarted.recent
+    await restarted.once();await exit.once()
+    assert builds==[1000]
+
+
+@pytest.mark.asyncio
+async def test_stream_dev_and_ata_delivery_uses_one_durable_commit(config,store,monkeypatch):
+    from contextlib import contextmanager
+    worker,exit,reader,oid,dev,raw,builds=await armed(config,store)
+    original=store.db;writes=[]
+    @contextmanager
+    def counted(name):
+        writes.append(name)
+        with original(name) as db:yield db
+    monkeypatch.setattr(store,'db',counted)
+    worker.stream_event('dev-sale',raw['slot'],list(worker.watches))
+    assert writes==['trading']
+    assert len(store.rows('trading','SELECT * FROM dev_sell_events'))==1

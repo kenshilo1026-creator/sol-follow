@@ -193,26 +193,16 @@ class Service:
                      'queue_wait_ms':queue_wait_ms,
                      'source':raw.get('_stream',{}).get('source','grpc' if processed else 'http'),
                      'commitment':'processed' if processed else 'confirmed'})
+                # RH-style local registration: no socket ACK or history RPC on
+                # the buy path. The dev remains in the shared gRPC filter after
+                # hotlist consumption; market sockets refresh in the background.
+                dev_sell=getattr(self,'dev_sell',None)
+                if dev_sell is not None:dev_sell.register(oid,route)
                 market=getattr(self,'market_feed',None)
-                readiness=None
-                if market is not None:
-                    from chain_common.primitives import ata
-                    required={route.trade.wallet,ata(route.trade.wallet,route.trade.mint,route.request()["tokenProgram"])}
-                    readiness=asyncio.create_task(market.arm(required))
-                    if hasattr(market,'covered'):
-                        readiness.coverage_check=lambda required=frozenset(required),market=market: required <= market.covered()
-                else:
-                    discovery=getattr(self,'discovery',None)
-                    if discovery is not None:discovery.refresh()
+                if market is not None:market.refresh_background()
                 executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority,
                                                                builder=self.quote_builder)
-                try:
-                    if readiness is None:await executor.buy(oid,route)
-                    else:await executor.buy(oid,route,readiness=readiness)
-                finally:
-                    if readiness is not None:
-                        if not readiness.done():readiness.cancel()
-                        await asyncio.gather(readiness,return_exceptions=True)
+                await executor.buy(oid,route)
         # A live create must reach the cached builder before unrelated funding
         # history/account RPCs. The entry above still requires an existing
         # qualified hotlist wallet and the original source/quantity gates.
@@ -434,6 +424,10 @@ class Service:
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.execution_reads)
             self.dev_sell=DevSell(self.config,self.store,self.execution_reads,self.notices,self.dev_exit)
+            if grpc_mode:
+                self.hotlist_feed.position_watch=self.dev_sell.watch_addresses
+                self.hotlist_feed.position_event=self.dev_sell.stream_event
+                self.hotlist_feed.position_reconnected=self.dev_sell.reconnected
             from features.strategy.market_feed import MarketFeed
             def market_event(address,signature,slot):
                 self.dev_sell.market_event(address,signature,slot)
@@ -448,6 +442,7 @@ class Service:
             self.executor.recover_unsigned()
             from features.strategy.startup_positions import prune_empty_positions
             await prune_empty_positions(self.config,self.store,self.execution_reads,self.notices)
+            self.dev_sell.watch_addresses()  # Restore position filters before starting the stream.
             outstanding=self.store.rows('trading',"SELECT id,signature,state FROM orders WHERE reason!=? AND state IN ('reserved','signed','submitted','unknown','confirmed')",(MARKER,))
             positions=self.store.rows('trading',"SELECT mint FROM positions WHERE amount!='0'")
             if outstanding or positions:

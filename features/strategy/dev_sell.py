@@ -5,6 +5,7 @@ A token transfer must occur INSIDE the successful venue sell invocation. Token
 ownership comes from receipt metadata, not the instruction's arbitrary user label.
 """
 import asyncio
+from collections import deque
 import json
 import time
 from chain_common.primitives import TOKEN,TOKEN_2022,ata,b58decode,discriminator
@@ -84,7 +85,44 @@ class DevSell:
     def __init__(self,config,store,rpc,notices,exit_engine):
         self.config,self.store,self.rpc,self.notices,self.exit=config,store,rpc,notices,exit_engine
         self.wake=asyncio.Event();self.watches={}
+        # Bounded ingress hints bridge create-worker scheduling. These are not
+        # sale proofs: the durable consumer still verifies confirmed receipts.
+        self.recent=deque(maxlen=2048)
         self.history={};self.history_latest={};self.history_wake=asyncio.Event()
+
+    def register(self,oid,route):
+        """Install one reserved buy locally, without a global scan or RPC."""
+        buy=self.store.order(oid)
+        dev=route.trade.wallet
+        item={**buy,'dev':dev,'create_slot':route.trade.slot}
+        accounts={dev,ata(dev,buy['mint'],route.request()['tokenProgram'])}
+        for account in accounts:
+            current=self.watches.setdefault(account,[])
+            if not any(w['id']==oid for w in current):current.append(item)
+        # Persist early events before yielding to the builder. No receipt read.
+        self.prune_recent()
+        for _,signature,slot,keys in self.recent:
+            if signature!=route.trade.signature:
+                matched=accounts.intersection(keys)
+                if matched:self.market_events(matched,signature,slot)
+        for account in accounts:self.subscribed(account)
+
+    def prune_recent(self):
+        cutoff=time.monotonic()-30
+        while self.recent and self.recent[0][0]<cutoff:self.recent.popleft()
+
+    def stream_event(self,signature,slot,keys):
+        # Receive even before local registration and outside the buy live window:
+        # an older sell may still require an exit from an existing position.
+        self.prune_recent()
+        keys=frozenset(keys)
+        self.recent.append((time.monotonic(),signature,slot,keys))
+        self.market_events(self.watches.keys() & keys,signature,slot)
+
+    def reconnected(self):
+        # Live-only gRPC cannot replay a disconnected interval. Existing bounded
+        # confirmed history catch-up repairs it independently of entry execution.
+        for address in self.watches:self.subscribed(address)
 
     def watch_addresses(self):
         rows=self.store.rows('trading',"SELECT o.*,r.request FROM orders o JOIN order_routes r ON r.order_id=o.id "
@@ -173,15 +211,20 @@ class DevSell:
             except asyncio.TimeoutError:pass
 
     def market_event(self,address,signature,slot):
+        self.market_events((address,),signature,slot)
+
+    def market_events(self,addresses,signature,slot):
         if not isinstance(signature,str) or not signature or type(slot) is not int or slot<=0:return
-        if address not in self.watches:return
+        buys={buy['id']:buy for address in addresses for buy in self.watches.get(address,())
+              if slot>=buy['create_slot']}
+        if not buys:return
         now=time.time()
+        # A stream transaction usually matches both dev and ATA. Persist all
+        # affected buys in one commit rather than fsync twice for the same event.
         with self.store.db('trading') as c:
             c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
-            for buy in self.watches.get(address,()):
-                if slot<buy['create_slot']:continue
-                c.execute('INSERT OR IGNORE INTO dev_sell_events(signature,buy_id,slot,due,first_seen) VALUES (?,?,?,?,?)',
-                          (signature,buy['id'],slot,now,now))
+            c.executemany('INSERT OR IGNORE INTO dev_sell_events(signature,buy_id,slot,due,first_seen) VALUES (?,?,?,?,?)',
+                          [(signature,buy_id,slot,now,now) for buy_id in buys])
             c.commit()
         self.wake.set()
 
@@ -195,6 +238,11 @@ class DevSell:
                 if self.store.rows('trading','SELECT 1 FROM dev_exits WHERE buy_id=?',(buy['id'],)):
                     with self.store.db('trading') as c:
                         c.execute("UPDATE dev_sell_events SET state='ignored',reason='exit-already-armed' WHERE signature=? AND buy_id=?",(signature,buy['id']))
+                    continue
+                if self.store.rows('funding','SELECT 1 FROM dead_slots WHERE slot=?',(event['slot'],)):
+                    with self.store.db('trading') as c:
+                        c.execute("UPDATE dev_sell_events SET state='ignored',reason='dead-slot' WHERE signature=? AND buy_id=?",
+                                  (signature,buy['id']))
                     continue
                 if signature not in receipts:receipts[signature]=await self.rpc.transaction(signature,commitment='confirmed')
                 raw=receipts[signature]

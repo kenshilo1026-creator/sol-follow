@@ -34,7 +34,7 @@ class Executor:
         if processed:
             if route.trade.side=='create':
                 # Confirmation upgrades live evidence; it must not cancel an
-                # already prepared processed create while the monitor arms.
+                # already prepared processed create while the builder runs.
                 if not proofs.create_usable(route.trade.signature,route.trade.slot):
                     return 'source-proof-unusable'
             elif not proofs.create_backup(route.trade.signature,route.trade.slot) and (not trigger or trigger['state']!='pending'):
@@ -49,7 +49,7 @@ class Executor:
     def fresh(self, route, oid=None):
         return self.rejection(route,oid) is None
 
-    async def buy(self, oid, route, *, readiness=None):
+    async def buy(self, oid, route):
         row=self.store.order(oid)
         if row['state']!='reserved' or row['mode']!=self.config.mode:
             return
@@ -115,16 +115,9 @@ class Executor:
                     raise ValueError('simulation-rejected')
             mark('simulated_ms')
             require_fresh()
-            # Prepare while subscription ACKs arrive; recheck before signing.
-            stage='monitor'
-            monitor_began=time.monotonic()
-            if readiness is not None and not await readiness:
-                raise ValueError('dev-sell-monitor-unavailable')
-            if readiness is not None and not getattr(readiness,'coverage_check',lambda:True)():
-                raise ValueError('dev-sell-monitor-unavailable')
-            timings['monitor_wait_ms']=round((time.monotonic()-monitor_began)*1000,3)
-            mark('monitor_ready_ms')
-            require_fresh()
+            # Dev watches are registered locally before build. Subscription
+            # ACKs and reconnect catch-up never gate signing or submission.
+            timings['monitor_wait_ms']=0.0
             if self.config.dry_run:
                 with self.store.db('trading') as c:
                     c.execute('BEGIN IMMEDIATE')

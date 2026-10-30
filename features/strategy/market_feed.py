@@ -41,10 +41,15 @@ class MarketFeed:
         # are ready: an unrelated pending subscription must not block this buy.
         return set().union(*(f.subscribed for f in self.feeds))
 
+    def refresh_background(self):
+        # No scan or network wait on the entry path. Each socket's existing
+        # loop refreshes its desired accounts when it consumes this event.
+        for feed in self.feeds:feed.changed.set()
+
     def arm(self, required, timeout=2):
-        # Like RH's local watch registration, install consumers before the
-        # caller schedules its build. Only waiting for ACKs is asynchronous.
-        # ACKs call DevSell.subscribed again to close the pre-subscription gap.
+        # Explicit coverage probe; the buy path uses refresh_background and
+        # never calls this ACK-waiting helper. ACKs still request background
+        # catch-up to close a pre-subscription gap.
         required=frozenset(required)
         # Install local consumers once, rather than scanning all positions for
         # each provider. A cached ACK can only cover a registered consumer.

@@ -65,25 +65,19 @@ async def test_backup_alone_arms_dev_before_one_buy_in_processed_mode(config,sto
     service.quote_builder=Gates();service.dev_holdings=Gates()
     worker=DevSell(cfg,store,None,Notices(),None)
     market=MarketFeed(cfg,store,None,Notices(),worker.watch_addresses,worker.market_event,worker.subscribed)
-    service.market_feed=market
-    # ACKs are asynchronous; buy must wait while both required addresses arm.
-    async def acknowledge():
-        while not worker.watches:await asyncio.sleep(0)
-        for f in market.feeds:f.subscribed=set(worker.watches);f.connected=True
-    ack=asyncio.create_task(acknowledge());buys=[]
+    service.market_feed=market;service.dev_sell=worker
+    buys=[]
     class Engine:
-        async def buy(self,oid,route,*,readiness=None):
-            assert await readiness
+        async def buy(self,oid,route):
             assert item.user in worker.watches
             worker.market_event(item.user,'early-dev-sale',item.slot+1)
             assert store.rows('trading','SELECT signature FROM dev_sell_events')==[{'signature':'early-dev-sale'}]
-            assert set(worker.watches)<=market.feeds[0].subscribed
+            assert not market.covered()
             from trade_execution.executor import Executor
             assert Executor(cfg,store,None,Notices(),service.priority).fresh(route,oid)
             buys.append(oid)
     service.executor=Engine()
     await service.process({'signature':item.signature},rpc)
-    await ack
     # A second source/repeated receipt cannot buy again.
     await service.process({'signature':item.signature},rpc)
     assert len(buys)==1
@@ -120,24 +114,6 @@ async def test_delayed_receipt_does_not_refresh_live_window(config,store):
     assert not Processed(store).create_backup(item.signature)
 
 
-@pytest.mark.asyncio
-async def test_missing_dev_subscription_prevents_buy(config,store):
-    raw,item,cfg,rpc,feed=setup(config,store);notify(feed,item);await feed.once()
-    service=Service(cfg,store);service.signals.started=0;service.notices=Notices()
-    service.quote_builder=Gates();service.dev_holdings=Gates()
-    worker=DevSell(cfg,store,None,Notices(),None)
-    market=MarketFeed(cfg,store,None,Notices(),worker.watch_addresses,worker.market_event,worker.subscribed)
-    class Unavailable:
-        async def arm(self,required):return await market.arm(required,timeout=0)
-    service.market_feed=Unavailable()
-    class Engine:
-        async def buy(self,oid,route,*,readiness=None):
-            assert not await readiness
-            store.fail_order(oid,'dev-sell-monitor-unavailable')
-    service.executor=Engine()
-    await service.process({'signature':item.signature},rpc)
-    assert item.user in worker.watches
-    assert store.rows('trading','SELECT reason FROM orders')[0]['reason']=='dev-sell-monitor-unavailable'
 
 
 @pytest.mark.asyncio

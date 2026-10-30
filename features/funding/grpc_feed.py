@@ -1,4 +1,4 @@
-"""Alchemy hotlist-only stream with public-first/Alchemy-fallback head reads.
+"""Alchemy hotlist and active-position stream with public-first/Alchemy-fallback head reads.
 
 The durable inbox is committed before advancing the checkpoint. Hotlist changes
 subscribe to live traffic only; they never queue public history scans.
@@ -76,6 +76,9 @@ def stream_call(channel, config):
 class HotlistFeed:
     def __init__(self, config, store, rpc, notices, catchup):
         self.config,self.store,self.rpc,self.notices,self.catchup = config,store,rpc,notices,catchup
+        self.position_watch = None
+        self.position_event = None
+        self.position_reconnected = None
         self.connected = False
         self.subscribed = set()
         self.received = self.added = self.bytes_received = self.reconnects = self.dropped = 0
@@ -98,7 +101,8 @@ class HotlistFeed:
         self.loop_delays=deque(maxlen=240)
 
     def addresses(self):
-        return set(self.store.hotlist(time.time()))
+        positions=set(self.position_watch()) if self.position_watch else set()
+        return set(self.store.hotlist(time.time())) | positions
 
     async def resume_slot(self, addresses):
         commitment=self.config.hotlist_commitment
@@ -231,6 +235,10 @@ class HotlistFeed:
                 if len(value.transaction.signature) != 64:
                     raise Unsupported('stream-invalid-signature') from None
                 signature=b58encode(value.transaction.signature)
+                if self.position_event:
+                    info=value.transaction
+                    keys=list(info.transaction.message.account_keys)+list(info.meta.loaded_writable_addresses)+list(info.meta.loaded_readonly_addresses)
+                    self.position_event(signature,slot,[b58encode(k) for k in keys if len(k)==32])
                 observed(self.store,signature,'grpc-'+self.config.hotlist_commitment,'received',slot,received_at,
                          normalized=False,live=live,dropped=not live,live_reason=live_reason,error=type(exc).__name__)
                 if live:self.added += self.store.enqueue([signature])
@@ -238,6 +246,9 @@ class HotlistFeed:
                 self.notices.emit('stream transaction requires public RPC decoding',
                     {'slot':slot,'type':type(exc).__name__},key='grpc-normalize')
             else:
+                if self.position_event:
+                    self.position_event(raw['transaction']['signatures'][0],slot,
+                                        [k['pubkey'] for k in raw['transaction']['message']['accountKeys']])
                 now=time.time(); a=self.anchor
                 observed(self.store,raw['transaction']['signatures'][0],'grpc-'+self.config.hotlist_commitment,
                          'received',slot,received_at,normalized=True,live=live,dropped=not live,
@@ -330,6 +341,7 @@ class HotlistFeed:
             await self.write_control(call,subscription(addresses,start,commitment=self.config.hotlist_commitment))
             self.store.set_stream_state('grpc_watch',sorted(addresses))
             self.subscribed = set(addresses)
+            if self.position_reconnected:self.position_reconnected()
             # Do not cancel call.read() just to refresh filters: cancelling an
             # aio gRPC read cancels the whole stream.
             self.read_ready_at=None

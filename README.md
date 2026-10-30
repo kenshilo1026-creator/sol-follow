@@ -7,8 +7,8 @@ RPC 單筆回傳 `null`、驗證不合格或要求的 slot 尚未可用，只讓
 
 買賣的 Python RPC、Node 建單 HTTP、交易對帳均支援公共 RPC → Alchemy 後備。入金、交易發送、交易對帳及訊號確認各有獨立連線池／工作佇列；同一端點的真實 429 共用冷卻，所有通道會避開該端點並嘗試後備。冷卻以雜湊端點名稱保存於 data/rpc-cooldowns，Python 與短期／常駐 Node 建單程序均讀取；單筆 null、錯誤參數或未索引不會寫入共用冷卻。預設沿用現有公共 RPC 和 Alchemy key，毋須新增供應商。**這是程式隔離，不是供應商配額隔離**：相同 IP／Alchemy 帳戶仍可能共用上限。
 發送後備只重送已寫入資料庫的相同簽名及 bytes，不重簽；未知結果保留，RPC 接受不等於已成交。模擬的有效鏈上錯誤不會被後備的成功結果蓋過，兩端均保留 commitment、minContextSlot 與 preflight。每個交易端點使用前會核對 mainnet genesis。
-每次買入前先同步登記 dev 與其 token account 的監察，刷新實際 MarketFeed，最多等待 2 秒取得訂閱確認；未接好就停止該筆買入。訂閱確認仍會觸發 dev sell 空窗補查。
-止盈及 dev 賣出使用獨立的公共／Alchemy WebSocket 同時監聽，事件由原有持久化鍵去重；不再與 CEX 入金共用訂閱。任一連線維持完整覆蓋時不發斷線 Telegram；覆蓋不足超過 60 秒才通知。入金／gRPC 斷線與確認／交易 RPC 故障亦先記本地，持續超過 60 秒才告警；真正的交易拒絕、鏈上失敗等交易通知照常。
+每次買入前只在本地登記 dev 與其 token account 的監察，隨即組單送出，不等 WebSocket 訂閱確認。gRPC 同時監控 hotlist 與待買入／現有持倉 dev，消耗 hotlist 不會移除持倉監控；WebSocket 訂閱及空窗補查在背景執行。早到通知有有界暫存，賣出候選仍經 confirmed receipt 驗證。audit 的 `monitor_wait_ms` 為 0。
+止盈使用獨立的公共／Alchemy WebSocket 同時監聽；dev 賣出以共用 gRPC 及這兩條 WebSocket 備援接收，事件由原有持久化鍵去重。市場 WebSocket 不與 CEX 入金共用訂閱。任一連線維持完整覆蓋時不發斷線 Telegram；覆蓋不足超過 60 秒才通知。入金／gRPC 斷線與確認／交易 RPC 故障亦先記本地，持續超過 60 秒才告警；真正的交易拒絕、鏈上失敗等交易通知照常。
 gRPC 模式另有常駐 confirmed create 備援 WebSocket，優先公共端點、斷線可輪替原有 funding 端點。只訂閱現有 hotlist，create log 須再以 confirmed getTransaction 核對簽名、slot、成功狀態、簽署 dev 及 create 指令，再走相同 hotlist、aged-funding、dev 持倉、風控與去重。備援也適用 processed 模式，但不偽造 processed 證據。兩個 feed 同時送達只會保留一筆買入；通知及鏈上時間都須在 signal age 內，重啟／歷史補查不會追買。confirmed 備援比 processed 串流慢，且所有來源同時不可用時仍可能漏訊號。入金補查使用下述固定時間窗口與持久續查游標，每輪 3 頁不再是整個缺口的上限。
 可選設定：`SOL_EXECUTION_RPC_HTTP_URL`、`SOL_EXECUTION_RPC_FALLBACK_HTTP_URL`、`SOL_EXECUTION_RPC_WS_URL` 可接入另有配額的交易端點；`SOL_EXECUTION_RPC_TIMEOUT_MS=4000` 是每個 HTTP 請求的時限。HTTP 設定空白且有 Alchemy key 時，組單讀取、模擬及交易送出優先使用 Alchemy，`SOL_RPC_HTTP_URL` 作後備；沒有 key 才直接使用原有 RPC。明確設定的端點仍優先；WS 設定不變。`features.app check` 顯示 `execution_rpc_fallback`、`execution_shares_funding_endpoint`、`market_feed_connections`，不輸出端點或 key。
 

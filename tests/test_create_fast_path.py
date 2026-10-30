@@ -15,8 +15,8 @@ from tests.test_pump_buy import setup_order,RPC
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('outcome',['ready','unavailable','fork','expired','dev-rejected','confirmed','disconnected'])
-async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,store,outcome):
+@pytest.mark.parametrize('outcome',['ready','fork','expired','dev-rejected','confirmed','dev-sale'])
+async def test_buy_without_ack_rechecks_source_and_dev_after_build(config,store,outcome):
     key=Keypair()
     cfg,route,oid,builder=setup_order(replace(config,dry_run=False,wallet_keypair=key),store,key)
     cfg=replace(cfg,hotlist_commitment='processed')
@@ -26,31 +26,27 @@ async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,s
         db.execute('INSERT INTO processed_signals VALUES (?,?,?,?,?,?,?)',
                    (sig,route.trade.slot,time.time(),1,'pending',time.time(),''))
     with store.db('trading') as db:db.execute('INSERT INTO order_sources VALUES (?,?,?)',(oid,sig,route.trade.slot))
-    built=asyncio.Event();simulated=asyncio.Event();release=asyncio.Event()
-    async def build(*args):
-        built.set()
-        return await builder(*args)
+    simulated=asyncio.Event();release=asyncio.Event()
     class Public(RPC):
         async def call(self,method,params):
-            if method=='simulateTransaction':simulated.set()
+            if method=='simulateTransaction':
+                simulated.set()
+                await release.wait()
             return await super().call(method,params)
     rpc=Public(store,oid)
-    async def coverage():
-        await release.wait()
-        return outcome!='unavailable'
-    ready=asyncio.create_task(coverage())
-    ready.coverage_check=lambda:outcome!='disconnected'
-    engine=Executor(cfg,store,rpc,Notices(),Priority(),build)
-    task=asyncio.create_task(engine.buy(oid,route,readiness=ready))
+    engine=Executor(cfg,store,rpc,Notices(),Priority(),builder)
+    task=asyncio.create_task(engine.buy(oid,route))
     try:
-        await asyncio.wait_for(built.wait(),2)
         await asyncio.wait_for(simulated.wait(),2)
-        assert not task.done() and not ready.done()
         assert store.order(oid)['signature'] is None
-        assert rpc.calls==['simulateTransaction']
         if outcome=='fork':Processed(store).dead_slot(route.trade.slot)
         elif outcome=='confirmed':Processed(store).confirmed(sig,'confirmed')
         elif outcome=='expired':engine.config=replace(cfg,signal_age=-1)
+        elif outcome=='dev-sale':
+            with store.db('trading') as db:
+                db.execute("INSERT INTO dev_exits(buy_id,state,updated,reason) VALUES (?,'waiting',?,'dev-sell-100-percent')",(oid,time.time()))
+                db.execute("INSERT INTO dev_sell_events(signature,buy_id,slot,due,first_seen,state) VALUES ('sale',?,?,?,?, 'triggered')",
+                           (oid,route.trade.slot+1,time.time(),time.time()))
         elif outcome=='dev-rejected':
             with store.db('trading') as db:
                 db.execute('INSERT INTO token_dev_holdings VALUES (?,?,?,?,?,?,?)',
@@ -58,19 +54,18 @@ async def test_prepare_before_ack_but_never_send_without_valid_coverage(config,s
         release.set()
         await asyncio.wait_for(task,2)
     finally:
-        for pending in (task,ready):
-            if not pending.done():pending.cancel()
-        await asyncio.gather(task,ready,return_exceptions=True)
-    expected={'disconnected':'dev-sell-monitor-unavailable','unavailable':'dev-sell-monitor-unavailable','fork':'source-proof-unusable',
-              'expired':'signal-expired','dev-rejected':'dev-entry-not-permitted'}
+        if not task.done():task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+    expected={'fork':'source-proof-unusable','expired':'signal-expired',
+              'dev-rejected':'dev-entry-not-permitted','dev-sale':'dev-entry-not-permitted'}
     order=store.order(oid)
     if outcome in expected:
         assert order['state']=='failed' and order['reason']==expected[outcome]
         assert order['signature'] is None and 'sendTransaction' not in rpc.calls
     else:
         assert order['state']=='submitted' and rpc.calls[-1]=='sendTransaction'
-    detail=json.loads(store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]['detail'])
-    assert 'built_ms' in detail['timing_ms'] and 'simulated_ms' in detail['timing_ms']
+        detail=json.loads(store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]['detail'])
+        assert detail['timing_ms']['monitor_wait_ms']==0
 
 
 def test_feed_first_observations_survive_later_backup_and_report_by_wallet(config,store):
@@ -88,23 +83,27 @@ def test_feed_first_observations_survive_later_backup_and_report_by_wallet(confi
 
 
 @pytest.mark.asyncio
-async def test_service_cancels_monitor_task_after_precheck_rejection(config,store):
+async def test_service_registers_locally_and_buys_with_disconnected_market(config,store):
     from tests.create_snipe_helpers import setup_create
+    from features.strategy.dev_sell import DevSell
+    from features.strategy.market_feed import MarketFeed
+    from features.funding.grpc_feed import HotlistFeed
     case=setup_create(config,store)
-    started=asyncio.Event();cancelled=asyncio.Event()
-    class Market:
-        async def arm(self,required):
-            started.set()
-            try:await asyncio.Future()
-            finally:cancelled.set()
+    dev=DevSell(case.service.config,store,None,Notices(),None)
+    market=MarketFeed(config,store,None,Notices(),dev.watch_addresses,dev.market_event,dev.subscribed)
+    feed=HotlistFeed(config,store,None,Notices(),None);feed.position_watch=dev.watch_addresses
     class Engine:
-        async def buy(self,oid,route,*,readiness):
-            await asyncio.sleep(0)
-            assert started.is_set()
+        async def buy(self,oid,route):
+            assert route.trade.wallet in dev.watches
+            assert not market.covered()  # No provider ACK has arrived.
+            assert all(f.changed.is_set() for f in market.feeds)
+            assert route.trade.wallet not in store.hotlist(time.time())
+            assert route.trade.wallet in feed.addresses()
             store.fail_order(oid,'test-precheck-rejected')
-    case.service.market_feed=Market();case.service.executor=Engine()
-    await case.service.process(case.row,case.rpc)
-    assert cancelled.is_set()
+    case.service.dev_sell=dev;case.service.market_feed=market;case.service.executor=Engine()
+    await asyncio.wait_for(case.service.process(case.row,case.rpc),1)
+    assert store.rows('trading','SELECT reason FROM orders')[0]['reason']=='test-precheck-rejected'
+    assert not feed.addresses()  # Failed buys release the position watch.
 
 
 @pytest.mark.asyncio

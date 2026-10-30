@@ -86,14 +86,13 @@ async def test_live_buy_simulates_once_then_sends_without_preflight(config,store
 
 
 @pytest.mark.asyncio
-async def test_reused_simulation_still_waits_for_monitor_and_rechecks_freshness(config,store):
+async def test_reused_simulation_rechecks_freshness_after_build_without_monitor(config,store):
     cfg,route,oid,result,_,_=await fixture(config,store)
     built=asyncio.Event();release=asyncio.Event()
-    async def build(*args):built.set();return result
-    async def monitor():await release.wait();return True
-    ready=asyncio.create_task(monitor())
+    async def build(*args):
+        built.set();await release.wait();return result
     rpc=RPC(store,oid);engine=Executor(cfg,store,rpc,Notices(),Priority(),build)
-    task=asyncio.create_task(engine.buy(oid,route,readiness=ready))
+    task=asyncio.create_task(engine.buy(oid,route))
     try:
         await asyncio.wait_for(built.wait(),2)
         assert not rpc.calls and store.order(oid)['signature'] is None
@@ -101,9 +100,9 @@ async def test_reused_simulation_still_waits_for_monitor_and_rechecks_freshness(
         release.set();await asyncio.wait_for(task,2)
         assert store.order(oid)['state']=='failed' and not rpc.calls
     finally:
-        for t in (ready,task):
+        for t in (task,):
             if not t.done():t.cancel()
-        await asyncio.gather(ready,task,return_exceptions=True)
+        await asyncio.gather(task,return_exceptions=True)
 
 
 @pytest.mark.asyncio
