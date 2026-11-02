@@ -139,7 +139,8 @@ async function finish(connection,input,user,ixs,check) {
     ...(check?.addresses?{accounts:{encoding:'base64',addresses:check.addresses}}:{}),
     ...(check?.innerInstructions?{innerInstructions:true}:{})});
   if (simulated.value.err || !Number.isSafeInteger(simulated.value.unitsConsumed)
-      || simulated.value.unitsConsumed<=0 || simulated.value.unitsConsumed>1400000) throw Error('simulation-rejected');
+      || simulated.value.unitsConsumed<=0 || simulated.value.unitsConsumed>1400000)
+    throw Object.assign(Error('simulation-rejected'),{simulationDetails:require('./simulation-diagnostics.cjs').details(simulated)});
   if(check)check.verify(simulated.value.accounts,simulated.value,tx);
   const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*6/5));
   tx=compile(user,block.blockhash,[...priorityFee.prefix(feeBudget,units),...ixs],tables);
@@ -299,6 +300,7 @@ if (require.main === module) {
     catch (error) {process.stdout.write(JSON.stringify({error:REASONS.has(error.message)
       ? error.message : 'sdk-or-rpc-failed',
       ...(error.rpcDetails?{rpcDetails:error.rpcDetails}:{}),
+      ...(error.simulationDetails?{simulationDetails:error.simulationDetails}:{}),
       ...risk.feeDetails(error),
       ...(error.message==='jupiter-rate-limited'?{retryAfter:error.retryAfter}:{})}));process.exitCode=1;}
   });

@@ -63,3 +63,40 @@ test('priority-fee integer math stays within total budget at all supported CU li
   for(const value of ['-1','0.1','NaN','18446744073709551616',200000,null])
     assert.throws(()=>fee.budget({priorityFeeLamports:value}),/invalid-priority-fee/);
 });
+
+
+for(const scenario of ['custom','budget','blockhash','missing-cu','zero-cu','oversized-cu'])
+  test(`simulation rejection preserves structured evidence: ${scenario}`,async()=>{
+    const user=web3.Keypair.generate().publicKey;
+    const value={err:null,unitsConsumed:50000,logs:[]};
+    if(scenario==='custom'){
+      value.err={InstructionError:[2,{Custom:6002}]};
+      value.logs=['Program log: secret https://rpc.invalid/key',
+        'Program log: AnchorError caused by account: curve. Error Code: TooMuchSolRequired. Error Number: 6002. Error Message: hidden.',
+        `Program ${user} failed: custom program error: 0x1772`];
+    }
+    if(scenario==='budget')value.err={InstructionError:[2,'ComputationalBudgetExceeded']};
+    if(scenario==='blockhash')value.err='BlockhashNotFound';
+    if(scenario==='missing-cu')delete value.unitsConsumed;
+    if(scenario==='zero-cu')value.unitsConsumed=0;
+    if(scenario==='oversized-cu')value.unitsConsumed=1400001;
+    let calls=0;
+    const connection={async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:200};},
+      async simulateTransaction(){calls++;return {context:{slot:123},value};}};
+    await assert.rejects(finish(connection,{lookupTables:[],minSlot:100},user,[]),error=>{
+      assert.equal(error.message,'simulation-rejected');
+      const d=error.simulationDetails;
+      assert.equal(d.slot,123);
+      assert.equal(d.reason,scenario==='missing-cu'?'missing-compute-units':scenario.endsWith('-cu')?'invalid-compute-units':'transaction-error');
+      if(scenario==='custom'){
+        assert.equal(d.instruction_index,2);assert.equal(d.custom_code,6002);
+        assert.equal(d.anchor_code,'TooMuchSolRequired');assert.equal(d.anchor_number,6002);
+        assert.equal(d.failed_program,user.toBase58());
+      }
+      if(scenario==='budget')assert.equal(d.instruction_error,'ComputationalBudgetExceeded');
+      if(scenario==='blockhash')assert.equal(d.transaction_error,'BlockhashNotFound');
+      assert(!JSON.stringify(d).includes('secret'));assert(!JSON.stringify(d).includes('https'));
+      return true;
+    });
+    assert.equal(calls,1);
+  });

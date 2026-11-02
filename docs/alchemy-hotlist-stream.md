@@ -468,3 +468,19 @@ start/end 看，最後一項不一定是唯一未完成操作。只記固定欄�
 
 這是縮短失效等待與增加定位資訊，不代表已確診歷史的每一筆 timeout，也不代表較早
 停止就能令原本卡住的交易成交。不需新增 .env 設定，部署並重啟後才生效。
+
+
+## 2026-11-02 模擬拒絕證據
+
+`simulation-rejected` 保留原有拒絕條件：SDK 模擬回傳交易錯誤，或 CU 資料缺失／
+不合法（須為 1 至 1,400,000 的整數）。Python 備援模擬回傳交易錯誤也會拒絕。
+失敗 audit 的 `detail.simulation_details` 新增 `reason` 分類：
+`transaction-error`、`missing-compute-units`、`invalid-compute-units`。
+有資料時記錄模擬 `slot`、`units_consumed`、從 0 起算的 `instruction_index`、
+`custom_code`、已知交易／指令錯誤名稱，以及日誌中的 Anchor 錯誤名稱／編號及失敗程式地址。
+只保留受限結構欄位，不保存原始日誌、RPC 端點或任意錯誤文字；未知錯誤名稱可能不保留。
+
+Node 常駐 worker 與單次 CLI 均傳回此資料，Python 再過濾後存入 audit／本地失敗 notice。
+不增加模擬或 RPC 次數，不改變 minOut、滑點、訊號期限及送單條件。Telegram 排版不變。
+舊版只存 `simulation-rejected` 的訂單無法藉此補回當時錯誤；此變更修補診斷缺口，
+並非已證實修復歷史模擬失敗的根因。無須新增 .env 設定，部署並重啟後才開始保存。

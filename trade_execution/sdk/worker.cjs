@@ -84,6 +84,7 @@ async function handle(message){
       blockhashHits:blocks.hits,blockhashMisses:blocks.misses}});
   }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
+    ...(e.simulationDetails?{simulationDetails:e.simulationDetails}:{}),
     ...require('./risk.cjs').feeDetails(e),
     ...(e.message==='jupiter-rate-limited'?{retryAfter:e.retryAfter}:{})});}
   finally{if(foreground)gate.leave();}

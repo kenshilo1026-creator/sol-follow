@@ -112,7 +112,9 @@ class Executor:
                 simulation=await self.rpc.call('simulateTransaction',[result['transaction'],
                     {'encoding':'base64','sigVerify':False,'commitment':self.config.hotlist_commitment,'minContextSlot':route.trade.slot}])
                 if simulation['value']['err'] is not None:
-                    raise ValueError('simulation-rejected')
+                    from trade_execution.builder import BuildError
+                    from chain_common.simulation_diagnostics import from_response
+                    raise BuildError('simulation-rejected',simulation_details=from_response(simulation))
             mark('simulated_ms')
             require_fresh()
             # Dev watches are registered locally before build. Subscription
@@ -176,6 +178,7 @@ class Executor:
             rpc_detail=getattr(exc,'rpc_details',{})
             diagnostics={'rpc_details':rpc_detail} if rpc_detail else {}
             if getattr(exc,'builder_details',None):diagnostics['builder_diagnostics']=exc.builder_details
+            if getattr(exc,'simulation_details',None):diagnostics['simulation_details']=exc.simulation_details
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:
