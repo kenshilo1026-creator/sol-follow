@@ -84,7 +84,7 @@ test('persistent worker uses create hints and returns per-method timing without 
     tokenProgram:spl.TOKEN_PROGRAM_ID.toBase58(),lookupTables:[],minSlot:100,amount:'10000000',slippagePercent:'2'};
   input.createHint=hint(input,'pump.fun');
   const lines=readline.createInterface({input:child.stdout});
-  const response=new Promise(resolve=>lines.on('line',line=>{const v=JSON.parse(line);if(v.id===1)resolve(v);}));
+  const response=new Promise(resolve=>lines.on('line',line=>{const v=JSON.parse(line);if(v.id===1&&(v.result||v.error))resolve(v);}));
   child.stdin.write(JSON.stringify({id:1,input})+'\n');
   const row=await response;assert.equal(row.error,undefined);
   assert.equal(row.result.buildTiming.createFast,true);
@@ -139,7 +139,7 @@ test('worker builds from WS accounts when HTTP is one slot behind and still simu
     tokenProgram:spl.TOKEN_PROGRAM_ID.toBase58(),lookupTables:[],minSlot:100,amount:'10000000',slippagePercent:'2'};
   input.createHint=hint(input,'pump.fun');
   const lines=readline.createInterface({input:child.stdout});
-  const response=new Promise(resolve=>lines.on('line',line=>{const v=JSON.parse(line);if(v.id===1)resolve(v);}));
+  const response=new Promise(resolve=>lines.on('line',line=>{const v=JSON.parse(line);if(v.id===1&&(v.result||v.error))resolve(v);}));
   child.stdin.write(JSON.stringify({id:1,input})+'\n');
   const row=await response;assert.equal(row.error,undefined);
   assert.equal(row.result.buildTiming.createFast,true);assert.equal(row.stats.wsReadWins,1);

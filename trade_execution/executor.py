@@ -175,6 +175,7 @@ class Executor:
             fees=fee_context(exc,self.config)
             rpc_detail=getattr(exc,'rpc_details',{})
             diagnostics={'rpc_details':rpc_detail} if rpc_detail else {}
+            if getattr(exc,'builder_details',None):diagnostics['builder_diagnostics']=exc.builder_details
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:

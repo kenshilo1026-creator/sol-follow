@@ -162,3 +162,94 @@ async def test_create_cache_does_not_enable_usd_oracles(config,store,operation):
     builder.start=ready;builder.exchange=exchange
     assert await builder.request({'route':'prime','minSlot':0,'lookupTables':[],'primeAccounts':[]},
                                  '',operation=operation)=={'checked':True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stuck',['worker-start','worker-write','worker-response'])
+async def test_buy_deadline_bounds_whole_worker_exchange(config,store,stuck):
+    import time
+    builder=manager(config,store)
+    class Input:
+        def write(self,data):pass
+        async def drain(self):
+            if stuck=='worker-write':await asyncio.Future()
+    class Process:
+        returncode=None
+        stdin=Input()
+        def kill(self):self.returncode=-1
+    child=Process()
+    async def start():
+        if stuck=='worker-start':await asyncio.Future()
+        builder.process=child
+    builder.start=start
+    began=time.monotonic()
+    with pytest.raises(BuildError,match='signal-expired') as caught:
+        await builder.exchange({'operation':'build','buySignalExpiresAtMs':int((time.time()+.08)*1000)})
+    assert time.monotonic()-began<1
+    assert caught.value.builder_details['phase']==stuck
+    assert caught.value.builder_details['timeout_s']<=.08
+    assert child.returncode==(-1 if stuck!='worker-start' else None)
+    assert not builder.pending and not builder.progress
+
+
+@pytest.mark.asyncio
+async def test_expired_buy_never_starts_node(config,store):
+    import time
+    builder=manager(config,store)
+    async def forbidden():raise AssertionError('expired buy started worker')
+    builder.start=forbidden
+    with pytest.raises(BuildError,match='signal-expired'):
+        await builder.exchange({'operation':'build','buySignalExpiresAtMs':int((time.time()-1)*1000)})
+
+
+@pytest.mark.asyncio
+async def test_progress_does_not_complete_request_and_is_sanitized(config,store):
+    builder=manager(config,store);stream=asyncio.StreamReader()
+    class Process:
+        stdout=stream;returncode=None
+        def kill(self):self.returncode=1
+        async def wait(self):return 1
+    future=asyncio.get_running_loop().create_future();builder.pending[7]=future
+    reader=asyncio.create_task(builder.read(Process()))
+    def line(row):stream.feed_data((json.dumps(row)+'\n').encode())
+    line({'id':7,'progress':{'stage':'simulateTransaction','phase':'start','ms':10,'url':'secret'}})
+    line({'id':7,'progress':{'stage':'secret-endpoint','phase':'start','ms':10}})
+    line({'id':999,'progress':{'stage':'build','phase':'start','ms':10}})
+    await asyncio.sleep(0)
+    assert not future.done()
+    assert builder.progress=={7:[{'stage':'simulateTransaction','phase':'start','ms':10}]}
+    line({'id':7,'result':{'warmed':True}})
+    assert (await asyncio.wait_for(future,1))['result']=={'warmed':True}
+    stream.feed_eof();await reader
+
+
+@pytest.mark.asyncio
+async def test_worker_build_error_retains_last_progress(config,store):
+    builder=manager(config,store)
+    class Input:
+        def write(self,data):
+            row=json.loads(data);identifier=row['id']
+            builder.progress[identifier]=[{'stage':'getMultipleAccountsInfo','phase':'start','ms':2}]
+            builder.pending[identifier].set_result({'error':'execution-context-behind'})
+        async def drain(self):pass
+    async def start():builder.process=SimpleNamespace(stdin=Input())
+    builder.start=start
+    with pytest.raises(BuildError,match='execution-context-behind') as caught:
+        await builder.exchange({'operation':'build'})
+    assert caught.value.builder_details['progress'][0]['stage']=='getMultipleAccountsInfo'
+    assert not builder.pending and not builder.progress
+
+
+@pytest.mark.asyncio
+async def test_builder_diagnostics_reach_failed_order_audit(config,store):
+    from tests.test_pump_buy import setup_order,RPC
+    from trade_execution.executor import Executor
+    from chain_common.rpc import Priority
+    cfg,r,oid,_=setup_order(config,store)
+    detail={'phase':'worker-response','progress':[{'stage':'simulateTransaction','phase':'start','ms':12}]}
+    async def build(*args):
+        error=BuildError('signal-expired');error.builder_details=detail;raise error
+    await Executor(cfg,store,RPC(),Notices(),Priority(),build).buy(oid,r)
+    assert store.order(oid)['state']=='failed' and store.order(oid)['signature'] is None
+    audit=store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]
+    assert json.loads(audit['detail'])['builder_diagnostics']==detail

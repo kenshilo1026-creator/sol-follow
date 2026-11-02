@@ -55,7 +55,7 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
   const exited=new Promise(r=>child.once('exit',r));
   t.after(async()=>{child.kill();await exited;for(const socket of wss.clients)socket.terminate();wss.close();server.closeAllConnections();await new Promise(r=>server.close(r));});
   const lines=readline.createInterface({input:child.stdout});
-  const pending=new Map();lines.on('line',line=>{const r=JSON.parse(line);pending.get(r.id)?.(r);});
+  const pending=new Map();lines.on('line',line=>{const r=JSON.parse(line);if(r.result||r.error)pending.get(r.id)?.(r);});
   const input={route:'prime',rpc:`http://127.0.0.1:${server.address().port}`,ws:`ws://127.0.0.1:${server.address().port}`,minSlot:100,lookupTables:[],
     primeAccounts:[key().toBase58()],cache:{ttlMs:2000,refreshMs:999999,maxAccounts:32}};
   async function request(id,minSlot,extra={}){const response=new Promise(r=>pending.set(id,r));child.stdin.write(JSON.stringify({id,input:{...input,minSlot,...extra}})+'\n');return response;}

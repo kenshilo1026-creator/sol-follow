@@ -450,3 +450,21 @@ processed 通知只是賣出候選，不直接當成成功賣出；confirmed rec
 
 不需新增 .env 參數、API key 或 tip。需部署並重啟服務才生效；本地測試不代表 VPS 實際
 入塊結果。此變更消除原本約 865ms 的 ACK 等待項目，但不保證同 slot 成交。
+
+
+## 2026-11-02 組單期限與失敗進度
+
+`CachedBuilder` 的買入 IPC 等待上限改為 `min(30 秒, 原始訊號剩餘有效時間)`，
+包含啟動 worker、等待寫入鎖／stdin drain、等待組單回覆。已過期請求不會啟動 Node。
+原本 signal age 為 2 秒卻等 30 秒的情況，現在到原始期限便以 `signal-expired` 停止。
+這不延長入場窗口，也不跳過模擬／minOut。未回覆的 worker 沿用終止及下次啟動恢復；
+同一 worker 中的其他未完成請求可能收到 `route-builder-stopped`。背景預熱不套用買入期限。
+
+失敗 audit 的 `detail.builder_diagnostics` 記錄 Python 等待階段 `phase`、`elapsed_ms`、
+`timeout_s`，以及最多 24 筆 Node `progress`（固定 stage／start 或 end／相對毫秒）。
+可分辨未收到 Node 進度、進入組單、讀帳戶、取 blockhash、模擬等；平行呼叫需要連同
+start/end 看，最後一項不一定是唯一未完成操作。只記固定欄位，不記端點、key 或 RPC 參數。
+`builder_timing` 仍是成功建置的完整統計，失敗時可為 null；請查看新的 diagnostics。
+
+這是縮短失效等待與增加定位資訊，不代表已確診歷史的每一筆 timeout，也不代表較早
+停止就能令原本卡住的交易成交。不需新增 .env 設定，部署並重啟後才生效。

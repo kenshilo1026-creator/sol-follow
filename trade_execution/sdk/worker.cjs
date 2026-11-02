@@ -16,8 +16,16 @@ async function handle(message){
   const {id,input}=message;
   const background=input.prewarm||['warm_limit','bootstrap','shared_warm'].includes(input.operation);
   const foreground=input.operation!=='priority'&&!background;
+  const received=performance.now();
+  const stages=new Set(['getMultipleAccountsInfo','getMultipleAccountsInfoAndContext','getAccountInfo',
+    'getAccountInfoAndContext','getLatestBlockhash','getAddressLookupTable','getEpochInfo','simulateTransaction','localCreateShared']);
+  const progress=(stage,phase='start')=>{
+    if(input.operation==='build'&&!background)
+      send({id,progress:{stage,phase,ms:Math.round((performance.now()-received)*1000)/1000}});
+  };
   if(foreground)gate.enter();
   try{
+    progress('received');
     if(input.activeTrades!==undefined)gate.setTrades(input.activeTrades);
     if(input.operation==='priority'){gate.setTrades(input.active);send({id,result:{priority:input.active}});return;}
     if(!cache){
@@ -41,8 +49,9 @@ async function handle(message){
       const value=target[key];
       if(typeof value!=='function')return value;
       return async(...args)=>{const began=performance.now();
+        if(stages.has(key))progress(key);
         try{return await value.apply(target,args);}
-        finally{const row=calls[key]||(calls[key]={count:0,ms:0});row.count++;row.ms+=performance.now()-began;}
+        finally{if(stages.has(key))progress(key,'end');const row=calls[key]||(calls[key]={count:0,ms:0});row.count++;row.ms+=performance.now()-began;}
       };
     }});
     input.waitForBackground=wait;input.background=!!background;
@@ -64,12 +73,13 @@ async function handle(message){
     }else if(input.route==='prime'){
       await connection.getMultipleAccountsInfo(input.primeAccounts.map(k=>new web3.PublicKey(k)));
       result={warmed:true};
-    }else result=await build(input,connection);
+    }else {progress('build');result=await build(input,connection);}
     if(generation!==cache.generation)throw Error('cache-disconnected');
     if(input.operation==='build')result.buildTiming={totalMs:Math.round((performance.now()-started)*1000)/1000,
       createFast:!!createFast.hint(input),localCreate:result.localCreate,
       rpc:require('./catchup-budget.cjs').transport(),calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
+    progress('ready');
     send({id,result,stats:{hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,wsReadWins:cache.wsReadWins,
       blockhashHits:blocks.hits,blockhashMisses:blocks.misses}});
   }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',

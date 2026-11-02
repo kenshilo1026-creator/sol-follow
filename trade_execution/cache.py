@@ -21,6 +21,7 @@ class CachedBuilder:
         self.start_lock = asyncio.Lock()
         self.write_lock = asyncio.Lock()
         self.pending = {}
+        self.progress = {}
         self.counter = 0
         self.queue = OrderedDict()
         self.shared_queue = OrderedDict()
@@ -122,6 +123,20 @@ class CachedBuilder:
                     except Exception:
                         self.notices.emit('quote cache persistence deferred', {}, key='cache-persist', interval=60)
                     continue
+                if 'progress' in row:
+                    identifier=row.get('id');detail=row['progress']
+                    # Only fixed stage names and finite elapsed numbers cross
+                    # into audit. Never persist SDK arguments or provider URLs.
+                    stages={'received','build','ready','getMultipleAccountsInfo','getMultipleAccountsInfoAndContext',
+                            'getAccountInfo','getAccountInfoAndContext','getLatestBlockhash',
+                            'getAddressLookupTable','getEpochInfo','simulateTransaction','localCreateShared'}
+                    if (identifier in self.pending and isinstance(detail,dict) and detail.get('stage') in stages
+                            and detail.get('phase') in ('start','end') and type(detail.get('ms')) in (int,float)
+                            and 0<=detail['ms']<=3600000):
+                        events=self.progress.setdefault(identifier,[])
+                        events.append({key:detail[key] for key in ('stage','phase','ms')})
+                        del events[:-24]
+                    continue
                 future = self.pending.get(row.get('id'))
                 if future and not future.done():
                     if row.get('stats'):
@@ -138,7 +153,6 @@ class CachedBuilder:
                     future.set_exception(BuildError('route-builder-stopped'))
 
     async def request(self, request, wallet, warm=False, operation="build", minimum_usd=None):
-        await self.start()
         payload = payload_for(self.config, request, wallet)
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
                        minimumUsdMicros=str(self.config.min_observed_buy_usd_micros if minimum_usd is None else minimum_usd),
@@ -155,36 +169,51 @@ class CachedBuilder:
         await self.exchange({"operation":"priority","active":active})
 
     async def exchange(self, payload):
-        await self.start()
-        self.counter += 1
-        identifier = self.counter
-        future = asyncio.get_running_loop().create_future()
-        self.pending[identifier] = future
+        background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap","shared_warm")
+        expires=payload.get('buySignalExpiresAtMs') if not background else None
+        remaining=expires/1000-time.time() if type(expires) in (int,float) else None
+        if remaining is not None and remaining<=0:raise BuildError('signal-expired')
+        timeout=None if background else min(30,remaining) if remaining is not None else 30
+        began=time.monotonic();phase='worker-start';identifier=None;process=None
         try:
-            async with self.write_lock:
-                payload["activeTrades"]=self.priority.active
-                if payload.get("operation")=="priority":
-                    payload["active"]=self.priority.active
-                self.process.stdin.write((json.dumps({'id': identifier, 'input': payload})+'\n').encode())
-                await self.process.stdin.drain()
-            background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap","shared_warm")
-            if background:
-                # Pausing background work is not a hung foreground build.
+            # One deadline includes worker start, stdin backpressure and reply.
+            # An unsigned buy cannot usefully outlive its original signal.
+            async with asyncio.timeout(timeout):
+                await self.start()
+                process=self.process
+                self.counter += 1
+                identifier = self.counter
+                future = asyncio.get_running_loop().create_future()
+                self.pending[identifier] = future
+                phase='worker-write'
+                async with self.write_lock:
+                    payload["activeTrades"]=self.priority.active
+                    if payload.get("operation")=="priority":payload["active"]=self.priority.active
+                    process.stdin.write((json.dumps({'id': identifier, 'input': payload})+'\n').encode())
+                    await process.stdin.drain()
+                phase='worker-response'
                 row=await future
-            else:
-                row = await asyncio.wait_for(future, timeout=30)
-            result_or_error(row)
-            return row['result']
-        except asyncio.TimeoutError as exc:
-            # Abandon the whole worker so a hung RPC cannot accumulate detached
-            # builds; other pending calls fail safely and the next call restarts.
-            if self.process and self.process.returncode is None:
-                self.process.kill()
-            if self.reader:
-                await self.reader
-            raise BuildError('route-builder-timeout') from exc
+                result_or_error(row)
+                return row['result']
+        except (TimeoutError,BuildError) as exc:
+            diagnostic={'phase':phase,'elapsed_ms':round((time.monotonic()-began)*1000,3),
+                        'timeout_s':timeout,'progress':list(self.progress.get(identifier,()))}
+            if isinstance(exc,TimeoutError):
+                # Preserve the existing hung-worker recovery, but never kill a
+                # replacement child created by another concurrent request.
+                if process is not None and process is self.process:
+                    if process.returncode is None:process.kill()
+                    if self.reader:await self.reader
+                exc=BuildError('signal-expired' if remaining is not None and remaining<=30 else 'route-builder-timeout')
+            exc.builder_details=diagnostic
+            raise exc
         finally:
-            self.pending.pop(identifier, None)
+            if identifier is not None:
+                future=self.pending.pop(identifier,None)
+                if future is not None:
+                    if not future.done():future.cancel()
+                    elif not future.cancelled():future.exception()
+                self.progress.pop(identifier,None)
 
     async def market_cap(self,route):
         return await self.request(route.request(),self.config.wallet_address or route.trade.wallet,operation='market_cap')
