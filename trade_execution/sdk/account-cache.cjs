@@ -85,6 +85,19 @@ class AccountCache {
     return this.valid(row,minSlot,k)||(shared.has(k)&&row?.value&&row.continuous
       &&this.watchState.get(k)?.subscribed&&this.healthy()&&this.head>=minSlot&&Date.now()>=row.at);
   }
+  evidence(k,minSlot,shared,force=false,local=false){
+    const row=this.rows.get(k),age=row?Date.now()-row.at:null,subscribed=!!this.watchState.get(k)?.subscribed;
+    const healthy=this.healthy(),isShared=shared.has(k);
+    const hit=local?isShared&&row?.value&&this.valid(row,0,k):
+      !force&&this.validShared(row,minSlot,k,shared);
+    const reason=hit?'hit':force?'forced-baseline':local&&!isShared?'not-shared':!row?'absent':
+      age<0?'clock-ahead':local&&!row.value?'null-account':isShared&&!row.continuous?'not-continuous':
+      isShared&&!subscribed?'subscription-not-ready':isShared&&!healthy?'websocket-unhealthy':
+      isShared&&this.head<(local?minSlot-2:minSlot)?'head-behind':row.slot<minSlot?'slot-behind':'expired';
+    return {address:k,source:hit?'cache-hit':'cache-miss',reason,min_slot:minSlot,
+      row_slot:row?.slot,age_ms:age,continuous:!!row?.continuous,subscribed,healthy,head:this.head,shared:isShared,ttl_ms:this.ttlMs,
+      websocket_connected:this.rpc._rpcWebSocketConnected===true,pulse_age_ms:this.pulseAt===null?null:Date.now()-this.pulseAt};
+  }
   async firstReady(keys,names,config,gen,shared,force){
     const minSlot=config.minContextSlot||0,controller=new AbortController();
     let changed,settled=false;
@@ -106,19 +119,26 @@ class AccountCache {
     try{return await Promise.race([websocket,http]);}
     finally{settled=true;this.readWaiters.delete(changed);controller.abort();}
   }
-  async get(keys,config={},cacheOnly=false,wait=async()=>{},shared=new Set(),force=false){
+  async get(keys,config={},cacheOnly=false,wait=async()=>{},shared=new Set(),force=false,trace=null){
     const minSlot=config.minContextSlot||0;
     if(!keys.length)return {context:{slot:minSlot},value:[]};
     const names=keys.map(k=>k.toBase58());
     let rows=names.map(k=>this.rows.get(k));
     const missing=names.map((k,i)=>!force&&this.validShared(rows[i],minSlot,k,shared)?-1:i).filter(i=>i>=0);
+    const evidence=trace?{phase:'cache',accounts:names.map(k=>this.evidence(k,minSlot,shared,force)),outcome:'cache-hit',ms:0}:null;
+    if(evidence)trace(evidence);
     if(!missing.length){this.hits+=keys.length;return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};}
-    if(cacheOnly)throw Error('price-cache-miss');
+    if(cacheOnly){if(evidence)evidence.outcome='cache-only-miss';throw Error('price-cache-miss');}
     await wait();const gen=this.generation;this.misses+=missing.length;
     missing.forEach(i=>this.watch(names[i]));
     const versions=missing.map(i=>this.watchState.get(names[i])?.version);
     const acked=missing.map(i=>this.watchState.get(names[i])?.subscribed);
-    const result=await this.firstReady(missing.map(i=>keys[i]),missing.map(i=>names[i]),config,gen,shared,force);
+    const began=performance.now();if(evidence)evidence.outcome='pending';
+    const result=await this.firstReady(missing.map(i=>keys[i]),missing.map(i=>names[i]),config,gen,shared,force).then(result=>{
+      if(evidence){evidence.outcome=result.fromWebsocket?'websocket':'http';evidence.response_slot=result.context.slot;}
+      return result;
+    },error=>{if(evidence)evidence.outcome='unavailable';throw error;})
+      .finally(()=>{if(evidence)evidence.ms=Math.round((performance.now()-began)*1000)/1000;});
     if(gen!==this.generation)throw Error('cache-disconnected');
     if(!result.fromWebsocket&&result.context.slot<minSlot)throw Error('cache-slot-behind');
     const fetched=new Map(missing.map((index,i)=>[names[index],{value:result.value[i],slot:result.context.slot,at:Date.now(),continuous:false}]));
@@ -144,8 +164,8 @@ class AccountCache {
     if(!subscriptionsLost)for(const [k,state] of this.watchState)
       if(state.subscribed&&this.sharedWait.has(k))void this.baselineShared(k,state);
   }
-  async table(key,config,cacheOnly,wait){
-    const r=await this.get([key],{...config,minContextSlot:0},cacheOnly,wait),row=r.value[0];
+  async table(key,config,cacheOnly,wait,trace=null){
+    const r=await this.get([key],{...config,minContextSlot:0},cacheOnly,wait,new Set(),false,trace),row=r.value[0];
     if(!row||row.executable||!row.owner.equals(web3.AddressLookupTableProgram.programId))throw Error('invalid-tables');
     const state=web3.AddressLookupTableAccount.deserialize(row.data);
     if(state.deactivationSlot!==ACTIVE)throw Error('invalid-tables');
@@ -154,22 +174,28 @@ class AccountCache {
     const addresses=state.lastExtendedSlot>=bankSlot?state.addresses.slice(0,state.lastExtendedSlotStartIndex):state.addresses;
     return {context:r.context,value:new web3.AddressLookupTableAccount({key,state:{...state,addresses}})};
   }
-  view(minSlot=0,cacheOnly=false,{wait=async()=>{},blockhashCache,sharedKeys=[]}={}){
+  view(minSlot=0,cacheOnly=false,{wait=async()=>{},blockhashCache,sharedKeys=[],trace=null,primeReads=false}={}){
     const cache=this,rpc=this.rpc,shared=new Set(sharedKeys.map(k=>k.toBase58()));
     const config=c=>({...typeof c==='object'&&c,minContextSlot:Math.max(minSlot,c?.minContextSlot||0),commitment:cache.commitment});
+    const read=(keys,c,sharedKeys=new Set())=>{
+      if(primeReads)for(const key of keys){const k=key.toBase58();cache.sharedWait.set(k,wait);cache.watch(k);}
+      return cache.get(keys,c,cacheOnly,wait,sharedKeys,false,trace);
+    };
     const methods={
-      // Only the verified create builder uses this bounded exception for
-      // shared config PDAs. New mint/pool/quote balances never use it. Public
-      // WS slot notifications can trail the processed source by one slot.
-      localCreateShared:keys=>keys.map(key=>{
+      // Verified create only: common configuration and quote-mint metadata
+      // can predate the launch. Keep TTL/continuous-WS validity, not a launch-slot
+      // barrier. New target state and wallet balances retain strict reads.
+      localCreateShared:keys=>{
+        if(trace)trace({phase:'shared',accounts:keys.map(key=>cache.evidence(key.toBase58(),minSlot,shared,false,true))});
+        return keys.map(key=>{
         const k=key.toBase58(),r=cache.rows.get(k);
-        return shared.has(k)&&r?.value&&r.continuous&&cache.watchState.get(k)?.subscribed
-          &&cache.healthy()&&cache.head>=minSlot-2&&Date.now()>=r.at?r.value:null;
-      }),
-      getMultipleAccountsInfoAndContext:(keys,c)=>cache.get(keys,config(c),cacheOnly,wait,shared),
-      getMultipleAccountsInfo:async(keys,c)=>(await cache.get(keys,config(c),cacheOnly,wait,shared)).value,
-      getAccountInfoAndContext:async(k,c)=>{const r=await cache.get([k],config(c),cacheOnly,wait);return {context:r.context,value:r.value[0]};},
-      getAccountInfo:async(k,c)=>(await cache.get([k],config(c),cacheOnly,wait)).value[0],
+        return shared.has(k)&&r?.value&&cache.valid(r,0,k)?r.value:null;
+      });},
+      quoteSnapshot:()=>cache.view(0,cacheOnly,{wait,blockhashCache,primeReads,trace:trace?row=>{row.scope='quote';trace(row);}:null}),
+      getMultipleAccountsInfoAndContext:(keys,c)=>read(keys,config(c),shared),
+      getMultipleAccountsInfo:async(keys,c)=>(await read(keys,config(c),shared)).value,
+      getAccountInfoAndContext:async(k,c)=>{const r=await read([k],config(c));return {context:r.context,value:r.value[0]};},
+      getAccountInfo:async(k,c)=>(await read([k],config(c))).value[0],
       getLatestBlockhash:async c=>{
         if(blockhashCache){
           try{return blockhashCache.pick(minSlot);}
@@ -180,7 +206,7 @@ class AccountCache {
         await wait();return rpc.getLatestBlockhash(config(c));
       },
       simulateTransaction:(tx,c)=>rpc.simulateTransaction(tx,config(c)),
-      getAddressLookupTable:(key,c)=>cache.table(key,config(c),cacheOnly,wait),
+      getAddressLookupTable:(key,c)=>cache.table(key,config(c),cacheOnly,wait,trace),
       getEpochInfo:async()=>{
         const r=cache.misc.get('epoch'),age=r?Date.now()-r.at:-1,clock=cache.clock;
         if(r&&((age>=0&&age<=cache.ttlMs&&r.value.absoluteSlot>=minSlot)||

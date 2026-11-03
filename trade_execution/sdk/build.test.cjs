@@ -172,8 +172,18 @@ test('native SOL builder spends the configured budget with common min-out and no
   assert(buy.keys[6].pubkey.equals(user));
   const smaller=await build({...input,slippagePercent:'0.25'},connection);
   assert(new BN(smaller.minOut).gt(new BN(result.minOut)));
-  simulationError={InstructionError:[2,{Custom:6000}]};
-  await assert.rejects(build(input,connection),/simulation-rejected/);
+  simulationError={InstructionError:[2,{Custom:6042}]};
+  await assert.rejects(build(input,connection),error=>{
+    assert.equal(error.message,'simulation-rejected');
+    const q=error.buildDiagnostics.quote;
+    assert.equal(q.amount,'10000000');assert.equal(q.quoted_out,result.quotedOut);
+    assert.equal(q.min_out,buy.data.readBigUInt64LE(16).toString());
+    assert.equal(q.virtual_token_reserves,'1000000000000000');
+    assert.equal(q.virtual_quote_reserves,'30000000000');
+    assert.equal(q.real_token_reserves,'800000000000000');
+    assert.equal(q.real_quote_reserves,'5000000000');
+    assert.equal(error.simulationDetails.custom_code,6042);return true;
+  });
   curve[48]=1;
   await assert.rejects(build(input,connection),/curve-graduated/);
   await assert.rejects(build({...input,quoteMint:a[2]},connection),/native-only/);

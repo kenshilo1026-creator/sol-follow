@@ -104,6 +104,8 @@ function connection(input,base){
     if(key==='getMultipleAccountsInfo')return async(keys,config)=>{
       const common=typeof target.localCreateShared==='function'?await target.localCreateShared(keys):keys.map(()=>null);
       const missing=keys.filter((k,i)=>!projection.rows.has(k.toBase58())&&!common[i]);
+      input.traceAccounts?.({phase:'projection',accounts:keys.map((k,i)=>({address:k.toBase58(),
+        source:projection.rows.has(k.toBase58())?'source-events':common[i]?'shared-cache':'cache-read'}))});
       const fetched=missing.length?await target.getMultipleAccountsInfo(missing,config):[];
       let i=0;
       return keys.map((k,index)=>{

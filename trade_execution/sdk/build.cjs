@@ -182,6 +182,7 @@ async function buildNative(input,injectedConnection) {
   const metrics=require('./pump-risk.cjs').checkFees(input,{global,feeConfig,
     mintSupply:new BN(baseMint.supply.toString()),curve,amount,expected});
   const {minOut}=minimums(amount,expected,input.slippagePercent);
+  require('./build-diagnostics.cjs').quote(input,{amount,expected,minOut,curve,supply:baseMint.supply});
   const ixs=await pump.PUMP_SDK.buyInstructions({global,bondingCurveAccountInfo:accounts[1],bondingCurve:curve,
     associatedUserAccountInfo:accounts[4],mint,user,amount:minOut,solAmount:amount,slippage:0,tokenProgram});
   const exactIxs=ixs.map(ix=>ix.programId.equals(pump.PUMP_PROGRAM_ID)?exactNativeInstruction(ix,amount,minOut):ix);
@@ -191,11 +192,16 @@ async function buildNative(input,injectedConnection) {
 }
 
 async function build(input, injectedConnection) {
-  const base=injectedConnection||connectionFor(input);
-  const connection=require('./local-create.cjs').connection(input,base);
-  const result=await buildRoute(input,require('./create-preparation.cjs').prepare(input,connection));
-  if(input.localCreate)result.localCreate=input.localCreate;
-  return result;
+  const diagnostics=require('./build-diagnostics.cjs');
+  diagnostics.init(input);
+  try{
+    const base=injectedConnection||connectionFor(input);
+    const connection=require('./local-create.cjs').connection(input,base);
+    const result=await buildRoute(input,require('./create-preparation.cjs').prepare(input,connection));
+    if(input.localCreate)result.localCreate=input.localCreate;
+    result.buildDiagnostics=diagnostics.snapshot(input);
+    return result;
+  }catch(error){error.buildDiagnostics=diagnostics.snapshot(input);throw error;}
 }
 
 async function buildRoute(input, injectedConnection) {
@@ -289,7 +295,7 @@ async function buildRoute(input, injectedConnection) {
     amount:amount.toString(),quotedOut:expected.toString(),minOut:minOut.toString(),
     quoteIn:quoteIn.toString(),quoteOut:quote.outAmount.toString(),risk:metrics};
 }
-module.exports = {build,finish,minimums,exactQuoteInstruction,exactNativeInstruction,safeMint,compile,connectionFor,REASONS};
+module.exports = {build,finish,integer,fraction,minimums,exactQuoteInstruction,exactNativeInstruction,safeMint,compile,connectionFor,REASONS};
 if (require.main === module) {
   let input='';
   process.stdin.setEncoding('utf8');
@@ -303,6 +309,7 @@ if (require.main === module) {
       ? error.message : 'sdk-or-rpc-failed',
       ...(error.rpcDetails?{rpcDetails:error.rpcDetails}:{}),
       ...(error.simulationDetails?{simulationDetails:error.simulationDetails}:{}),
+      ...(error.buildDiagnostics?{buildDiagnostics:error.buildDiagnostics}:{}),
       ...risk.feeDetails(error),
       ...(error.message==='jupiter-rate-limited'?{retryAfter:error.retryAfter}:{})}));process.exitCode=1;}
   });

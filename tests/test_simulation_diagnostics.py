@@ -51,8 +51,10 @@ async def test_simulation_failure_keeps_audit_evidence_and_never_submits(config,
     result=await build()
     response={'context':{'slot':route.trade.slot},'value':{'err':{'InstructionError':[2,{'Custom':6002}]},'unitsConsumed':60000}}
     detail=from_response(response)
+    evidence={'quote':{'amount':'100000000','min_out':'1234','quoted_out':'1500'},'source_slot':route.trade.slot}
+    result['buildDiagnostics']=evidence
     async def builder(*args):
-        if source=='sdk':result_or_error({'error':'simulation-rejected','simulationDetails':detail})
+        if source=='sdk':result_or_error({'error':'simulation-rejected','simulationDetails':detail,'buildDiagnostics':evidence})
         return result
     class Reader(RPC):
         async def call(self,method,args):
@@ -66,4 +68,26 @@ async def test_simulation_failure_keeps_audit_evidence_and_never_submits(config,
     assert row['signature'] is None and row['raw'] is None
     audit=json.loads(store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]['detail'])
     assert audit['simulation_details']==detail
+    assert audit['build_diagnostics']==evidence
     assert rpc.calls==(['simulateTransaction'] if source=='python' else [])
+
+
+def test_build_evidence_is_bounded_and_drops_raw_secrets():
+    from chain_common.build_diagnostics import sanitize
+    account=address()
+    value={'source_slot':100,'quote':{'amount':'100','min_out':'80','quoted_out':'100',
+        'slippage_percent':'20','rpc':'https://secret','mint_supply':'bad'},
+        'reads':[{'phase':'cache','outcome':'http','ms':212.4,'url':'secret','accounts':[
+            {'address':account,'role':'pump-global','source':'cache-miss','reason':'not-continuous',
+             'row_slot':99,'subscribed':True,'data':'secret'}]*40}]*20,
+        'rpc':[{'method':'getMultipleAccounts','provider':'primary','attempt':1,'ms':212.4,
+            'outcome':'unavailable','reason':'execution-context-behind','rpc_code':-32016,
+            'required_slot':100,'context_slot':99,'url':'secret'}]*40}
+    safe=sanitize(value)
+    assert len(safe['reads'])==16 and len(safe['reads'][0]['accounts'])==32 and len(safe['rpc'])==32
+    assert safe['reads'][0]['accounts'][0]['reason']=='not-continuous'
+    assert safe['quote']=={'amount':'100','min_out':'80','quoted_out':'100','slippage_percent':'20'}
+    assert safe['rpc'][0]['rpc_code']==-32016 and safe['rpc'][0]['context_slot']==99
+    assert 'secret' not in json.dumps(safe)
+    assert sanitize({'reads':[None,{'phase':'cache','accounts':[None,{'address':'secret'}]}],
+        'rpc':[None],'source_slot':True})=={'reads':[{'phase':'cache','accounts':[]}],'rpc':[]}

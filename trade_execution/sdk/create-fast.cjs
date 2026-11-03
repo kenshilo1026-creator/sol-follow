@@ -18,6 +18,6 @@ function hint(input){
 const common=[pump.GLOBAL_PDA,pump.PUMP_FEE_CONFIG_PDA,PLATFORM];
 function shared(input){
   const h=hint(input);
-  return [...common,...(h?.launchpad==='stonk'&&h.config?[new web3.PublicKey(h.config)]:[])];
+  return [...common,...(h&&input.quoteMint!==require('@solana/spl-token').NATIVE_MINT.toBase58()?[new web3.PublicKey(input.quoteMint)]:[]),...(h?.launchpad==='stonk'&&h.config?[new web3.PublicKey(h.config)]:[])];
 }
 module.exports={hint,shared,common};

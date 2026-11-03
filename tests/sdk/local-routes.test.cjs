@@ -174,3 +174,29 @@ for(const fixture of [snapshot,require('../fixtures/local_dlmm_quote_accounts.js
   await assert.rejects(quoteMaximumUsd({...input,maximumUsdMicros:'500000000'},cache.view(slot,true)),/market-cap-price-unavailable/);
  });
 }
+
+
+for(const file of ['local_quote_accounts.json','local_dlmm_quote_accounts.json']){
+  test(`background warms ${file} without a target pool; next quote uses ZERO account reads`,async t=>{
+    const fixture=require('../fixtures/'+file);t.mock.method(Date,'now',()=>fixture.timestamp);
+    const user=web3.Keypair.generate().publicKey,source=fixtureConnection(user,fixture);
+    const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
+    const cache=new AccountCache(source.connection,{ttlMs:2000,commitment:'processed'});t.after(()=>cache.close());
+    const quote=fixture.recipe.steps.at(-1).outputMint;
+    const input={wallet:user.toBase58(),mint:web3.Keypair.generate().publicKey.toBase58(),
+      pool:web3.Keypair.generate().publicKey.toBase58(),quoteMint:quote,
+      quoteProgram:source.rows[quote].owner.toBase58(),amount:'10000000',slippagePercent:'2',
+      minLiquidity:'0',swapRecipe:fixture.recipe,background:true};
+    let yielded=0;const bg=cache.view(0,false,{primeReads:true,wait:async()=>{yielded++;}});
+    t.mock.method(global,'fetch',async()=>{throw Error('quote API forbidden for known recipe');});
+    t.mock.method(source.connection,'simulateTransaction',async()=>{throw Error('warm must not simulate');});
+    const result=await require('../../trade_execution/sdk/quote-warm.cjs').warm(input,bg);
+    assert(result.warmed&&yielded>0);assert(cache.sharedWait.has(quote));assert(cache.sharedWait.has(fixture.recipe.steps[0].pool));assert(!cache.rows.has(input.mint)&&!cache.rows.has(input.pool));
+    const previous=source.calls,trace=[];
+    const connection=cache.view(1000000000,false,{trace:r=>trace.push(r)});
+    const hop=await jupiter.buildHop({user,quoteMint:pk(quote),quoteAta:spl.getAssociatedTokenAddressSync(pk(quote),user,false,pk(input.quoteProgram)),
+      amount:new BN(input.amount),slippageBps:100,connection,safeMint,minLiquidity:'0',swapRecipe:fixture.recipe});
+    assert.equal(source.calls,previous);assert(hop.minimum>0n&&hop.minimum<=hop.expected);
+    assert(trace.some(r=>r.scope==='quote'));assert(trace.every(r=>r.outcome==='cache-hit'));
+  });
+}

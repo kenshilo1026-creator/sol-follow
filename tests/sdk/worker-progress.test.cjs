@@ -20,7 +20,11 @@ test('worker progress precedes final response and carries only fixed diagnostic 
   });
   child.stdin.write(JSON.stringify({id:1,input:{operation:'build',route:'unknown',minSlot:0,lookupTables:[],
     rpc:'http://127.0.0.1:1',ws:'ws://127.0.0.1:1',commitment:'processed',activeTrades:1}})+'\n');
-  assert.equal((await result).error,'unknown-route');
+  const failure=await result;
+  assert.equal(failure.error,'unknown-route');
+  assert.equal(failure.buildDiagnostics.source_slot,0);
+  assert.deepEqual(failure.buildDiagnostics.reads,[]);
+  assert(!JSON.stringify(failure.buildDiagnostics).includes('127.0.0.1'));
   assert.deepEqual(Object.keys(ready).sort(),['boot_ms','worker']);
   assert(Number.isFinite(ready.boot_ms)&&ready.boot_ms>=0);
   assert.deepEqual(received.filter(r=>r.progress).map(r=>r.progress.stage),['received','build']);

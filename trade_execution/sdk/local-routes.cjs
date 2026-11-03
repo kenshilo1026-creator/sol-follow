@@ -1,6 +1,7 @@
 'use strict';
 // Persist identities, never executable quotes. All amounts come from current
-// account snapshots through the same slot/freshness barrier as the final curve.
+// account snapshots with bounded freshness / continuous WS coverage. Quote-hop
+// snapshots are independent of the newly created target pool slot.
 const web3=require('@solana/web3.js'),spl=require('@solana/spl-token'),BN=require('bn.js');
 const Decimal=require('decimal.js');
 const orca=require('@orca-so/whirlpools-sdk');

@@ -1,0 +1,58 @@
+# 買入報價與帳戶讀取診斷
+
+新版 execution audit 的 `detail.build_diagnostics` 會在成功送出及組單失敗時保留資料。
+沿用 `features.audit.dev_audit wallet <DEV> --hours 24 --json` 查看。
+所有記錄均來自既有組單／快取／RPC 結果，不新增 RPC、不重試失敗模擬、不改滑點。
+舊交易無法回補當時未記錄的值。
+
+- `quote`：Pump 原生 SOL 路徑實際使用的 SOL 最小單位買額、quoted_out、min_out、slippage_percent、mint_supply，以及 virtual/real token/quote reserves。不是失敗後重查的現價。
+- `source_slot`、`local_create`：來源 slot、本地 create 推算是否可用及不可用分類。
+- `reads[].phase=projection`：本地推算的 mint/pool、共用快取，或交給帳戶快取讀取的地址。
+- `reads[].phase=shared`：共用設定快取判斷；這個階段本身不發 RPC。
+- `reads[].phase=cache`：每個地址的角色、命中／未命中、原快取 slot/age、要求 slot、TTL、連續訂閱及 WebSocket 健康狀態。只有 cache-miss 的地址才交給既有讀取流程。
+- `reads[].outcome`：cache-hit、http、websocket 或 unavailable；`ms` 是等待既有 HTTP／WS 競速的時間，`response_slot` 是勝出回覆 slot。http 不代表最後所有資料都來自 HTTP，較新的 WS 資料仍優先。
+- `rpc`：主／備 RPC 的 method、attempt、hedged、outcome、ms；包含現有 transport 競速與重試，以及失敗分類、RPC code、要求／回報 slot（有提供時）。取消中的失敗競速可能尚未出現在快照內。
+
+快取原因包括 absent（沒有資料）、slot-behind、expired、not-continuous（沒有建立連續更新基線）、subscription-not-ready、websocket-unhealthy、head-behind。共用設定有多項不合格時，reason 表示先遇到的條件，應一起看其餘旗標。
+
+資料有筆數與大小上限，Python 只保留允許的欄位、數字及公開地址；不保留 API URL、金鑰、原始帳戶資料或任意 provider 錯誤文字。
+組單超時而 worker 未回覆時，仍沿用既有 progress 診斷，未完成的詳細報價不能保證取得。
+
+6042 / BuySlippageBelowMinTokensOut 需對照 simulation_details、quote 及讀取來源。
+僅憑同 slot 無法斷言模擬與報價看到完全相同的池狀態；失敗時也不應把 orders.min_out 的初始 0 當成實際指令參數。
+
+
+## Create 快速組單與非 SOL 背景快取
+
+Pump／Stonk 的有效 create 推算可直接重用共用設定及報價幣 mint 快取；
+這些帳戶不再因快取 slot 早於新 token 的 create slot 而一律重讀。
+仍須通過原有 TTL（預設 2 秒），或已建立連續基線、訂閱成功且 WS 健康的條件。
+斷線／分叉會清除快取。這不是永久使用舊帳戶狀態。
+
+非 SOL 路徑按報價幣去重背景預熱 SOL→quote 的池、mint、tick/bin 帳戶及 ALT，
+不依賴舊目標代幣是否已畢業。已見過的報價幣與路徑持久保存；啟動／worker 更換後恢復最近 128 個報價幣的預熱，
+活躍帳戶仍受既有容量限制。新出現或再次觀察到的報價幣會加入預熱佇列。
+訂閱 ACK 後以背景讀取建立連續基線，之後使用公共 WS 更新，沒有新增定時 HTTP 刷新。
+預熱與基線讀取沿用交易優先 gate；正在進行的單次 RPC 不會因此變成可撤回的請求。
+
+SOL→quote 報價使用這些有效快照，不要求所有池狀態達到新 token 的 create slot。
+`reads[].scope=quote` 標示這部分。minOut、滑點／價格影響限制、帳戶 owner 檢查及最終交易模擬仍保留。
+冷快取、過期、訂閱中斷、未知路徑，以及新目標 ATA／自身餘額等檢查，仍可能需要 RPC；
+因此不能把整筆非 SOL 買入視為保證零 RPC，也不能保證同 slot 成交。
+
+
+## 非 SOL 快取持久化位置
+
+使用現有資料目錄的 `funding.sqlite3`，無需額外 JSON 或新的 .env 設定：
+
+| 資料表 | 保存內容 |
+| --- | --- |
+| `seen_quote_mints` | 曾見過的報價幣地址、Token Program、觀察時間 |
+| `quote_recipes` | SOL→報價幣的路徑版本、各跳池地址／輸入輸出 mint、ALT 地址 |
+| `seen_non_sol` | 曾見過的目標代幣及原始路徑提示 |
+
+已發現路徑會在 worker 回報時寫入資料庫，後續組單／背景預熱自動注入該路徑。
+重啟不需重新探索已知路徑；池狀態和價格則背景重新取得，再建立 WS 更新。
+持久路徑仍須通過 SDK 的路徑及帳戶驗證。沒有把舊 quoted_out、minOut 或已簽交易當成可重放快取。
+最近 128 個報價幣的啟動預熱上限只限制活躍工作量，不會刪除其他持久路徑。
+正常重啟或部署時保留資料目錄即可；刪除／更換該資料庫會失去運行期間累積的快取。

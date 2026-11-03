@@ -15,9 +15,10 @@ let cache,blocks,rpcUrl,cacheGeneration;
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
 async function handle(message){
   const {id,input}=message;
-  const background=input.prewarm||['warm_limit','bootstrap','shared_warm'].includes(input.operation);
+  const background=input.prewarm||['warm_limit','bootstrap','shared_warm','quote_warm'].includes(input.operation);
   const foreground=input.operation!=='priority'&&!background;
   const received=performance.now();
+  require('./build-diagnostics.cjs').init(input);
   const stages=new Set(['getMultipleAccountsInfo','getMultipleAccountsInfoAndContext','getAccountInfo',
     'getAccountInfoAndContext','getLatestBlockhash','getAddressLookupTable','getEpochInfo','simulateTransaction','localCreateShared']);
   const progress=(stage,phase='start')=>{
@@ -43,8 +44,8 @@ async function handle(message){
     const generation=cache.generation;
     const wait=background?()=>gate.wait():async()=>{};
     const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);
-    const cachedConnection=cache.view(cacheOnly?0:input.minSlot,cacheOnly,
-      {wait,blockhashCache:blocks,sharedKeys:createFast.hint(input)?createFast.shared(input):[]});
+    const cachedConnection=cache.view(cacheOnly||background?0:input.minSlot,cacheOnly,
+      {wait,primeReads:input.operation==='quote_warm',trace:row=>input.traceAccounts(row),blockhashCache:blocks,sharedKeys:createFast.hint(input)?createFast.shared(input):[]});
     const started=performance.now(),calls={};
     const connection=new Proxy(cachedConnection,{get(target,key){
       const value=target[key];
@@ -65,6 +66,8 @@ async function handle(message){
       result={warmed:!!blocks.row};
     }else if(input.operation==='shared_warm'){
       await cache.primeShared(createFast.shared(input),wait);result={warmed:true};
+    }else if(input.operation==='quote_warm'){
+      result=await require('./quote-warm.cjs').warm(input,connection);
     }else if(input.operation==='market_cap'){
       result=await marketCap(input,connection);
     }else if(input.operation==='quote_minimum'){
@@ -86,6 +89,7 @@ async function handle(message){
   }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
     ...(e.simulationDetails?{simulationDetails:e.simulationDetails}:{}),
+    buildDiagnostics:require('./build-diagnostics.cjs').snapshot(input),
     ...require('./risk.cjs').feeDetails(e),
     ...(e.message==='jupiter-rate-limited'?{retryAfter:e.retryAfter}:{})});}
   finally{if(foreground)gate.leave();}

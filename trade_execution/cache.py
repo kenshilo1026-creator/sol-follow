@@ -35,7 +35,7 @@ class CachedBuilder:
         self.closed = False
 
     def enqueue(self, request, wallet):
-        mint = request['mint']
+        mint = request.get('quoteMint') or request['mint']
         now = time.monotonic()
         if now - self.recent.get(mint, -1000) < 30:
             return
@@ -183,7 +183,7 @@ class CachedBuilder:
         await self.exchange({"operation":"priority","active":active})
 
     async def exchange(self, payload):
-        background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap","shared_warm")
+        background=payload.get("prewarm") or payload.get("operation") in ("warm_limit","bootstrap","shared_warm","quote_warm")
         expires=payload.get('buySignalExpiresAtMs') if not background else None
         remaining=expires/1000-time.time() if type(expires) in (int,float) else None
         if remaining is not None and remaining<=0:raise BuildError('signal-expired')
@@ -263,12 +263,9 @@ class CachedBuilder:
         if process is self.process:
             self.warmed_process = process
 
-    async def warm(self):
-        # Initialise the shared blockhash before any target is known.
-        try:
-            await self.bootstrap()
-        except BuildError:
-            self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
+    def restore_warm_queue(self):
+        self.shared_seen.clear()
+        self.recent.clear()
         # Restore recently decoded Stonk configs, including SOL pairs, before
         # background route warmup. Older records without config safely skip.
         from types import SimpleNamespace
@@ -276,12 +273,17 @@ class CachedBuilder:
             "SELECT detail FROM launch_creates WHERE launchpad='stonk' AND status!='invalid' ORDER BY slot DESC LIMIT 128")
         for row in rows:
             self.observe_create(SimpleNamespace(**json.loads(row['detail'])),enqueue=False)
-        await self.import_creates()
-        for request, wallet in self.seen.recent():
-            if request['route']=='prime':
-                request={**request,'route':'sol_to_pump_curve'}
-                request=self.seen.remember(request,wallet)
+        for request, wallet in self.seen.recent_quotes():
             self.enqueue(request, wallet)
+
+    async def warm(self):
+        # Initialise the shared blockhash before any target is known.
+        try:
+            await self.bootstrap()
+        except BuildError:
+            self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
+        await self.import_creates()
+        self.restore_warm_queue()
         # Start/load SDKs before the first qualifying signal.
         await self.start()
         while True:
@@ -291,6 +293,7 @@ class CachedBuilder:
                                              or self.warmed_process is not self.process):
                 try:
                     await self.bootstrap()
+                    self.restore_warm_queue()
                 except BuildError:
                     self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
                     await asyncio.sleep(1)
@@ -309,7 +312,7 @@ class CachedBuilder:
                 continue
             _, (request, wallet) = self.queue.popitem(last=False)
             try:
-                await self.request(request, self.config.wallet_address or wallet, warm=True)
+                await self.request(request, self.config.wallet_address or wallet, warm=True, operation='quote_warm')
             except Exception as exc:
                 reason = str(exc) if isinstance(exc, BuildError) else type(exc).__name__
                 self.notices.emit('quote cache warm deferred', {'mint': request['mint'], 'reason': reason},

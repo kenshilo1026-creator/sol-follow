@@ -226,3 +226,31 @@ test('fork baseline does not repeat a foreground read or accept a cancelled old 
   resolve({context:{slot:104},value:[{data:Buffer.from('old-generation')}]});await tick();
   assert.equal(cache.rows.size,0);
 });
+
+
+test('quote snapshot uses fresh pre-launch pools while target and wallet reads retain the source slot',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r,{ttlMs:1000});t.after(()=>cache.close());
+  const pool=key();await cache.view(0).getAccountInfo(pool);assert.equal(r.reads,1);
+  const diagnostics=[];
+  const live=cache.view(200,false,{trace:row=>diagnostics.push(row)}),quote=live.quoteSnapshot();
+  await quote.getAccountInfo(pool);assert.equal(r.reads,1);
+  assert.equal(diagnostics.at(-1).scope,'quote');assert.equal(diagnostics.at(-1).outcome,'cache-hit');
+  r.slot=200;await live.getAccountInfo(pool);assert.equal(r.reads,2);assert.equal(r.last.minContextSlot,200);
+  now+=1001;await quote.getAccountInfo(pool);assert.equal(r.reads,3);assert.equal(r.last.minContextSlot,0);
+  assert.equal(diagnostics.at(-1).scope,'quote');assert.equal(diagnostics.at(-1).outcome,'http');
+  r._rpcWebSocket.emit('close');await quote.getAccountInfo(pool);assert.equal(r.reads,4);
+});
+
+
+test('quote warming baselines after ACK in the background and reuses unchanged pools beyond TTL',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r,{ttlMs:1000}),gate=new BackgroundGate();t.after(()=>cache.close());
+  const k=key(),warm=cache.view(0,false,{primeReads:true,wait:()=>gate.wait()}).quoteSnapshot();
+  await warm.getAccountInfo(k);assert.equal(r.reads,1);
+  gate.enter();r.ack(k);await tick();assert.equal(r.reads,1);
+  gate.leave();await tick();assert.equal(r.reads,2);assert(cache.rows.get(String(k)).continuous);
+  now+=5000;r.pulse({slot:110});
+  await cache.view(200).quoteSnapshot().getAccountInfo(k);assert.equal(r.reads,2);
+  r._rpcWebSocket.emit('close');assert.equal(cache.rows.size,0);
+});

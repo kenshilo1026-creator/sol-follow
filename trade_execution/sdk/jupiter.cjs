@@ -100,6 +100,11 @@ async function buildHop(args,fetcher=fetch){
   while(recipes.size>512)recipes.delete(recipes.keys().next().value);
   // Persist discovery even if this particular target has since graduated.
   if(args.onRecipe)args.onRecipe(key,recipe);
-  return require('./local-routes.cjs').buildLocal(args,recipe);
+  // SOL->quote pools are independent of the new target's create slot.
+  // Reuse valid background snapshots; the final transaction retains source-slot
+  // simulation, exact input and both-leg minOut bounds.
+  const connection=typeof args.connection.quoteSnapshot==='function'
+    ?await args.connection.quoteSnapshot():args.connection;
+  return require('./local-routes.cjs').buildLocal({...args,connection},recipe);
 }
 module.exports={buildHop,validate,DEXES};

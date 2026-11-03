@@ -57,6 +57,12 @@ test('Pump local build preserves SDK buy/minOut/priority fee with no mint or cur
     assert.equal(quick.priorityFee.chargedLamports,'200000');assert.equal(simulations,2);
     assert.equal(reads.length,1);assert.deepEqual(reads[0],[pump.GLOBAL_PDA.toBase58(),pump.PUMP_FEE_CONFIG_PDA.toBase58()]);
     assert.deepEqual(quick.localCreate.projectedAccounts,[input.mint,input.pool]);
+    const evidence=quick.buildDiagnostics;
+    assert(evidence.local_create.eligible);
+    assert.deepEqual(evidence.reads.find(r=>r.phase==='projection').accounts.map(a=>a.source),
+      ['source-events','source-events','cache-read','cache-read']);
+    assert.equal(evidence.quote.min_out,quick.minOut);
+    assert.equal(evidence.quote.virtual_token_reserves,pump.PUMP_SDK.decodeBondingCurve(projected.get(input.pool)).virtualTokenReserves.toString());
     // Those two common rows can come from the warm cache: no live mint/pool query.
   }finally{Math.random=random;}
 });
@@ -122,7 +128,7 @@ test('warm common cache builds both native routes with ZERO account RPC reads',a
       cache.record(name,row,input.minSlot-5,cache.generation,true);
       cache.watchState.set(name,{subscribed:true,version:1,dispose(){}});
     }
-    cache.head=input.minSlot-1;cache.pulseAt=Date.now();
+    cache.head=input.minSlot-20;cache.pulseAt=Date.now();
     const connection=cache.view(input.minSlot,false,{sharedKeys:fast.shared(input),
       blockhashCache:{pick(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};}}});
     try{
@@ -130,8 +136,8 @@ test('warm common cache builds both native routes with ZERO account RPC reads',a
       const instrumented=new Proxy(connection,{get(target,key){const v=target[key];return typeof v==='function'?async(...a)=>v.apply(target,a):v;}});
       const result=await build(input,instrumented);
       assert.equal(result.localCreate.eligible,true);assert.equal(accountRPC,0);assert.equal(simulations,1);
-      cache.head=input.minSlot-3;
-      assert(connection.localCreateShared(fast.shared(input)).every(x=>x===null));
+      cache.head=input.minSlot-30;
+      assert(connection.localCreateShared(fast.shared(input)).some(Boolean));
       cache.head=input.minSlot;cache.invalidate();
       assert(connection.localCreateShared(fast.shared(input)).every(x=>x===null));
     }finally{cache.close();}

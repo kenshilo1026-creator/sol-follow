@@ -64,6 +64,7 @@ class Executor:
         timings={}
         simulation_source=None
         builder_timing=None
+        build_diagnostics={}
         def mark(name):timings[name]=round((time.monotonic()-began)*1000,3)
         def require_fresh():
             reason=self.rejection(route,oid)
@@ -90,6 +91,8 @@ class Executor:
             stage='build'
             result=await self.builder(self.config,route,wallet)
             builder_timing=result.get('buildTiming')
+            from chain_common.build_diagnostics import sanitize as safe_build_details
+            build_diagnostics=safe_build_details(result.get('buildDiagnostics'))
             mark('built_ms')
             if quality_task is not None:
                 stage='quality'
@@ -148,7 +151,7 @@ class Executor:
                     c.execute("UPDATE orders SET state='dry-simulated',updated=? WHERE id=?",(time.time(),oid))
                     c.execute("UPDATE signals SET state='dry-simulated' WHERE order_id=?",(oid,))
                     c.commit()
-                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid,'timing_ms':timings,'simulation_source':simulation_source})
+                trade_record(self.store,route.trade,'execution','dry-run','simulation-passed',{'order':oid,'timing_ms':timings,'simulation_source':simulation_source,'build_diagnostics':build_diagnostics})
                 self.notices.emit('buy dry simulation passed',{'order':oid,'mint':row['mint'],
                     'min_out':result['minOut'],'quote_spend':result['quoteIn'],'simulation_wallet':wallet},alert=True)
                 return
@@ -188,7 +191,7 @@ class Executor:
                 raise ValueError('send-signature-mismatch')
             self.store.update_order(oid,state='submitted')
             trade_record(self.store,route.trade,'execution','submitted','submitted',{'order':oid,'buy_signature':signature,'timing_ms':timings,
-                          'simulation_source':simulation_source,'builder_timing':builder_timing,'skip_preflight':True,
+                          'simulation_source':simulation_source,'builder_timing':builder_timing,'build_diagnostics':build_diagnostics,'skip_preflight':True,
                           'submit_started_at':submit_started_at,'submit_ack_at':submit_ack_at})
             self.notices.emit('buy submitted',{'order':oid,'signature':signature,'mint':row['mint']})
             if hasattr(self,'dev_exit'):self.dev_exit.wake.set()
@@ -200,6 +203,7 @@ class Executor:
             rpc_detail=getattr(exc,'rpc_details',{})
             diagnostics={'rpc_details':rpc_detail} if rpc_detail else {}
             if getattr(exc,'builder_details',None):diagnostics['builder_diagnostics']=exc.builder_details
+            if getattr(exc,'build_diagnostics',None):build_diagnostics=exc.build_diagnostics
             if getattr(exc,'simulation_details',None):diagnostics['simulation_details']=exc.simulation_details
             if signed:
                 self.store.update_order(oid,state='unknown')
@@ -207,7 +211,7 @@ class Executor:
                 self.store.fail_order(oid,failure_reason(exc))
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
-                          'simulation_source':simulation_source,'builder_timing':builder_timing,
+                          'simulation_source':simulation_source,'builder_timing':builder_timing,'build_diagnostics':build_diagnostics,
                           'submit_started_at':submit_started_at,'submit_ack_at':submit_ack_at,
                           'signal_age_s':time.time()-route.trade.time,'signal_max_age_s':self.config.signal_age,
                           'source_proof':Processed(self.store).row(route.trade.signature),**fees,**diagnostics})

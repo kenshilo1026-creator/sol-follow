@@ -74,7 +74,7 @@ function executionFetch({primary,fallback,timeoutMs=4000,hedgeMs=0,cooldownDir,r
     const minSlot=Math.max(0,...(input.params||[]).filter(v=>v&&typeof v==='object').map(v=>v.minContextSlot||0));
     const failures=[],behind=new Set();let hedged=false;
     async function attempt(url,round=0,timeout=timeoutMs,signal=options.signal){
-      const began=performance.now();let outcome='unavailable';
+      const began=performance.now();let outcome='unavailable',diagnosticFailure;
       try{
         if(options.signal?.aborted)throw Error('execution-request-aborted');
         await verify(url,verificationOptions);
@@ -107,6 +107,7 @@ function executionFetch({primary,fallback,timeoutMs=4000,hedgeMs=0,cooldownDir,r
         const known=new Set(['execution-endpoint-cooling','execution-invalid-json','execution-wrong-chain',
           'execution-genesis-unavailable','execution-result-unavailable','execution-invalid-simulation']);
         const detail=error.rpcFailure||{reason:known.has(error.message)?error.message:'execution-network-failed'};
+        diagnosticFailure=detail;
         failures.push({provider:url===urls[0]?'primary':'fallback',
           source:new URL(url).hostname.endsWith('.alchemy.com')?'alchemy':'configured',
           attempt:round+1,...detail,...(minSlot?{required_slot:minSlot}:{})});
@@ -114,7 +115,8 @@ function executionFetch({primary,fallback,timeoutMs=4000,hedgeMs=0,cooldownDir,r
       }finally{
         require('./catchup-budget.cjs').recordTransport({method,provider:url===urls[0]?'primary':'fallback',
           attempt:round+1,ms:Math.round((performance.now()-began)*1000)/1000,hedged,
-          outcome:signal?.aborted?'cancelled':outcome});
+          outcome:signal?.aborted?'cancelled':outcome,
+          ...(diagnosticFailure?{...diagnosticFailure,required_slot:minSlot}:{})});
       }
     }
     // Try the backup immediately. Only slot lag warrants a short catch-up window;

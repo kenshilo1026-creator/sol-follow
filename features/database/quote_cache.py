@@ -32,6 +32,15 @@ class SeenTokens:
         return [(json.loads(r['request']), r['wallet']) for r in self.store.rows('funding',
             'SELECT request,wallet FROM seen_non_sol ORDER BY seen DESC LIMIT ?', (limit,))]
 
+    def recent_quotes(self, limit=128):
+        # One representative per quote mint, even if thousands of target mints
+        # used the same quote. No historical target pool is needed for warming.
+        wallet=(self.recent(1) or [({},'')])[0][1]
+        return [(dict(route='sol_to_pump_curve',mint=r['mint'],quoteMint=r['mint'],
+                      quoteProgram=r['program'],minSlot=0,lookupTables=[]), wallet)
+                for r in self.store.rows('funding',
+                    'SELECT mint,program FROM seen_quote_mints ORDER BY seen DESC LIMIT ?', (limit,))]
+
     def recipe(self, quote):
         rows = self.store.rows('funding', 'SELECT recipe FROM quote_recipes WHERE mint=?', (quote,))
         return json.loads(rows[0]['recipe']) if rows else None

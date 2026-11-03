@@ -34,7 +34,7 @@ def test_every_seen_mint_is_durable_despite_bounded_active_cache(config, store):
     for _ in range(140):
         r = replace(original, trade=replace(original.trade, mint=address()))
         builder.observe(r)
-    assert len(builder.queue) == 128
+    assert len(builder.queue) == 1
     assert len(store.rows('funding', 'SELECT * FROM seen_non_sol')) == 140
     assert len(store.rows('funding', 'SELECT * FROM seen_quote_mints')) == 1
     restarted = manager(config, Store(config.data))
@@ -314,3 +314,81 @@ async def test_idle_warmer_reinitializes_replacement_and_yields_to_trade(config,
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):await task
+
+
+def test_warm_queue_is_bounded_by_quote_and_restored_after_worker_replacement(config,store):
+    builder=manager(config,store)
+    original=route()
+    for _ in range(140):
+        r=replace(original,quote_mint=address(),trade=replace(original.trade,mint=address()))
+        builder.observe(r)
+    assert len(builder.queue)==128
+    builder.queue.clear();builder.shared_seen.add('old-process-only')
+    builder.restore_warm_queue()
+    assert len(builder.queue)==128 and not builder.shared_seen
+    assert all(req['mint']==req['quoteMint'] for req,wallet in builder.queue.values())
+    assert all(req['minSlot']==0 and wallet for req,wallet in builder.queue.values())
+
+
+@pytest.mark.asyncio
+async def test_background_warms_quote_independently_of_old_target_and_yields(config,store):
+    builder=manager(config,store);builder.observe(route());calls=[];done=asyncio.Event()
+    async def start():
+        if builder.process is None:builder.process=SimpleNamespace(returncode=None)
+    async def request(request,wallet,**kwargs):
+        calls.append((request,kwargs))
+        if kwargs.get('operation')=='quote_warm':
+            assert not builder.priority.active
+            assert kwargs.get('warm') is True
+            assert request['mint']==request['quoteMint'] and request['minSlot']==0
+            done.set()
+        return {'warmed':True}
+    builder.start=start;builder.request=request;builder.priority.active=1
+    task=asyncio.create_task(builder.warm())
+    try:
+        await asyncio.sleep(.05)
+        assert not done.is_set()
+        builder.priority.active=0
+        await asyncio.wait_for(done.wait(),1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
+
+
+@pytest.mark.asyncio
+async def test_persisted_quote_route_survives_database_reopen_without_old_target(config):
+    first=Store(config.data)
+    r=route()
+    fixture=json.loads((FIX/'local_dlmm_quote_accounts.json').read_text())
+    recipe=fixture['recipe']
+    request={**r.request(),'quoteMint':recipe['steps'][-1]['outputMint']}
+    seen=SeenTokens(first)
+    seen.remember(request,r.trade.wallet)
+    seen.save_recipe(request['quoteMint'],recipe)
+    # Route identity must survive independently of old target/history records.
+    with first.db('funding') as db:
+        db.execute('DELETE FROM seen_non_sol')
+    first.close()
+
+    reopened=Store(config.data)
+    try:
+        builder=manager(config,reopened)
+        builder.restore_warm_queue()
+        restored,wallet=builder.queue[request['quoteMint']]
+        assert restored['mint']==restored['quoteMint']==request['quoteMint']
+        assert restored['quoteProgram']==request['quoteProgram']
+        assert restored['minSlot']==0 and 'pool' not in restored
+        captured=[]
+        async def exchange(payload):
+            captured.append(payload)
+            return {'warmed':True}
+        builder.exchange=exchange
+        await builder.request(restored,r.trade.wallet,warm=True,operation='quote_warm')
+        assert captured[0]['swapRecipe']==recipe
+        assert captured[0]['swapRecipe']['tables']
+        assert captured[0]['operation']=='quote_warm'
+        assert captured[0]['minSlot']==0
+        assert captured[0]['amount']==str(config.buy_amount)
+        assert 'quoted_out' not in captured[0] and 'signedTransaction' not in captured[0]
+    finally:
+        reopened.close()

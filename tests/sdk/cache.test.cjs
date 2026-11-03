@@ -60,17 +60,22 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
     primeAccounts:[key().toBase58()],cache:{ttlMs:2000,refreshMs:999999,maxAccounts:32}};
   async function request(id,minSlot,extra={}){const response=new Promise(r=>pending.set(id,r));child.stdin.write(JSON.stringify({id,input:{...input,minSlot,...extra}})+'\n');return response;}
   assert.equal((await request(1,100)).result.warmed,true);assert.equal(calls,1);
-  assert.equal((await request(2,100)).stats.hits,1);assert.equal(calls,1);
-  assert.equal((await request(3,101)).result.warmed,true);assert.equal(calls,2);
+  // Starting a WS subscription may invalidate the pre-ACK HTTP snapshot.
+  // Establish a stable cached read before asserting reuse across requests.
+  let warmed;
+  for(let id=10;id<15;id++){warmed=await request(id,100);if(warmed.stats.hits>0)break;}
+  assert(warmed.stats.hits>0);const initialCalls=calls,initialHits=warmed.stats.hits;
+  assert.equal((await request(2,100)).stats.hits,initialHits+1);assert.equal(calls,initialCalls);
+  assert.equal((await request(3,101)).result.warmed,true);assert.equal(calls,initialCalls+1);
   const fixture=require('../fixtures/local_quote_accounts.json');
   const result=await request(4,101,{operation:'quote_minimum',minimumUsdMicros:'50000000',
     route:'sol_to_stonk_curve',quoteMint:fixture.recipe.steps.at(-1).outputMint,
     wallet:key().toBase58(),swapRecipe:fixture.recipe,minLiquidity:'0'});
-  assert.equal(result.error,'price-cache-miss');assert.equal(calls,2); // no HTTP on minimum decisions
+  assert.equal(result.error,'price-cache-miss');assert.equal(calls,initialCalls+1); // no HTTP on minimum decisions
   const maximum=await request(5,101,{operation:'quote_limit',maximumUsdMicros:'500000000',
     route:'sol_to_stonk_curve',quoteMint:fixture.recipe.steps.at(-1).outputMint,
     wallet:key().toBase58(),swapRecipe:fixture.recipe,minLiquidity:'0'});
-  assert.equal(maximum.error,'price-cache-miss');assert.equal(calls,2);
+  assert.equal(maximum.error,'price-cache-miss');assert.equal(calls,initialCalls+1);
 });
 
 
@@ -97,4 +102,42 @@ test('oversized batches retain valid hits even when subscriptions evict those ca
   const rows=await cache.view().getMultipleAccountsInfo([a,b,c]);
   assert.equal(rows.length,3);assert(rows.every(row=>row.data.toString()==='state'));
   assert.equal(r.calls,2);assert(cache.rows.size<=2);assert(cache.subscriptions.size<=2);
+});
+
+
+test('account diagnostics report misses, actual HTTP keys, then cache hits without extra requests',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=rpc(),cache=new AccountCache(r,{ttlMs:1000});t.after(()=>cache.close());
+  const a=key(),b=key(),reads=[];let fetched;
+  const original=r.getMultipleAccountsInfoAndContext;
+  r.getMultipleAccountsInfoAndContext=async function(keys,c){fetched=keys.map(k=>k.toBase58());return original.call(this,keys,c);};
+  cache.record(a.toBase58(),{data:Buffer.from('cached')},100);
+  const view=cache.view(100,false,{trace:row=>reads.push(row)});
+  await view.getMultipleAccountsInfo([a,b]);
+  assert.deepEqual(fetched,[b.toBase58()]);assert.equal(r.calls,1);
+  assert.deepEqual(reads[0].accounts.map(a=>a.reason),['hit','absent']);
+  assert.equal(reads[0].outcome,'http');assert.equal(reads[0].response_slot,100);
+  await view.getMultipleAccountsInfo([a,b]);assert.equal(r.calls,1);
+  assert.equal(reads[1].outcome,'cache-hit');
+  r.slot=101;await cache.view(101,false,{trace:row=>reads.push(row)}).getMultipleAccountsInfo([a]);
+  assert.equal(reads[2].accounts[0].reason,'slot-behind');
+  now+=1001;await view.getMultipleAccountsInfo([a]);assert.equal(reads[3].accounts[0].reason,'expired');
+  now+=1001;r.getMultipleAccountsInfoAndContext=async()=>{throw Error('private-provider-text');};
+  await assert.rejects(view.getMultipleAccountsInfo([a]),/private-provider/);
+  assert.equal(reads[4].outcome,'unavailable');assert(!JSON.stringify(reads).includes('private-provider'));
+});
+
+test('shared snapshots reuse fresh pre-launch data but still reject expired or disconnected state',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=rpc(),cache=new AccountCache(r,{ttlMs:1000});t.after(()=>cache.close());
+  const a=key(),k=a.toBase58(),reads=[];
+  cache.record(k,{data:Buffer.from('cached')},90);
+  const view=cache.view(100,false,{sharedKeys:[a],trace:row=>reads.push(row)});
+  const reason=()=>{view.localCreateShared([a]);return reads.at(-1).accounts[0].reason;};
+  assert.equal(reason(),'hit');assert(view.localCreateShared([a])[0]); // no ACK required inside TTL
+  now+=1001;assert.equal(reason(),'not-continuous');cache.rows.get(k).continuous=true;
+  assert.equal(reason(),'subscription-not-ready');cache.watchState.get(k).subscribed=true;
+  assert.equal(reason(),'websocket-unhealthy');r._rpcWebSocketConnected=true;cache.pulseAt=now;
+  cache.head=90;assert.equal(reason(),'hit'); // settings need not catch the create slot
+  r._rpcWebSocket.emit('close');assert.equal(reason(),'absent');assert.equal(r.calls,0);
 });
