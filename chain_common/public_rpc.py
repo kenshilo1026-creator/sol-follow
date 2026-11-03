@@ -69,6 +69,18 @@ def _report_unavailable(kind,key,method,*,alert=True):
 
 
 def sdk_event(row):
+    if isinstance(row,dict) and row.get('event')=='subscription-retry':
+        method=row.get('method')
+        method=method if isinstance(method,str) and re.fullmatch(r'[A-Za-z]{1,48}',method) else 'unknown'
+        detail={'method':method}
+        for name,maximum in (('retry_ms',30000),('rpc_code',2**31-1)):
+            value=row.get(name)
+            if type(value) is int and (-2**31 if name=='rpc_code' else 0)<=value<=maximum:
+                detail[name]=value
+        sink=_sink.get()
+        if sink is not None:
+            sink.emit('SDK subscription retry',detail,alert=False,key='sdk-subscription-'+method,interval=60)
+        return True
     if isinstance(row,dict) and row.get('event')=='public-rpc-429':
         with defer_429_alerts(row.get('fallbackManaged') is True):
             source=row.get('source') if row.get('source') in ('execution','alchemy-execution') else 'node-sdk'

@@ -29,7 +29,7 @@ function rpcFetch(report,fetcher=fetch){
     return response;
   };
 }
-function watchWebsocket(ws,report){
+function watchWebsocket(ws,report,onFailure=()=>{}){
   if(!ws)return;
   ws.on('error',error=>{
     if(error?.statusCode===429||error?.status===429||/^Unexpected server response: 429$/.test(error?.message||''))
@@ -38,7 +38,11 @@ function watchWebsocket(ws,report){
   const call=ws.call.bind(ws);
   ws.call=async(method,...args)=>{
     try{return await call(method,...args);}
-    catch(error){if([429,'429'].includes(error?.code))report(method,'WS-RPC');throw error;}
+    catch(error){
+      onFailure(method,error);
+      if([429,'429'].includes(error?.code))report(method,'WS-RPC');
+      throw error;
+    }
   };
 }
 module.exports={withReporter,reporter,executionReporter,rpcFetch,watchWebsocket};

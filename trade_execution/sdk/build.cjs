@@ -114,7 +114,9 @@ function connectionFor(input) {
       next(url, options);
     }
   });
-  publicRpc.watchWebsocket(connection._rpcWebSocket,(method,transport)=>report(method,transport,managed));
+  const subscriptions=require('./subscription-scheduler.cjs').scheduleSubscriptions(connection,
+    {event:publicRpc.executionReporter()});
+  publicRpc.watchWebsocket(connection._rpcWebSocket,(method,transport)=>report(method,transport,managed),subscriptions.failed);
   return connection;
 }
 

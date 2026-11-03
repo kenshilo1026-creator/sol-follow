@@ -124,3 +124,19 @@ worker 在 SDK 載入及 stdin handler 就緒後回報 ready。買入超時的
 背景 warmer 在 worker 結束或換代後，即使非 SOL 預熱佇列為空，也會重新
 初始化共用帳戶及 blockhash。交易進行時仍退避，買入不新增 ready 等待，
 原有訊號期限、模擬及滑點檢查不變。這不能保證新 worker 趕及同時到來的訊號。
+
+
+### SDK 帳戶訂閱重試不阻塞組單
+
+固定版本 web3.js 1.98.4 的 `_updateSubscriptions` 在訂閱成功／失敗時遞迴
+await 自己。立即失敗的假 WebSocket 可重現計時器無法執行，這會阻止同一
+Node worker 讀取新買入請求。`subscription-scheduler.cjs` 將遞迴更新合併
+為 timer 回合，訂閱失敗採 1 至 30 秒退避；等待中的 ACK 不阻塞其他訂閱。
+此退避僅用於 SDK 帳戶 WebSocket 訂閱，不延遲 HTTP 組單、模擬或送單，
+亦不更改買入訊號期限。訂閱未成功時仍依照原有帳戶快取有效性及 HTTP
+備援規則處理，不把未訂閱帳戶當作即時快取。
+
+`SDK subscription retry` 於本地日誌保留方法、數字錯誤碼與退避時間，
+每方法最多每 60 秒記錄一次；不輸出端點、原始錯誤內容或憑證。
+原有實際 429 事件的回報流程保留。這個重現證明一條可造成 worker 阻塞
+的路徑，不足以事後證明任何沒有訂閱錯誤紀錄的舊訂單都由此造成。

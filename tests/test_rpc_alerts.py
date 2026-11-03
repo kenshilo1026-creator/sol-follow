@@ -223,3 +223,18 @@ def test_sdk_outage_log_retains_safe_provider_diagnostics(config,store):
     assert detail['failures'][0]['rpc_code']==-32016
     assert detail['failures'][1]['reason']=='execution-endpoint-cooling'
     assert 'private-key' not in str(detail)
+
+
+def test_subscription_retry_is_bounded_local_diagnostic_without_raw_error(config,store):
+    notices=Notices(config,store)
+    with rpc_notices(notices):
+        for _ in range(2):
+            assert sdk_event({'event':'subscription-retry','method':'accountSubscribe',
+                             'retry_ms':1000,'rpc_code':-32005,'error':'secret-url'})
+        assert sdk_event({'event':'subscription-retry','method':'https://private/key',
+                         'retry_ms':float('inf'),'rpc_code':'secret'})
+    kind,detail,alert=notices.queue.get_nowait()
+    assert kind=='SDK subscription retry' and not alert
+    assert detail=={'method':'accountSubscribe','retry_ms':1000,'rpc_code':-32005}
+    assert notices.queue.get_nowait()[1]=={'method':'unknown'}
+    assert notices.queue.empty()
