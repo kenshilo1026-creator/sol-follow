@@ -27,6 +27,7 @@ class StonkRoute:
     observed_kind: str = 'exact-input-budget'
     funding_sol_limit: int = 0
     create_hint: dict | None = None
+    metadata_uri: str = ''
 
     def request(self):
         return dict(**({'createHint':self.create_hint} if self.create_hint else {}),route=self.kind, mint=self.trade.mint, quoteMint=self.quote_mint,

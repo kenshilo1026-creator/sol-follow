@@ -11,6 +11,11 @@ from features.audit.feed_trace import compare
 
 ROOT=Path(__file__).resolve().parents[2]
 REASONS={
+ 'token-social-link-found':'Metadata 至少包含一條社交連結',
+ 'token-social-link-missing':'Metadata 沒有有效社交連結，跳過買入',
+ 'token-metadata-unavailable':'無法讀取或驗證 metadata，略過品質檢查繼續買入',
+ 'token-metadata-not-ready':'組單完成時 metadata 尚未就緒，不等待並繼續買入',
+ 'token-metadata-timeout':'Metadata 檢查逾時，略過品質檢查繼續買入',
  'grpc-processed-sale':'串流交易的實際 dev 賣出已觸發退出',
  'grpc-buy-fill':'串流已取得自己的買入成交數量',
  'dev-exit-submitted':'Dev 跟賣已送出，詳見各階段耗時',

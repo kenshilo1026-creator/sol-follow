@@ -57,6 +57,7 @@ def test_pure_create_has_executable_route_without_dev_buy(raw,kind):
     assert route.trade.side=='create' and route.trade.quote==0
     request=route.request()
     assert request['mint']==item.mint and request['minSlot']==item.slot
+    assert route.metadata_uri==item.uri
     assert request['quoteMint']==item.quote_mint
     assert request['tokenProgram']==item.base_token_program
 

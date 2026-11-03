@@ -25,7 +25,7 @@ def config(tmp_path):
     return replace(load(fixture_root,env={'SOL_WALLET_ADDRESS':'','DRY_RUN':'true'}),
                    root=Path(__file__).resolve().parents[1],data=tmp_path/'data',min_observed_buy=0,min_observed_buy_usd_micros=0,
                    ignore_observed_buy=0,ignore_observed_buy_usd_micros=0,max_market_cap_usd_micros=0,
-                   max_dev_holding_tokens=None)
+                   max_dev_holding_tokens=None,require_social_link=False)
 
 
 @pytest.fixture

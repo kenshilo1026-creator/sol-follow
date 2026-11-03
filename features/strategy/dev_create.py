@@ -36,14 +36,14 @@ def create_route(item, tx):
     if item.launchpad==pump_fun.NAME and item.program==pump_fun.PROGRAM:
         if item.pool!=pump_fun.curve_address(item.mint):return None
         return Route(trade,item.quote_mint,item.base_token_program,item.quote_token_program,'',tables,
-                     kind='pump_native_curve' if item.quote_mint==WSOL else 'sol_to_pump_curve',create_hint=hint)
+                     kind='pump_native_curve' if item.quote_mint==WSOL else 'sol_to_pump_curve',create_hint=hint,metadata_uri=item.uri)
     if item.launchpad==stonk.NAME and item.program==stonk.PROGRAM:
         if item.pool!=stonk.pool_address(item.mint,item.quote_mint):return None
         if item.flags.get('config'):
             pubkey(item.flags['config'])
             hint['config']=item.flags['config']
         return StonkRoute(trade,item.quote_mint,item.base_token_program,item.quote_token_program,tables,
-                          kind='stonk_native_curve' if item.quote_mint==WSOL else 'sol_to_stonk_curve',create_hint=hint)
+                          kind='stonk_native_curve' if item.quote_mint==WSOL else 'sol_to_stonk_curve',create_hint=hint,metadata_uri=item.uri)
     return None
 
 

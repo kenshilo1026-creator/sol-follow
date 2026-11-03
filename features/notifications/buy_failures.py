@@ -6,6 +6,7 @@ from chain_common.rpc import RpcError
 from trade_execution.builder import BuildError
 
 INTERNAL_REASONS = frozenset({
+    'token-social-link-missing','token-metadata-unavailable','token-metadata-timeout',
     'dev-entry-not-permitted','source-proof-unusable','source-proof-not-pending',
     'signal-time-in-future','order-source-unusable','dev-sell-monitor-unavailable',
     'position-already-exists', 'signal-expired', 'signal-expired-after-build',

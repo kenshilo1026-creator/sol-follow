@@ -22,6 +22,8 @@ class Executor:
     def __init__(self, config, store, rpc, notices, priority, builder=build, reconcile_rpc=None):
         self.config,self.store,self.rpc,self.notices,self.priority=config,store,rpc,notices,priority
         self.builder=builder
+        from features.strategy.token_quality import TokenQuality
+        self.token_quality=TokenQuality(config.metadata_timeout_ms)
         self.reconcile_rpc=reconcile_rpc or rpc
 
     def rejection(self, route, oid=None):
@@ -66,6 +68,7 @@ class Executor:
         def require_fresh():
             reason=self.rejection(route,oid)
             if reason:raise ValueError(reason)
+        quality_task=None
         signed=False
         stage='precheck'
         signature=None
@@ -81,10 +84,29 @@ class Executor:
             wallet=self.config.wallet_address or route.trade.wallet
             if hasattr(self.builder,"set_priority") and not getattr(self.builder,'priority_with_request',False):
                 await self.builder.set_priority(self.priority.active)
+            if self.config.require_social_link:
+                uri=getattr(route,'metadata_uri','')
+                quality_task=asyncio.create_task(self.token_quality.check(uri,route.trade.time+self.config.signal_age-.15))
             stage='build'
             result=await self.builder(self.config,route,wallet)
             builder_timing=result.get('buildTiming')
             mark('built_ms')
+            if quality_task is not None:
+                stage='quality'
+                # Snapshot at build completion: metadata never delays signing.
+                if quality_task.done() and not quality_task.cancelled():
+                    try:quality=quality_task.result()
+                    except Exception:quality={'reason':'token-metadata-unavailable'}
+                else:
+                    quality_task.cancel()
+                    quality={'reason':'token-metadata-not-ready'}
+                blocked=quality['reason']=='token-social-link-missing'
+                outcome='blocked' if blocked else ('allowed' if quality['reason']=='token-social-link-found' else 'bypassed')
+                quality={**quality,'allowed':not blocked,'outcome':outcome}
+                mark('quality_checked_ms')
+                trade_record(self.store,route.trade,'token-quality',outcome,quality['reason'],quality)
+                if blocked:raise ValueError(quality['reason'])
+                stage='build'
             require_fresh()
             wire=base64.b64decode(result['transaction'],validate=True)
             tx=VersionedTransaction.from_bytes(wire)
@@ -194,6 +216,9 @@ class Executor:
                  'type':type(exc).__name__,'signed':signed,'signature':signature,
                  'outcome':'unknown' if signed else 'not-submitted',**fees,**diagnostics},alert=True)
         finally:
+            if quality_task is not None:
+                if not quality_task.done():quality_task.cancel()
+                await asyncio.gather(quality_task,return_exceptions=True)
             self.priority.active-=1
             if hasattr(self.builder,"set_priority"):
                 try:

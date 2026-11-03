@@ -192,6 +192,8 @@ class Config:
     execution_ws: str = field(default='', repr=False)
     execution_timeout: float = 4.0
     priority_fee_lamports: int = 200_000
+    require_social_link: bool = True
+    metadata_timeout_ms: int = 400
     local_create_build: bool = True
     execution_hedge_ms: int = 75
 
@@ -353,6 +355,8 @@ def load(root=ROOT, env=None):
         remaining=boolean(get('SOL_FOLLOW_REQUIRE_REMAINING_POSITION', 'true')),
         signal_age=integer('SOL_SIGNAL_MAX_AGE_SECONDS', 15, 1, 300), buy_amount=amount,
         priority_fee_lamports=lamports(get('SOL_PRIORITY_FEE_SOL', '0.0002')),
+        require_social_link=boolean(get('SOL_REQUIRE_SOCIAL_LINK','true')),
+        metadata_timeout_ms=integer('SOL_METADATA_TIMEOUT_MS',400,50,2000),
         local_create_build=boolean(get('SOL_LOCAL_CREATE_BUILD', 'true')),
         slippage_percent=percent(get('SOL_SLIPPAGE_PERCENT', '2')),
         min_liquidity=lamports(get('SOL_MIN_POOL_LIQUIDITY_SOL', '10')),
