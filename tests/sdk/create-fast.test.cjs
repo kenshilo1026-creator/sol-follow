@@ -152,7 +152,7 @@ test('worker builds from WS accounts when HTTP is one slot behind and still simu
 });
 
 
-test('create preparation overlaps independent reads, reuses ALTs and does not fetch blockhash early',async()=>{
+test('create preparation overlaps blockhash with account reads and reuses ALTs',async()=>{
   const {prepare}=require('../../trade_execution/sdk/create-preparation.cjs');
   const a=require('../fixtures/stonk_native_buy.json').transaction.message.instructions[6].accounts;
   const table=key(),extra=key();
@@ -164,17 +164,18 @@ test('create preparation overlaps independent reads, reuses ALTs and does not fe
   const connection={
     async getAddressLookupTable(k){calls.push('alt:'+k);await barrier;return {value:k};},
     async getEpochInfo(config){calls.push(config?'epoch-config':'epoch');await barrier;return {epoch:2000};},
-    async getMultipleAccountsInfo(){await Promise.resolve();assert.equal(calls.length,2);release();return [];},
-    async getLatestBlockhash(){throw Error('must-use-late-shared-blockhash');}
+    async getMultipleAccountsInfo(){await Promise.resolve();assert.equal(calls.length,3);release();return [];},
+    async getLatestBlockhash(commitment){calls.push('block:'+commitment);await barrier;return {blockhash:'fresh'};}
   };
   const quick=prepare(input,connection);
   await quick.getMultipleAccountsInfo([]);
   assert.equal((await quick.getEpochInfo()).epoch,2000);
   assert((await quick.getAddressLookupTable(table)).value.equals(table));
   assert((await quick.getAddressLookupTable(table)).value.equals(table));
-  assert.deepEqual(calls,['alt:'+table,'epoch']);
+  assert.equal((await quick.getLatestBlockhash('confirmed')).blockhash,'fresh');
+  assert.deepEqual(calls,['block:confirmed','alt:'+table,'epoch']);
   await quick.getAddressLookupTable(extra);await quick.getEpochInfo({commitment:'finalized'});
-  assert.deepEqual(calls.slice(2),['alt:'+extra,'epoch-config']);
+  assert.deepEqual(calls.slice(3),['alt:'+extra,'epoch-config']);
   assert.equal(prepare({...input,prewarm:true},connection),connection);
   assert.equal(prepare({...input,side:'sell'},connection),connection);
   assert.equal(prepare({...input,createHint:{...input.createHint,slot:99}},connection),connection);
@@ -192,4 +193,23 @@ test('early create read failure stays visible to its build and cannot leak into 
   await assert.rejects(first.getEpochInfo(),/execution-context-behind/);
   assert.equal((await prepare(input,connection).getEpochInfo()).epoch,2001);
   assert.equal(calls,2);
+});
+
+
+test('create blockhash prefetch expires and never crosses commitments',async t=>{
+  const {prepare}=require('../../trade_execution/sdk/create-preparation.cjs');
+  const a=require('../fixtures/stonk_native_buy.json').transaction.message.instructions[6].accounts;
+  const input={route:'stonk_native_curve',mint:a[9],quoteMint:a[10],pool:a[4],minSlot:100,
+    commitment:'processed',lookupTables:[]};
+  input.createHint=hint(input,'stonk',a[2]);
+  let now=0;const calls=[];
+  t.mock.method(performance,'now',()=>now);
+  const connection={async getEpochInfo(){return {epoch:2000};},
+    async getLatestBlockhash(commitment){calls.push(commitment);return {blockhash:String(calls.length)};}};
+  const quick=prepare(input,connection);
+  assert.equal((await quick.getLatestBlockhash('processed')).blockhash,'1');
+  assert.equal((await quick.getLatestBlockhash('confirmed')).blockhash,'2');
+  now=1001;
+  assert.equal((await quick.getLatestBlockhash('processed')).blockhash,'3');
+  assert.deepEqual(calls,['processed','confirmed','processed']);
 });

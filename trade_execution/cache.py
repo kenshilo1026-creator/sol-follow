@@ -152,7 +152,7 @@ class CachedBuilder:
                 if not future.done():
                     future.set_exception(BuildError('route-builder-stopped'))
 
-    async def request(self, request, wallet, warm=False, operation="build", minimum_usd=None):
+    async def request(self, request, wallet, warm=False, operation="build", minimum_usd=None, sell_amount=None):
         payload = payload_for(self.config, request, wallet)
         payload.update(prewarm=warm, operation=operation, limitAmount=str(self.config.max_observed_buy),
                        minimumUsdMicros=str(self.config.min_observed_buy_usd_micros if minimum_usd is None else minimum_usd),
@@ -161,6 +161,7 @@ class CachedBuilder:
                        cacheGeneration=self.seen.store.stream_state("processed_cache_generation",0),cache={'ttlMs': self.config.quote_cache_ttl_ms,
                                          'maxAccounts': self.config.quote_cache_accounts,'commitment':self.config.hotlist_commitment},
                        blockhashCache={'ttlMs':self.config.blockhash_cache_ttl_ms,'refreshMs':self.config.blockhash_refresh_ms})
+        if sell_amount is not None:payload.update(side='sell',amount=str(sell_amount))
         if request['route'] in ('sol_to_stonk_curve','sol_to_pump_curve'):
             payload['swapRecipe'] = self.seen.recipe(request['quoteMint']) or request.get('swapRecipe')
         return await self.exchange(payload)
@@ -231,6 +232,10 @@ class CachedBuilder:
 
     async def __call__(self, config, route, wallet):
         return await self.request({**route.request(),**buy_deadline(config,route)}, wallet)
+
+    async def sell(self,config,request,wallet,amount):
+        # The same warm worker owns account/ALT/blockhash caches; no Node cold start.
+        return await self.request(request,wallet,sell_amount=amount)
 
     async def warm(self):
         # Initialise the shared blockhash before any target is known.

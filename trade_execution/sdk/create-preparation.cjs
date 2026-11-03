@@ -7,7 +7,8 @@ function prepare(input,connection){
   if(input.prewarm||input.side==='sell'||input.side==='sweep'||!hint(input))return connection;
   if(!Array.isArray(input.lookupTables)||input.lookupTables.length>8)throw Error('invalid-tables');
   const keys=input.lookupTables.map(key=>new web3.PublicKey(key));
-  const tables=new Map();let epoch;
+  const tables=new Map();let epoch,block;
+  const started=performance.now(),commitment=input.commitment||'confirmed';
   const capture=work=>{
     // Attach the rejection handler immediately, even if pool validation fails
     // before this independent read is consumed. Consumers still see the error.
@@ -15,6 +16,8 @@ function prepare(input,connection){
     void result.catch(()=>{});
     return result;
   };
+  if(typeof connection.getLatestBlockhash==='function')
+    block=capture(()=>connection.getLatestBlockhash(commitment));
   for(const key of keys){
     const name=key.toBase58();
     if(!tables.has(name))tables.set(name,capture(()=>connection.getAddressLookupTable(key)));
@@ -22,6 +25,9 @@ function prepare(input,connection){
   if((input.route==='stonk_native_curve'&&!input.localCreate?.eligible)||input.route==='sol_to_stonk_curve')
     epoch=capture(()=>connection.getEpochInfo());
   return new Proxy(connection,{get(target,key){
+    if(key==='getLatestBlockhash'&&block)return config=>
+      (config===undefined||config===commitment)&&performance.now()-started<=1000
+        ?block:target.getLatestBlockhash(config);
     if(key==='getAddressLookupTable')return (address,config)=>
       config===undefined&&tables.has(address.toBase58())?tables.get(address.toBase58()):target.getAddressLookupTable(address,config);
     if(key==='getEpochInfo'&&epoch)return config=>config===undefined?epoch:target.getEpochInfo(config);

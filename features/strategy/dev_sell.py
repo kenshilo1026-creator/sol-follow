@@ -1,4 +1,4 @@
-"""Confirmed dev sale evidence and durable event-driven full-position exit triggers.
+"""Processed/confirmed dev sale evidence and durable event-driven full-position exit triggers.
 
 ABIs follow the pinned Pump/PumpSwap IDLs and existing LaunchLab/CPMM builders.
 A token transfer must occur INSIDE the successful venue sell invocation. Token
@@ -10,6 +10,7 @@ import json
 import time
 from chain_common.primitives import TOKEN,TOKEN_2022,ata,b58decode,discriminator
 from chain_common.transaction import Tx
+from features.audit.writer import record
 from launchpads import pump_fun,stonk
 from features.strategy.startup_positions import retire_empty_position
 
@@ -88,6 +89,7 @@ class DevSell:
         # Bounded ingress hints bridge create-worker scheduling. These are not
         # sale proofs: the durable consumer still verifies confirmed receipts.
         self.recent=deque(maxlen=2048)
+        self.recent_sales=deque(maxlen=2048)
         self.history={};self.history_latest={};self.history_wake=asyncio.Event()
 
     def register(self,oid,route):
@@ -105,11 +107,15 @@ class DevSell:
             if signature!=route.trade.signature:
                 matched=accounts.intersection(keys)
                 if matched:self.market_events(matched,signature,slot)
+        for _,signature,slot,seller,mint,amount,received_at in self.recent_sales:
+            if seller==dev and mint==buy['mint'] and signature!=route.trade.signature and slot>=route.trade.slot:
+                self.trigger_processed(buy,signature,slot,amount,seller,received_at)
         for account in accounts:self.subscribed(account)
 
     def prune_recent(self):
         cutoff=time.monotonic()-30
         while self.recent and self.recent[0][0]<cutoff:self.recent.popleft()
+        while self.recent_sales and self.recent_sales[0][0]<cutoff:self.recent_sales.popleft()
 
     def stream_event(self,signature,slot,keys):
         # Receive even before local registration and outside the buy live window:
@@ -118,6 +124,73 @@ class DevSell:
         keys=frozenset(keys)
         self.recent.append((time.monotonic(),signature,slot,keys))
         self.market_events(self.watches.keys() & keys,signature,slot)
+
+    def stream_receipt(self,raw,received_at):
+        """Only normalized successful gRPC metadata, never signature-only hints."""
+        try:
+            if raw.get('meta',{}).get('err','missing') is not None:return
+            tx=Tx(raw,observed_at=received_at)
+            if self.store.rows('funding','SELECT 1 FROM dead_slots WHERE slot=?',(tx.slot,)):return
+            wallet=self.config.wallet_address
+            if wallet and wallet in tx.signers:
+                buys=self.store.rows('trading',"SELECT * FROM orders WHERE signature=? AND mode=? AND side='buy' "
+                    "AND state IN ('signed','submitted','unknown','confirmed')",(tx.signature,self.config.mode))
+                for buy in buys:
+                    amount=tx.owner_tokens('post',wallet,buy['mint'])-tx.owner_tokens('pre',wallet,buy['mint'])
+                    if amount<=0 or amount<int(buy['min_out']):continue
+                    # Signature binds these balances to our already durable signed buy.
+                    with self.store.db('trading') as c:
+                        c.execute('PRAGMA synchronous=FULL')
+                        c.execute('INSERT OR IGNORE INTO processed_buy_fills VALUES (?,?,?,?,?)',
+                                  (buy['id'],tx.signature,tx.slot,str(amount),time.time()))
+                    self.exit.fill_observed(buy['id'])
+                    record(self.store,'exit-fill','observed','grpc-buy-fill',mint=buy['mint'],signature=tx.signature,
+                           detail={'order':buy['id'],'slot':tx.slot,'amount':str(amount),'received_at':received_at})
+            # Compact verified sales bridge local registration; do not buffer raw receipts.
+            owners={(owner,mint) for owner,mint,_ in tx.tokens('pre').values()}
+            candidates=set()
+            for _,ix in tx.instructions():
+                if ix.get('programId') not in (pump_fun.PROGRAM,stonk.PROGRAM,pump_fun.SWAP_PROGRAM,CPMM):continue
+                accounts=set(tx.accounts(ix))
+                candidates.update((dev,mint) for dev,mint in owners if mint in accounts)
+            self.prune_recent()
+            for dev,mint in candidates:
+                amount=sold_amount(tx,dev,mint)
+                if amount<=0:continue
+                self.recent_sales.append((time.monotonic(),tx.signature,tx.slot,dev,mint,amount,received_at))
+                buys={b['id']:b for rows in self.watches.values() for b in rows
+                      if b['dev']==dev and b['mint']==mint and tx.slot>=b['create_slot']}
+                for buy in buys.values():self.trigger_processed(buy,tx.signature,tx.slot,amount,dev,received_at)
+        except (ValueError,TypeError,KeyError,IndexError,AttributeError):
+            # The durable signature-only inbox remains available for confirmed repair.
+            self.notices.emit('dev stream receipt deferred',{},key='dev-receipt-decode')
+
+    def trigger_processed(self,buy,signature,slot,amount,dev,received_at):
+        if self.store.rows('funding','SELECT 1 FROM dead_slots WHERE slot=?',(slot,)):return
+        now=time.time()
+        with self.store.db('trading') as c:
+            c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
+            current=c.execute('SELECT state FROM orders WHERE id=?',(buy['id'],)).fetchone()
+            if not current or current['state']=='failed':return
+            existing=c.execute('SELECT state,signature FROM dev_exits WHERE buy_id=?',(buy['id'],)).fetchone()
+            if existing and (existing['signature'] or existing['state']!='waiting'):return
+            duplicate=c.execute("SELECT 1 FROM dev_sell_events WHERE signature=? AND buy_id=? AND slot=? AND state='triggered'",
+                                (signature,buy['id'],slot)).fetchone()
+            if duplicate:return
+            c.execute("INSERT INTO dev_sell_events(signature,buy_id,slot,state,due,first_seen,reason) "
+                      "VALUES (?,?,?,'triggered',?,?,?) ON CONFLICT(signature,buy_id) DO UPDATE SET "
+                      "slot=excluded.slot,state='triggered',reason=excluded.reason",
+                      (signature,buy['id'],slot,now,now,str(amount)))
+            c.execute("INSERT OR IGNORE INTO dev_exits(buy_id,state,updated,reason) VALUES (?,'waiting',?,'dev-sell-100-percent')",
+                      (buy['id'],now))
+            c.commit()
+        self.exit.next.pop(buy['id'],None);self.exit.wake.set()
+        record(self.store,'dev-sell','triggered','grpc-processed-sale',wallet=dev,mint=buy['mint'],signature=signature,
+               event=signature+':'+buy['id'],detail={'order':buy['id'],'slot':slot,'amount':str(amount),
+               'received_at':received_at,'triggered_at':now,'commitment':self.config.hotlist_commitment})
+        # Delay user-facing exit notifications until balance validation/submission.
+        self.notices.emit('dev sell processed',{'mint':buy['mint'],'order':buy['id'],
+                          'source_signature':signature,'slot':slot,'received_at':received_at})
 
     def reconnected(self):
         # Live-only gRPC cannot replay a disconnected interval. Existing bounded
@@ -128,7 +201,7 @@ class DevSell:
         rows=self.store.rows('trading',"SELECT o.*,r.request FROM orders o JOIN order_routes r ON r.order_id=o.id "
             "LEFT JOIN positions p ON p.mint=o.mint AND p.mode=o.mode WHERE o.side='buy' AND o.mode=? "
             "AND (o.state IN ('reserved','signed','submitted','unknown','confirmed','dry-simulated') "
-            "OR o.state='finalized' AND p.amount!='0') AND NOT EXISTS (SELECT 1 FROM dev_exits e WHERE e.buy_id=o.id)",(self.config.mode,))
+            "OR o.state='finalized' AND p.amount!='0') AND NOT EXISTS (SELECT 1 FROM dev_exits e WHERE e.buy_id=o.id AND (e.signature IS NOT NULL OR e.state!='waiting'))",(self.config.mode,))
         watches={}
         for buy in rows:
             watches_saved=self.store.rows('trading','SELECT * FROM dev_sell_watches WHERE buy_id=?',(buy['id'],))
@@ -235,9 +308,10 @@ class DevSell:
         for event in rows:
             buy=self.store.order(event['buy_id']);signature=event['signature']
             try:
-                if self.store.rows('trading','SELECT 1 FROM dev_exits WHERE buy_id=?',(buy['id'],)):
+                existing=self.store.rows('trading','SELECT * FROM dev_exits WHERE buy_id=?',(buy['id'],))
+                if existing and (existing[0]['signature'] or self.exit.live_trigger(buy,existing[0])):
                     with self.store.db('trading') as c:
-                        c.execute("UPDATE dev_sell_events SET state='ignored',reason='exit-already-armed' WHERE signature=? AND buy_id=?",(signature,buy['id']))
+                        c.execute("UPDATE dev_sell_events SET state='ignored',reason='exit-already-armed' WHERE signature=? AND buy_id=? AND state='pending'",(signature,buy['id']))
                     continue
                 if self.store.rows('funding','SELECT 1 FROM dead_slots WHERE slot=?',(event['slot'],)):
                     with self.store.db('trading') as c:
@@ -245,6 +319,8 @@ class DevSell:
                                   (signature,buy['id']))
                     continue
                 if signature not in receipts:receipts[signature]=await self.rpc.transaction(signature,commitment='confirmed')
+                existing=self.store.rows('trading','SELECT * FROM dev_exits WHERE buy_id=?',(buy['id'],))
+                if existing and (existing[0]['signature'] or self.exit.live_trigger(buy,existing[0])):continue
                 raw=receipts[signature]
                 if raw is None:raise ValueError('dev-sell-not-indexed')
                 if raw.get('meta',{}).get('err') is not None:
@@ -279,7 +355,7 @@ class DevSell:
             except Exception as exc:
                 stopped=time.time()-event['first_seen']>=600
                 with self.store.db('trading') as c:
-                    c.execute('UPDATE dev_sell_events SET state=?,due=?,attempts=attempts+1,reason=? WHERE signature=? AND buy_id=?',
+                    c.execute("UPDATE dev_sell_events SET state=?,due=?,attempts=attempts+1,reason=? WHERE signature=? AND buy_id=? AND state='pending'",
                         ('stopped' if stopped else 'pending',min(event['first_seen']+600,time.time()+min(30,2**min(event['attempts'],5))),
                          type(exc).__name__,signature,buy['id']))
                 if stopped:self.notices.emit('dev sell check stopped',{'mint':buy['mint'],'source_signature':signature,

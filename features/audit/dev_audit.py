@@ -11,6 +11,9 @@ from features.audit.feed_trace import compare
 
 ROOT=Path(__file__).resolve().parents[2]
 REASONS={
+ 'grpc-processed-sale':'串流交易的實際 dev 賣出已觸發退出',
+ 'grpc-buy-fill':'串流已取得自己的買入成交數量',
+ 'dev-exit-submitted':'Dev 跟賣已送出，詳見各階段耗時',
  'dev-entry-not-permitted':'Dev 入場或賣出保護條件不允許買入',
  'source-proof-not-pending':'來源交易不符合 processed 買入條件',
  'signal-time-in-future':'訊號時間超前本機時鐘',

@@ -78,6 +78,7 @@ class HotlistFeed:
         self.config,self.store,self.rpc,self.notices,self.catchup = config,store,rpc,notices,catchup
         self.position_watch = None
         self.position_event = None
+        self.position_receipt = None
         self.position_reconnected = None
         self.connected = False
         self.subscribed = set()
@@ -102,7 +103,8 @@ class HotlistFeed:
 
     def addresses(self):
         positions=set(self.position_watch()) if self.position_watch else set()
-        return set(self.store.hotlist(time.time())) | positions
+        wallet={self.config.wallet_address} if self.position_receipt and self.config.wallet_address else set()
+        return set(self.store.hotlist(time.time())) | positions | wallet
 
     async def resume_slot(self, addresses):
         commitment=self.config.hotlist_commitment
@@ -249,6 +251,7 @@ class HotlistFeed:
                 if self.position_event:
                     self.position_event(raw['transaction']['signatures'][0],slot,
                                         [k['pubkey'] for k in raw['transaction']['message']['accountKeys']])
+                if self.position_receipt:self.position_receipt(raw,received_at)
                 now=time.time(); a=self.anchor
                 observed(self.store,raw['transaction']['signatures'][0],'grpc-'+self.config.hotlist_commitment,
                          'received',slot,received_at,normalized=True,live=live,dropped=not live,

@@ -73,6 +73,7 @@ class AccountCache {
     try{
       await wait();
       if(this.closed||gen!==this.generation||!state.subscribed||state.version!==version)return;
+      if(this.rows.get(k)?.continuous)return; // A newer WS/foreground snapshot already closed the gap.
       await this.get([new web3.PublicKey(k)],{},false,wait,new Set(),true);
     }catch{} // A failed baseline leaves strict freshness/fallback in force.
   }
@@ -130,11 +131,18 @@ class AccountCache {
     if(rows.some((row,i)=>!this.validShared(row,minSlot,names[i],shared)))throw Error('cache-slot-behind');
     return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};
   }
-  invalidate(){
+  invalidate({subscriptionsLost=true}={}){
     this.generation++;this.rows.clear();this.misc.clear();this.clock=null;this.pulseAt=null;this.head=0;
-    for(const state of this.watchState.values()){state.subscribed=false;state.version++;}
+    for(const state of this.watchState.values()){
+      if(subscriptionsLost)state.subscribed=false;
+      state.version++;
+    }
     for(const changed of this.readWaiters)changed();
     this.onInvalidate?.();
+    // A fork invalidates account contents, not an otherwise active subscription.
+    // Re-baseline known shared settings in the background; wait() yields to trades.
+    if(!subscriptionsLost)for(const [k,state] of this.watchState)
+      if(state.subscribed&&this.sharedWait.has(k))void this.baselineShared(k,state);
   }
   async table(key,config,cacheOnly,wait){
     const r=await this.get([key],{...config,minContextSlot:0},cacheOnly,wait),row=r.value[0];

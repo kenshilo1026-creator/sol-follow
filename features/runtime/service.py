@@ -420,13 +420,15 @@ class Service:
                 self.create_rpc=FundingRpc(proof_public,proof_alchemy)
                 self.create_feed=CreateFeed(self.config,self.store,self.create_rpc,self.notices)
             self.executor=Executor(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder,reconcile_rpc=self.execution_reads)
-            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,flights=self.exit_flights,balance_rpc=self.execution_reads)
+            self.dev_exit=DevExit(self.config,self.store,rpc,self.notices,self.priority,builder=self.quote_builder.sell,
+                                  flights=self.exit_flights,balance_rpc=self.execution_reads)
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.execution_reads)
             self.dev_sell=DevSell(self.config,self.store,self.execution_reads,self.notices,self.dev_exit)
             if grpc_mode:
                 self.hotlist_feed.position_watch=self.dev_sell.watch_addresses
                 self.hotlist_feed.position_event=self.dev_sell.stream_event
+                self.hotlist_feed.position_receipt=self.dev_sell.stream_receipt
                 self.hotlist_feed.position_reconnected=self.dev_sell.reconnected
             from features.strategy.market_feed import MarketFeed
             def market_event(address,signature,slot):

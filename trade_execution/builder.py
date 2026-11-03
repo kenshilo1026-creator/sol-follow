@@ -92,7 +92,8 @@ async def _build(config, route, wallet, *, sell_amount=None,side='sell'):
     if sell_amount is None and hasattr(route,'trade'):
         payload.update(buy_deadline(config,route))
     if sell_amount is not None:
-        payload.update(side=side,amount=str(sell_amount),commitment='confirmed')
+        payload.update(side=side,amount=str(sell_amount),
+                       commitment=config.hotlist_commitment if route.request().get('fastExit') else 'confirmed')
     process=await asyncio.create_subprocess_exec(
         'node', str(Path(__file__).parent/'sdk'/'build.cjs'),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,

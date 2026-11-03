@@ -38,7 +38,7 @@ async function handle(message){
     }
     if(input.rpc!==rpcUrl)throw Error('sdk-or-rpc-failed');
     if(!Number.isSafeInteger(input.minSlot)||input.minSlot<0)throw Error('invalid-slot');
-    if(cacheGeneration!==input.cacheGeneration){cache.invalidate();cacheGeneration=input.cacheGeneration;}
+    if(cacheGeneration!==input.cacheGeneration){cache.invalidate({subscriptionsLost:false});cacheGeneration=input.cacheGeneration;}
     const generation=cache.generation;
     const wait=background?()=>gate.wait():async()=>{};
     const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);

@@ -192,3 +192,37 @@ test('forced post-ACK baseline cannot be bypassed by the WS race',async t=>{
   pending[0].resolve({context:{slot:101},value:[{data:Buffer.from('baseline')}]});
   await read;assert.equal(cache.wsReadWins,0);assert.equal(cache.readWaiters.size,0);
 });
+
+
+test('fork clears old data but restores shared snapshots without a second subscription ACK',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r,{ttlMs:1000}),gate=new BackgroundGate();
+  t.after(()=>cache.close());
+  const k=key();await cache.primeShared([k],()=>gate.wait());r.ack(k);await tick();
+  r.pulse({slot:100});assert.equal(cache.rows.get(String(k)).continuous,true);
+  const before=r.reads;gate.enter();cache.invalidate({subscriptionsLost:false});
+  assert.equal(cache.rows.size,0);assert.equal(cache.watchState.get(String(k)).subscribed,true);
+  await tick();assert.equal(r.reads,before); // No read steals foreground capacity.
+  r.slot=102;r.pulse({slot:102});gate.leave();await tick();
+  assert.equal(r.reads,before+1);assert.equal(cache.rows.get(String(k)).continuous,true);
+  now+=10000;r.pulse({slot:103});
+  const view=cache.view(103,true,{sharedKeys:[k]});
+  assert.equal((await view.getMultipleAccountsInfo([k]))[0].data.toString(),'state');
+  assert.equal(r.reads,before+1); // Subsequent create reuses the new baseline, no polling.
+  cache.invalidate();
+  assert.equal(cache.watchState.get(String(k)).subscribed,false);
+  await tick();assert.equal(r.reads,before+1); // Real disconnect must await new ACK.
+  await assert.rejects(view.getMultipleAccountsInfo([k]),/price-cache-miss/);
+});
+
+test('fork baseline does not repeat a foreground read or accept a cancelled old baseline',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r),gate=new BackgroundGate();t.after(()=>cache.close());
+  const k=key();await cache.primeShared([k],()=>gate.wait());r.ack(k);await tick();
+  gate.enter();cache.invalidate({subscriptionsLost:false});
+  r.slot=103;await cache.view(103).getAccountInfo(k);
+  const reads=r.reads;gate.leave();await tick();assert.equal(r.reads,reads);
+  let resolve;r.getMultipleAccountsInfoAndContext=()=>new Promise(done=>resolve=done);
+  cache.invalidate({subscriptionsLost:false});await tick();cache.invalidate();
+  resolve({context:{slot:104},value:[{data:Buffer.from('old-generation')}]});await tick();
+  assert.equal(cache.rows.size,0);
+});
