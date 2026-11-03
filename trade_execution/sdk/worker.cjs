@@ -1,4 +1,5 @@
 'use strict';
+const bootStarted=performance.now();
 // Persistent public state and unsigned builds. No key loading or broadcast.
 const readline=require('node:readline'),web3=require('@solana/web3.js');
 const {build,connectionFor,REASONS}=require('./build.cjs');
@@ -97,3 +98,6 @@ lines.on('line',line=>{
   }catch{process.exitCode=1;lines.close();}
 });
 lines.on('close',()=>{blocks?.close();cache?.close();process.exit();});
+
+// Emitted only after synchronous SDK imports and the input handler are ready.
+send({worker:'ready',boot_ms:Math.round((performance.now()-bootStarted)*1000)/1000});

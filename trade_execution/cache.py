@@ -18,6 +18,10 @@ class CachedBuilder:
         self.config, self.notices, self.priority = config, notices, priority
         self.seen = SeenTokens(store)
         self.process = self.reader = None
+        self.worker_ready = None
+        self.worker_started = None
+        self.worker_boot_ms = None
+        self.warmed_process = None
         self.start_lock = asyncio.Lock()
         self.write_lock = asyncio.Lock()
         self.pending = {}
@@ -109,12 +113,21 @@ class CachedBuilder:
                 'node', str(Path(__file__).parent/'sdk'/'worker.cjs'), cwd=self.config.root,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL, env=child_environment(), limit=200000)
+            self.worker_started = time.monotonic()
+            self.worker_ready = None
+            self.worker_boot_ms = None
             self.reader = asyncio.create_task(self.read(self.process))
 
     async def read(self, process):
         try:
             while line := await process.stdout.readline():
                 row = json.loads(line)
+                if row.get("worker") == "ready":
+                    boot = row.get("boot_ms")
+                    if process is self.process and type(boot) in (int,float) and 0 <= boot <= 3600000:
+                        self.worker_ready = process
+                        self.worker_boot_ms = round(boot,3)
+                    continue
                 if sdk_event(row):
                     continue
                 if row.get('recipe'):
@@ -198,7 +211,11 @@ class CachedBuilder:
                 return row['result']
         except (TimeoutError,BuildError) as exc:
             diagnostic={'phase':phase,'elapsed_ms':round((time.monotonic()-began)*1000,3),
-                        'timeout_s':timeout,'progress':list(self.progress.get(identifier,()))}
+                        'timeout_s':timeout,'progress':list(self.progress.get(identifier,())),
+                        'worker_ready':process is not None and self.worker_ready is process,
+                        'worker_boot_ms':self.worker_boot_ms if process is self.process else None,
+                        'worker_age_ms':round((time.monotonic()-self.worker_started)*1000,3)
+                            if process is self.process and self.worker_started is not None else None}
             if isinstance(exc,TimeoutError):
                 # Preserve the existing hung-worker recovery, but never kill a
                 # replacement child created by another concurrent request.
@@ -237,11 +254,19 @@ class CachedBuilder:
         # The same warm worker owns account/ALT/blockhash caches; no Node cold start.
         return await self.request(request,wallet,sell_amount=amount)
 
+    async def bootstrap(self):
+        # A replacement child has no shared-account or blockhash cache.
+        await self.start()
+        process = self.process
+        await self.request({"route":"prime","minSlot":0,"lookupTables":[],"primeAccounts":[]},
+                           self.config.wallet_address,operation="bootstrap")
+        if process is self.process:
+            self.warmed_process = process
+
     async def warm(self):
         # Initialise the shared blockhash before any target is known.
         try:
-            await self.request({"route":"prime","minSlot":0,"lookupTables":[],"primeAccounts":[]},
-                               self.config.wallet_address,operation="bootstrap")
+            await self.bootstrap()
         except BuildError:
             self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
         # Restore recently decoded Stonk configs, including SOL pairs, before
@@ -260,6 +285,16 @@ class CachedBuilder:
         # Start/load SDKs before the first qualifying signal.
         await self.start()
         while True:
+            # Recover even when no non-SOL tokens are queued. Previously the
+            # next live buy could be the first request to load a replacement SDK.
+            if not self.priority.active and (self.process is None or self.process.returncode is not None
+                                             or self.warmed_process is not self.process):
+                try:
+                    await self.bootstrap()
+                except BuildError:
+                    self.notices.emit("blockhash warm deferred",{},key="blockhash-warm",interval=60)
+                    await asyncio.sleep(1)
+                continue
             if not self.priority.active and self.shared_queue:
                 key,request=self.shared_queue.popitem(last=False)
                 try:

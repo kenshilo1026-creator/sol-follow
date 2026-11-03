@@ -253,3 +253,64 @@ async def test_builder_diagnostics_reach_failed_order_audit(config,store):
     assert store.order(oid)['state']=='failed' and store.order(oid)['signature'] is None
     audit=store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]
     assert json.loads(audit['detail'])['builder_diagnostics']==detail
+
+
+@pytest.mark.asyncio
+async def test_worker_ready_is_bound_to_current_process_and_does_not_complete_request(config,store):
+    builder=manager(config,store)
+    stream=asyncio.StreamReader()
+    class Process:
+        stdout=stream;returncode=None
+        def kill(self):self.returncode=1
+        async def wait(self):return 1
+    process=Process();builder.process=process
+    future=asyncio.get_running_loop().create_future();builder.pending[8]=future
+    reader=asyncio.create_task(builder.read(process))
+    def line(row):stream.feed_data((json.dumps(row)+'\n').encode())
+    line({'worker':'ready','boot_ms':float('nan')})
+    await asyncio.sleep(0)
+    assert builder.worker_ready is None
+    line({'worker':'ready','boot_ms':123.4567,'url':'secret'})
+    await asyncio.sleep(0)
+    assert builder.worker_ready is process and builder.worker_boot_ms==123.457
+    assert not future.done()
+    replacement=SimpleNamespace();builder.process=replacement;builder.worker_ready=None
+    line({'worker':'ready','boot_ms':999})
+    await asyncio.sleep(0)
+    assert builder.worker_ready is None
+    line({'id':8,'result':{}})
+    await future
+    stream.feed_eof();await reader
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('replacement_already_started',[False,True])
+async def test_idle_warmer_reinitializes_replacement_and_yields_to_trade(config,store,replacement_already_started):
+    builder=manager(config,store);calls=[]
+    first=asyncio.Event();recovered=asyncio.Event()
+    async def start():
+        if builder.process is None or builder.process.returncode is not None:
+            builder.process=SimpleNamespace(returncode=None)
+    async def request(request,wallet,**kwargs):
+        assert kwargs=={'operation':'bootstrap'}
+        calls.append(builder.process)
+        (first if len(calls)==1 else recovered).set()
+        return {'warmed':True}
+    builder.start=start;builder.request=request
+    task=asyncio.create_task(builder.warm())
+    try:
+        await asyncio.wait_for(first.wait(),1)
+        builder.priority.active=1
+        old=builder.process
+        if replacement_already_started:
+            builder.process=SimpleNamespace(returncode=None)
+        else:old.returncode=-1
+        await asyncio.sleep(.25)
+        assert len(calls)==1 and not builder.queue
+        builder.priority.active=0
+        await asyncio.wait_for(recovered.wait(),1)
+        assert len(calls)==2 and calls[-1] is builder.process and calls[-1] is not old
+        assert builder.warmed_process is builder.process
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task

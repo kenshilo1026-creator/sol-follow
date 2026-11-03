@@ -114,3 +114,13 @@ subscription; old-generation in-flight reads cannot populate the new cache.
 This fixes repeated HTTP misses after a fork without trusting pre-fork data or
 adding periodic account polling. It is a demonstrated recovery bug, not proof of
 the specific historical 136ms account-read cause.
+
+
+### 組單 worker 重啟及超時診斷
+
+worker 在 SDK 載入及 stdin handler 就緒後回報 ready。買入超時的
+`builder_diagnostics` 另記錄 `worker_ready`、`worker_boot_ms`、`worker_age_ms`，
+用來區分未載入完成及已就緒但未回報進度；ready 不代表帳戶／報價快取已完整。
+背景 warmer 在 worker 結束或換代後，即使非 SOL 預熱佇列為空，也會重新
+初始化共用帳戶及 blockhash。交易進行時仍退避，買入不新增 ready 等待，
+原有訊號期限、模擬及滑點檢查不變。這不能保證新 worker 趕及同時到來的訊號。
