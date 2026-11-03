@@ -56,3 +56,33 @@ SOL→quote 報價使用這些有效快照，不要求所有池狀態達到新 t
 持久路徑仍須通過 SDK 的路徑及帳戶驗證。沒有把舊 quoted_out、minOut 或已簽交易當成可重放快取。
 最近 128 個報價幣的啟動預熱上限只限制活躍工作量，不會刪除其他持久路徑。
 正常重啟或部署時保留資料目錄即可；刪除／更換該資料庫會失去運行期間累積的快取。
+
+
+## Shared-setting recovery and completed-curve notices
+
+Pump simulation error 6005 is shown as a dedicated “曲線已完成，跳過買入”
+Telegram message when the failed program is Pump and the buy is unsigned and
+not submitted. This replaces the generic failure text for that alert, without
+sending a duplicate notification. Audit retains `buy rejected` and the original
+simulation evidence. A simulation error alone does not establish same-slot
+completion or completed liquidity migration.
+
+The worker pins the three fixed protocol settings (Pump Global, Pump FeeConfig,
+Stonk platform) against ordinary route-cache eviction. Registration happens
+before blockhash bootstrap so a failed blockhash read cannot prevent account
+subscription and recovery. Other quote accounts remain bounded and evictable.
+
+Shared accounts missing a continuous post-subscription baseline are repaired in
+the background, with at most four concurrent repairs and exponential retry
+backoff from 1 to 30 seconds. Repairs yield to the trading gate, use an independent
+background RPC budget and are deduplicated per account. Successful continuous
+snapshots do not cause periodic HTTP refresh. A real disconnect waits for a new
+subscription ACK; a socket error without close re-baselines existing subscriptions.
+Fork invalidation and worker replacement also restore coverage. Freshness,
+source-slot simulation, minOut and slippage checks remain in force.
+
+Account diagnostics now include `pinned`, `recovery_pending`,
+`recovery_failures`, and `last_loss` (`never-loaded`, `evicted`,
+`subscription-gap`, `baseline-failed`, `websocket-close`, `websocket-error`,
+`generation-invalidated`). They identify future cache-loss paths; the older
+incident's absent rows alone cannot establish which path occurred.

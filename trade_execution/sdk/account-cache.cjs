@@ -6,10 +6,11 @@ class AccountCache {
   constructor(connection,{ttlMs=2000,maxAccounts=512,commitment='confirmed'}={}){
     this.commitment=commitment;this.rpc=connection;this.ttlMs=ttlMs;this.max=maxAccounts;
     this.rows=new Map();this.misc=new Map();this.subscriptions=new Map();this.watchState=new Map();
-    this.sharedWait=new Map();this.readWaiters=new Set();this.wsReadWins=0;
+    this.sharedWait=new Map();this.pinned=new Set();this.repairs=new Map();this.repairActive=new Set();
+    this.losses=new Map();this.repairTimer=null;this.readWaiters=new Set();this.wsReadWins=0;
     this.generation=0;this.hits=0;this.misses=0;this.closed=false;this.head=0;this.pulseAt=null;this.clock=null;
-    connection._rpcWebSocket?.on('close',()=>this.invalidate());
-    connection._rpcWebSocket?.on('error',()=>this.invalidate());
+    connection._rpcWebSocket?.on('close',()=>this.invalidate({reason:'websocket-close'}));
+    connection._rpcWebSocket?.on('error',()=>this.invalidate({subscriptionsLost:false,reason:'websocket-error'}));
     if(connection.onSlotChange){
       this.slotId=connection.onSlotChange(({slot})=>{
         if(this.closed||!Number.isSafeInteger(slot)||slot<this.head)return;
@@ -41,14 +42,16 @@ class AccountCache {
     if(this.rpc._onSubscriptionStateChange)state.dispose=this.rpc._onSubscriptionStateChange(id,next=>{
       if(this.watchState.get(k)!==state)return;
       state.version++;state.subscribed=next==='subscribed';
-      if(!state.subscribed)this.rows.delete(k);
+      if(!state.subscribed){this.rows.delete(k);this.noteLoss(k,'subscription-gap');}
       else if(this.sharedWait.has(k))void this.baselineShared(k,state);
     });
     this.trim();
   }
   trim(){
     while(this.rows.size>this.max||this.subscriptions.size>this.max){
-      const k=this.rows.keys().next().value||this.subscriptions.keys().next().value;
+      const k=[...this.rows.keys(),...this.subscriptions.keys()].find(k=>!this.pinned.has(k));
+      if(k===undefined)break; // Only the fixed protocol settings may be pinned.
+      this.noteLoss(k,'evicted');this.repairs.delete(k);
       this.sharedWait.delete(k);this.rows.delete(k);const id=this.subscriptions.get(k);this.subscriptions.delete(k);
       this.watchState.get(k)?.dispose();this.watchState.delete(k);
       if(id!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
@@ -66,19 +69,50 @@ class AccountCache {
     // A changed pool still needs its own account update at/after the trigger.
     return row&&row.slot>=minSlot&&age>=0&&(age<=this.ttlMs||watched);
   }
-  async baselineShared(k,state){
-    // One HTTP baseline after ACK, not periodic polling. An earlier HTTP
-    // response cannot prove coverage of the subscription startup gap.
+  noteLoss(k,reason){
+    this.losses.delete(k);this.losses.set(k,{reason,at:Date.now()});
+    while(this.losses.size>512)this.losses.delete(this.losses.keys().next().value);
+  }
+  keepShared(keys,wait=async()=>{},{pin=false}={}){
+    for(const key of keys){const k=key.toBase58();if(pin)this.pinned.add(k);this.sharedWait.set(k,wait);this.watch(k);}
+    // Check only for missing post-ACK baselines. Healthy rows never cause HTTP.
+    if(!this.repairTimer){this.repairTimer=setInterval(()=>this.recoverShared(),1000);this.repairTimer.unref?.();}
+  }
+  recoverShared(){
+    if(this.closed)return;
+    for(const [k] of this.sharedWait){
+      if(this.repairActive.size>=4)break;
+      const state=this.watchState.get(k);
+      if(state?.subscribed&&(!this.rows.get(k)?.continuous||!this.rows.get(k)?.value))void this.baselineShared(k,state);
+    }
+  }
+  baselineShared(k,state){
+    return require('./catchup-budget.cjs').withCatchupBudget({},()=>this.repairShared(k,state));
+  }
+  async repairShared(k,state){
+    const previous=this.repairs.get(k);
+    if(this.closed||this.repairActive.has(k)||this.repairActive.size>=4||Date.now()<(previous?.due||0))return;
     const version=state.version,gen=this.generation,wait=this.sharedWait.get(k);
+    if(!wait)return;
+    this.repairActive.add(k);
     try{
       await wait();
-      if(this.closed||gen!==this.generation||!state.subscribed||state.version!==version)return;
-      if(this.rows.get(k)?.continuous)return; // A newer WS/foreground snapshot already closed the gap.
+      if(this.closed||gen!==this.generation||this.watchState.get(k)!==state||!state.subscribed||state.version!==version)return;
+      if(this.rows.get(k)?.continuous&&this.rows.get(k)?.value)return;
       await this.get([new web3.PublicKey(k)],{},false,wait,new Set(),true);
-    }catch{} // A failed baseline leaves strict freshness/fallback in force.
+      if(!this.rows.get(k)?.value)throw Error('shared-account-unavailable');
+      this.repairs.delete(k);
+    }catch{
+      // Bounded retry of a failed baseline, not periodic account refresh.
+      if(!this.closed&&gen===this.generation&&this.watchState.get(k)===state){
+        const failures=Math.min(6,(previous?.failures||0)+1);
+        this.repairs.set(k,{failures,due:Date.now()+Math.min(30000,1000*2**(failures-1))});
+        this.noteLoss(k,'baseline-failed');
+      }
+    }finally{this.repairActive.delete(k);}
   }
   async primeShared(keys,wait=async()=>{}){
-    for(const key of keys){const k=key.toBase58();this.sharedWait.set(k,wait);this.watch(k);}
+    this.keepShared(keys,wait);
     return this.get(keys,{},false,wait);
   }
   validShared(row,minSlot,k,shared){
@@ -96,6 +130,9 @@ class AccountCache {
       isShared&&this.head<(local?minSlot-2:minSlot)?'head-behind':row.slot<minSlot?'slot-behind':'expired';
     return {address:k,source:hit?'cache-hit':'cache-miss',reason,min_slot:minSlot,
       row_slot:row?.slot,age_ms:age,continuous:!!row?.continuous,subscribed,healthy,head:this.head,shared:isShared,ttl_ms:this.ttlMs,
+      pinned:this.pinned.has(k),recovery_pending:this.repairActive.has(k),
+      recovery_failures:this.repairs.get(k)?.failures||0,
+      last_loss:this.losses.get(k)?.reason||'never-loaded',
       websocket_connected:this.rpc._rpcWebSocketConnected===true,pulse_age_ms:this.pulseAt===null?null:Date.now()-this.pulseAt};
   }
   async firstReady(keys,names,config,gen,shared,force){
@@ -151,7 +188,9 @@ class AccountCache {
     if(rows.some((row,i)=>!this.validShared(row,minSlot,names[i],shared)))throw Error('cache-slot-behind');
     return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};
   }
-  invalidate({subscriptionsLost=true}={}){
+  invalidate({subscriptionsLost=true,reason='generation-invalidated'}={}){
+    for(const k of new Set([...this.rows.keys(),...this.subscriptions.keys()]))this.noteLoss(k,reason);
+    this.repairs.clear();
     this.generation++;this.rows.clear();this.misc.clear();this.clock=null;this.pulseAt=null;this.head=0;
     for(const state of this.watchState.values()){
       if(subscriptionsLost)state.subscribed=false;
@@ -178,7 +217,7 @@ class AccountCache {
     const cache=this,rpc=this.rpc,shared=new Set(sharedKeys.map(k=>k.toBase58()));
     const config=c=>({...typeof c==='object'&&c,minContextSlot:Math.max(minSlot,c?.minContextSlot||0),commitment:cache.commitment});
     const read=(keys,c,sharedKeys=new Set())=>{
-      if(primeReads)for(const key of keys){const k=key.toBase58();cache.sharedWait.set(k,wait);cache.watch(k);}
+      if(primeReads)cache.keepShared(keys,wait);
       return cache.get(keys,c,cacheOnly,wait,sharedKeys,false,trace);
     };
     const methods={
@@ -224,7 +263,7 @@ class AccountCache {
     }});
   }
   close(){
-    this.closed=true;
+    this.closed=true;clearInterval(this.repairTimer);this.repairTimer=null;
     for(const changed of this.readWaiters)changed();
     this.rows.clear();this.sharedWait.clear();
     for(const state of this.watchState.values())state.dispose();

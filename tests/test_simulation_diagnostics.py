@@ -91,3 +91,47 @@ def test_build_evidence_is_bounded_and_drops_raw_secrets():
     assert 'secret' not in json.dumps(safe)
     assert sanitize({'reads':[None,{'phase':'cache','accounts':[None,{'address':'secret'}]}],
         'rpc':[None],'source_slot':True})=={'reads':[{'phase':'cache','accounts':[]}],'rpc':[]}
+
+
+def test_completed_curve_has_one_specific_copyable_notification():
+    from share_common.notify import telegram_message
+    from chain_common.simulation_diagnostics import pump_curve_complete
+    detail={'mode':'live','mint':address(),'signed':False,'outcome':'not-submitted',
+            'reason':'simulation-rejected','simulation_details':{'reason':'transaction-error',
+            'failed_program':'6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+            'custom_code':6005,'anchor_code':'BondingCurveComplete','slot':123}}
+    text=telegram_message('buy rejected',detail)
+    assert '曲線已完成，跳過買入' in text and '6005 / BondingCurveComplete' in text
+    assert '<code>'+detail['mint']+'</code>' in text
+    assert '跟買失敗' not in text and '同 slot' not in text
+    for change in [{'failed_program':address()},{'custom_code':6042},{'anchor_code':'OtherError'}, {'anchor_number':6002}]:
+        assert not pump_curve_complete({**detail['simulation_details'],**change})
+    assert '曲線已完成' not in telegram_message('buy deferred',{**detail,'signed':True,'outcome':'unknown'})
+    assert '曲線已完成' not in telegram_message('buy rejected',{**detail,'simulation_details':{}})
+
+
+def test_cache_recovery_diagnostics_are_safe_and_retained():
+    from chain_common.build_diagnostics import sanitize
+    value={'reads':[{'phase':'shared','accounts':[{'address':address(),'last_loss':'baseline-failed',
+        'pinned':True,'recovery_pending':True,'recovery_failures':2}]}]}
+    account=sanitize(value)['reads'][0]['accounts'][0]
+    assert account['last_loss']=='baseline-failed' and account['pinned'] and account['recovery_failures']==2
+    value['reads'][0]['accounts'][0]['last_loss']='https://secret'
+    assert 'secret' not in json.dumps(sanitize(value))
+
+
+@pytest.mark.asyncio
+async def test_completed_curve_executor_emits_only_one_alert_without_submit(config,store):
+    from tests.test_pump_buy import setup_order,RPC
+    from trade_execution.executor import Executor
+    from chain_common.rpc import Priority
+    from share_common.notify import telegram_message
+    cfg,route,oid,_=setup_order(config,store)
+    detail={'reason':'transaction-error','failed_program':'6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+            'custom_code':6005,'anchor_code':'BondingCurveComplete','slot':route.trade.slot}
+    async def builder(*args):raise BuildError('simulation-rejected',simulation_details=detail)
+    notices=Notices();rpc=RPC()
+    await Executor(cfg,store,rpc,notices,Priority(),builder).buy(oid,route)
+    alerts=[args for args,kwargs in notices.items if kwargs.get('alert')]
+    assert len(alerts)==1 and '曲線已完成，跳過買入' in telegram_message(*alerts[0])
+    assert store.order(oid)['signature'] is None and not rpc.calls

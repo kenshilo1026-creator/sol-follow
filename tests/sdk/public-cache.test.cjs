@@ -254,3 +254,82 @@ test('quote warming baselines after ACK in the background and reuses unchanged p
   await cache.view(200).quoteSnapshot().getAccountInfo(k);assert.equal(r.reads,2);
   r._rpcWebSocket.emit('close');assert.equal(cache.rows.size,0);
 });
+
+
+test('core shared settings survive route churn while ordinary cache remains bounded',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r,{maxAccounts:3});t.after(()=>cache.close());
+  const core=[key(),key()];cache.keepShared(core,async()=>{},{pin:true});
+  await cache.primeShared(core);for(const k of core)r.ack(k);await tick();
+  for(let i=0;i<10;i++)await cache.view().getAccountInfo(key());
+  for(const k of core){assert(cache.rows.has(String(k)));assert(cache.subscriptions.has(String(k)));}
+  assert.equal(cache.rows.size,3);assert.equal(cache.subscriptions.size,3);
+});
+
+test('failed baseline retries with backoff, yields to trades, and stops reading after recovery',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r),gate=new BackgroundGate();t.after(()=>cache.close());
+  const k=key();let fail=true;
+  const original=r.getMultipleAccountsInfoAndContext;
+  r.getMultipleAccountsInfoAndContext=async function(...args){if(fail){this.reads++;throw Error('offline');}return original.apply(this,args);};
+  cache.keepShared([k],()=>gate.wait(),{pin:true});r.ack(k);await tick();
+  assert.equal(r.reads,1);assert.equal(cache.repairs.get(String(k)).failures,1);
+  cache.recoverShared();await tick();assert.equal(r.reads,1);
+  now+=1000;gate.enter();cache.recoverShared();await tick();assert.equal(r.reads,1);
+  // Background recovery must never inherit a buy's expired retry budget.
+  fail=false;gate.leave();await tick();assert.equal(r.reads,2);assert(cache.rows.get(String(k)).continuous);
+  for(let i=0;i<5;i++){now+=30000;r.pulse({slot:100+i});cache.recoverShared();await tick();}
+  assert.equal(r.reads,2);assert.equal(cache.repairs.size,0);
+  r._rpcWebSocket.emit('close');cache.recoverShared();await tick();assert.equal(r.reads,2);
+  r.ack(k);await tick();assert.equal(r.reads,3);assert(cache.rows.get(String(k)).continuous);
+});
+
+test('recovery is deduplicated and bounded and null shared accounts retry',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r),gate=new BackgroundGate();t.after(()=>cache.close());
+  const keys=Array.from({length:8},key);gate.enter();cache.keepShared(keys,()=>gate.wait());
+  for(const k of keys)r.ack(k);
+  assert.equal(cache.repairActive.size,4);cache.recoverShared();assert.equal(cache.repairActive.size,4);
+  gate.leave();await tick();cache.recoverShared();await tick();assert.equal(r.reads,8);
+  const k=keys[0];cache.rows.delete(String(k));
+  r.getMultipleAccountsInfoAndContext=async()=>{r.reads++;return {context:{slot:100},value:[null]};};
+  cache.recoverShared();await tick();assert.equal(cache.repairs.get(String(k)).failures,1);
+  cache.recoverShared();await tick();assert.equal(r.reads,9);
+  now+=1000;cache.recoverShared();await tick();assert.equal(r.reads,10);
+  cache.close();now+=30000;cache.recoverShared();await tick();assert.equal(r.reads,10);
+});
+
+test('recovery starts a background budget even when registered from a buy',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const budgets=require('../../trade_execution/sdk/catchup-budget.cjs'),k=key();
+  const original=r.getMultipleAccountsInfoAndContext;
+  r.getMultipleAccountsInfoAndContext=async function(...args){assert.equal(budgets.isBuy(),false);return original.apply(this,args);};
+  budgets.withCatchupBudget({buySignalExpiresAtMs:Date.now()+100},()=>{cache.keepShared([k]);r.ack(k);});
+  await tick();assert.equal(r.reads,1);
+});
+
+
+test('socket error without close re-baselines acknowledged settings without awaiting another ACK',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const k=key();cache.keepShared([k]);r.ack(k);await tick();assert.equal(r.reads,1);
+  r._rpcWebSocket.emit('error',Error('temporary'));await tick();
+  assert.equal(r.reads,2);assert(cache.rows.get(String(k)).continuous);
+  const evidence=cache.evidence(String(k),0,new Set([String(k)]));
+  assert.equal(evidence.last_loss,'websocket-error');
+});
+
+
+test('missing baseline actually recovers on background timer without another request', {timeout:4000},async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());const k=key();
+  const original=r.getMultipleAccountsInfoAndContext;let recovered;
+  const done=new Promise(resolve=>recovered=resolve);
+  r.getMultipleAccountsInfoAndContext=async function(...args){
+    if(this.reads===0){this.reads++;throw Error('first-read-failed');}
+    const result=await original.apply(this,args);recovered();return result;
+  };
+  cache.keepShared([k]);r.ack(k);await tick();assert.equal(r.reads,1);
+  // Make the scheduled repair eligible immediately; only the timer runs it.
+  cache.repairs.get(String(k)).due=0;
+  cache.repairTimer.ref(); // Keep this test alive; production timers intentionally unref.
+  await done;await tick();assert.equal(r.reads,2);assert(cache.rows.get(String(k)).continuous);
+  cache.close();assert.equal(cache.repairTimer,null);
+});

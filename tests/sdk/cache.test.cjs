@@ -42,7 +42,10 @@ test('real JSON-lines worker shares state across requests and enforces a newer s
   let calls=0;
   const server=http.createServer((req,res)=>{
     let body='';req.on('data',c=>body+=c);req.on('end',()=>{
-      const request=JSON.parse(body);calls++;
+      const request=JSON.parse(body);
+      // Core-settings recovery now also uses this server. Count the target
+      // account separately to verify foreground cache hits still avoid RPC.
+      if(request.params[0].includes(input.primeAccounts[0]))calls++;
       const slot=Math.max(100,request.params[1].minContextSlot||0);
       res.setHeader('content-type','application/json');res.end(JSON.stringify({jsonrpc:'2.0',id:request.id,
         result:{context:{slot},value:request.params[0].map(()=>null)}}));

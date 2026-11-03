@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
 from chain_common.public_rpc import rpc_notices
+from chain_common.simulation_diagnostics import pump_curve_complete
 from chain_common.rpc_diagnostics import REASONS as RPC_REASONS, rpc_details
 import logging
 import html
@@ -55,6 +56,18 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if (kind=='buy rejected' and detail.get('outcome')=='not-submitted'
+            and detail.get('signed') is False and pump_curve_complete(detail.get('simulation_details'))):
+        lines=['⏭️ [SOL] 曲線已完成，跳過買入',f"模式: {detail.get('mode','未知')}",
+               f"代幣: {detail['mint']}",
+               '原因: 模擬時 Pump bonding curve 已完成（6005 / BondingCurveComplete）',
+               '結果: 未簽署、未送出，沒有本次買單的鏈上交易費']
+        if detail.get('simulation_details',{}).get('slot') is not None:
+            lines.append(f"模擬 slot: {detail['simulation_details']['slot']}")
+        for key,label in [('source_wallet','目標錢包'),('source_signature','目標交易'),('order','訂單')]:
+            if detail.get(key):lines.append(f"{label}: {detail[key]}")
+        return '\n'.join(lines)[:3900]
+
     if kind=='hotlist stream stale; reconnecting':
         lines=['⚠️ [SOL] Hotlist 串流區塊時間落後，正在重連',
                f"Slot: {detail['slot']}",

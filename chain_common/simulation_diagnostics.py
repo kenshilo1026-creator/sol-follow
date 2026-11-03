@@ -52,3 +52,13 @@ def from_response(response):
         anchor=re.search(r'Error Code: ([A-Za-z][A-Za-z0-9_]{0,63})\. Error Number: ([0-9]{1,10})\.',line)
         if anchor:detail.update(anchor_code=anchor[1],anchor_number=int(anchor[2]))
     return sanitize(detail)
+
+
+def pump_curve_complete(value):
+    """6005 is program-specific; another program's error must not be relabelled."""
+    detail=sanitize(value)
+    return (detail.get('reason')=='transaction-error'
+            and detail.get('failed_program')=='6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+            and detail.get('custom_code')==6005
+            and detail.get('anchor_code') in (None,'BondingCurveComplete')
+            and detail.get('anchor_number') in (None,6005))

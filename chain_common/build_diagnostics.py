@@ -39,7 +39,8 @@ def sanitize(value):
             r['accounts']=[]
             for a in (read.get('accounts') if isinstance(read.get('accounts'),list) else [])[:32]:
                 if not isinstance(a,dict) or not key(a.get('address')):continue
-                safe=fields(a,('min_slot','row_slot','age_ms','head','ttl_ms','pulse_age_ms'),('continuous','subscribed','healthy','shared','websocket_connected'),{
+                safe=fields(a,('min_slot','row_slot','age_ms','head','ttl_ms','pulse_age_ms','recovery_failures'),('pinned','recovery_pending','continuous','subscribed','healthy','shared','websocket_connected'),{
+                    'last_loss':{'never-loaded','evicted','subscription-gap','baseline-failed','websocket-close','websocket-error','generation-invalidated'},
                     'role':{'mint','pool','pump-global','pump-fee-config','other'},
                     'source':{'source-events','shared-cache','cache-read','cache-hit','cache-miss'},
                     'reason':{'hit','forced-baseline','not-shared','absent','clock-ahead','null-account',

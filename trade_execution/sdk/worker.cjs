@@ -41,6 +41,9 @@ async function handle(message){
     if(input.rpc!==rpcUrl)throw Error('sdk-or-rpc-failed');
     if(!Number.isSafeInteger(input.minSlot)||input.minSlot<0)throw Error('invalid-slot');
     if(cacheGeneration!==input.cacheGeneration){cache.invalidate({subscriptionsLost:false});cacheGeneration=input.cacheGeneration;}
+    // Register core settings even if blockhash bootstrap fails; ordinary route
+    // churn must not evict them. Recovery always yields to active executions.
+    cache.keepShared(createFast.common,()=>gate.wait(),{pin:true});
     const generation=cache.generation;
     const wait=background?()=>gate.wait():async()=>{};
     const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);
