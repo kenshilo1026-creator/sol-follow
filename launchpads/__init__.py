@@ -7,7 +7,10 @@ from chain_common.primitives import pubkey
 from chain_common.transaction import Unsupported
 from launchpads import pump_fun, stonk
 
-ENABLED = (pump_fun.NAME, stonk.NAME)
+from launchpads.factories import FACTORIES
+
+ENABLED = tuple(row['name'] for row in FACTORIES.values()
+                if row['enable'] and row['name'] in (pump_fun.NAME,stonk.NAME))
 
 
 @dataclass(frozen=True)

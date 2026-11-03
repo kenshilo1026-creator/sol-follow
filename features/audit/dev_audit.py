@@ -29,6 +29,7 @@ REASONS={
  'failed-transaction':'鏈上交易失敗，不作入場或跟買',
  'processed-not-live-or-invalid':'processed 訊號不是即時或已失效',
  'chain-time-outside-coverage':'交易時間超出補查範圍',
+ 'factory-disabled':'Factory 已停用買入；已消耗資格與否請查看 eligibility_consumed',
  'previous-token-launch':'曾成功發幣，不符合首次發幣入場條件',
  'history-create-unavailable':'歷史發幣檢查資料不完整，等待重試',
  'prelaunch-activity-too-high':'地址交易歷史超過入場上限',

@@ -4,6 +4,7 @@ from chain_common.primitives import b58decode
 from chain_common.transaction import Unsupported
 from launchpads import pump_fun,stonk
 from launchpads import create_pump,create_stonk
+from launchpads.factories import lookup as factory_lookup
 
 SUPPORTED=('pump_create','pump_create_v2','stonk_initialize','stonk_initialize_v2','stonk_initialize_with_token_2022')
 
@@ -22,7 +23,15 @@ def inspect(tx):
         try:
             data=b58decode(ix.get('data',''))
             if data[:8] not in decoder.DISCRIMINATORS:continue
-            result=decoder.decode(tx,path,ix,data)
+            if decoder is create_stonk:
+                a=tx.accounts(ix)
+                factory=factory_lookup(stonk.PROGRAM,a[3]) if len(a)>3 else None
+                if factory is not None:
+                    result=decoder.decode(tx,path,ix,data,platform_id=factory['platform'],launchpad=factory['name'])
+                else:
+                    result=decoder.decode(tx,path,ix,data)
+            else:
+                result=decoder.decode(tx,path,ix,data)
             if result is not None:creates.append(result)
         except (Unsupported,ValueError,KeyError,IndexError,TypeError) as exc:
             reason=str(exc) if isinstance(exc,Unsupported) else 'malformed-create-instruction'

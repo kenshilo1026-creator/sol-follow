@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "factories": [
+    {
+      "name": "pump.fun",
+      "enable": true,
+      "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+      "platform": ""
+    },
+    {
+      "name": "stonk",
+      "enable": true,
+      "program": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+      "platform": "6BwHHDg3u1854jC8PDLXvR4spTcLNaoBxLJNGC4nTESt"
+    },
+    {
+      "name": "launchlab-ftfnrrse",
+      "enable": false,
+      "program": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+      "platform": "FTFNRRsEjyE175KkQFco4txrDpcsh5suZvtPhVFhmZ1C",
+      "example_mint": "5RugYLCZZogHJFT7YXNVXNFjgYxStDPRoQZgsiSv2CrR",
+      "example_signature": "33CGBZ7D9kytgRyHqd4vJeJzQrTVzQWoDWoyaycfeoEy2by8TpkMpwcmBazVRQARzePWvf59obQu1fL8GVJrMSvv",
+      "note": "Platform verified from HAPPA InitializeV2 and PoolState. Brand name unverified. Verified creates consume qualification while disabled; no trading adapter enabled."
+    }
+  ]
+}

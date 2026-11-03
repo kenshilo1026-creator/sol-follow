@@ -16,7 +16,7 @@ INITIALIZE_2022=discriminator('global','initialize_with_token_2022')
 DISCRIMINATORS={INITIALIZE,INITIALIZE_V2,INITIALIZE_2022}
 
 
-def decode(tx,path,ix,data):
+def decode(tx,path,ix,data,*,platform_id=stonk.PLATFORM,launchpad=stonk.NAME):
     a=accounts(tx,path,ix)
     token2022=data[:8]==INITIALIZE_2022
     v2=data[:8]==INITIALIZE_V2
@@ -24,7 +24,7 @@ def decode(tx,path,ix,data):
     if len(a)<base_count or len(a)>base_count+(2 if token2022 or v2 else 0):
         raise Unsupported('stonk-create-account-count')
     user,creator,config,platform,authority,pool,mint,quote,vault,quote_vault=a[:10]
-    if platform!=stonk.PLATFORM:return None
+    if platform!=platform_id:return None
     if mint==quote:raise Unsupported('create-identical-mints')
     signers(tx,path,mint,user)
     expect(authority,pda([b'vault_auth_seed'],stonk.PROGRAM))
@@ -74,7 +74,8 @@ def decode(tx,path,ix,data):
         if fee_bps>10000:raise Unsupported('stonk-transfer-fee-range')
         flags.update(transfer_fee_enabled=bool(extension),transfer_fee_bps=fee_bps,maximum_fee_raw=str(max_fee))
     r.finish()
-    return event(tx,path,launchpad=stonk.NAME,program=stonk.PROGRAM,
+    if launchpad!=stonk.NAME:flags['platform']=platform
+    return event(tx,path,launchpad=launchpad,program=stonk.PROGRAM,
                  instruction='initialize_with_token_2022' if token2022 else 'initialize_v2' if v2 else 'initialize',
                  mint=mint,quote_mint=quote,base_token_program=base_program,quote_token_program=quote_program,
                  creator=creator,user=user,pool=pool,name=name,symbol=symbol,uri=uri,decimals=decimals,flags=flags)

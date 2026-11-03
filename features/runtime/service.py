@@ -29,6 +29,7 @@ from features.database.storage import Store
 from features.database.errors import detail as database_error
 from launchpads import ENABLED, pump_fun, stonk
 from launchpads.create import inspect as inspect_creates, SUPPORTED as CREATE_DECODERS
+from launchpads.factories import enabled as factory_enabled
 from share_common.notify import Notices
 from share_common.metrics import Metrics
 from trade_execution.cache import CachedBuilder
@@ -149,6 +150,7 @@ class Service:
         # independent of quantity/build gates, including provisional receipts.
         if self.config.dry_run:
             for item in creation.creates:
+                if not factory_enabled(item):continue
                 if not self.store.create_alert_allowed(item,time.time(),self.config.min_funding_age_seconds):
                     continue
                 if self.store.claim_create_alert(item.event):
@@ -162,7 +164,7 @@ class Service:
                         raise
         self.metrics.add('decode',time.monotonic()-parse_started)
         for item in creation.creates:
-            self.quote_builder.observe_create(item)
+            if factory_enabled(item):self.quote_builder.observe_create(item)
         for item in ([] if processed else self.store.record_creates(creation.creates)):
             self.notices.emit('launchpad-create',item.dict())
         if creation.rejected:

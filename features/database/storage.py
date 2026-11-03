@@ -256,7 +256,7 @@ class Store:
             funded=self._create_funding(c,item,now)
         return funded is not None and self._funding_mature(funded,now,min_funding_age_seconds)
 
-    def consume_dev_create(self,item,now,*,processed=False,min_funding_age_seconds=0):
+    def consume_dev_create(self,item,now,*,processed=False,min_funding_age_seconds=0,removal_reason='dev-create'):
         """Consume once and return the latest eligible funding for the age gate."""
         with self.db('funding') as c:
             c.execute('PRAGMA synchronous=FULL')
@@ -270,7 +270,7 @@ class Store:
             c.execute('INSERT INTO hotlist_removals VALUES (?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
                 'slot=excluded.slot,signature=excluded.signature,reason=excluded.reason '
                 'WHERE excluded.slot>hotlist_removals.slot',
-                (item.user,item.slot,item.signature,'dev-create'))
+                (item.user,item.slot,item.signature,removal_reason))
             c.execute('DELETE FROM hotlist WHERE wallet=? AND slot<=?',(item.user,item.slot))
             c.execute('DELETE FROM history_requests WHERE address=? AND NOT EXISTS '
                 '(SELECT 1 FROM hotlist WHERE wallet=?)',(item.user,item.user))
@@ -649,8 +649,8 @@ class Store:
             # Restore only a proven invalid create's own consumption. A later
             # launch/buy tombstone or newer funding must never be overwritten.
             consumed=[r['wallet'] for r in c.execute("SELECT wallet FROM hotlist_removals "
-                "WHERE signature=? AND reason='dev-create'",(signature,))]
-            c.execute("DELETE FROM hotlist_removals WHERE signature=? AND reason='dev-create'",(signature,))
+                "WHERE signature=? AND reason IN ('dev-create','dev-create-disabled')",(signature,))]
+            c.execute("DELETE FROM hotlist_removals WHERE signature=? AND reason IN ('dev-create','dev-create-disabled')",(signature,))
             for wallet in consumed:
                 latest=c.execute('SELECT rowid,* FROM funding WHERE wallet=? AND expires>? '
                     'ORDER BY slot DESC,rowid DESC LIMIT 1',(wallet,time.time())).fetchone()

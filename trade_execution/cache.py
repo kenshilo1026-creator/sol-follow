@@ -57,6 +57,8 @@ class CachedBuilder:
         self.enqueue(request, route.trade.wallet)
 
     def observe_create(self, item, enqueue=True):
+        from launchpads.factories import enabled
+        if not enabled(item):return
         # Config addresses decoded from initialize are useful before this mint
         # becomes eligible. No RPC is awaited by the create/event handler.
         if item.launchpad=='stonk' and item.flags.get('config'):

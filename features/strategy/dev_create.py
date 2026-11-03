@@ -8,11 +8,13 @@ from features.funding.processed import Processed
 from features.strategy.trade import Trade
 from features.strategy.create_dev_gate import permitted as quantity_permitted
 from launchpads import pump_fun, stonk
+from launchpads.factories import enabled as factory_enabled
 from trade_execution.route import Route
 from trade_execution.stonk import StonkRoute
 
 
 def create_route(item, tx):
+    if not factory_enabled(item):return None
     # The user/payer is the signing launcher. The separate creator field can be
     # an arbitrary fee beneficiary and must not lend another wallet's hotlist.
     if item.user not in tx.signers or item.signature != tx.signature or item.slot != tx.slot:
@@ -55,9 +57,12 @@ class CreateSignals:
 
     def prepare(self,item,tx,live,now=None):
         now=time.time() if now is None else now
-        route=create_route(item,tx)
-        if route is None:return None
-        trade=route.trade
+        disabled=not factory_enabled(item)
+        if item.user not in tx.signers or item.signature!=tx.signature or item.slot!=tx.slot:return None
+        route=None if disabled else create_route(item,tx)
+        if route is None and not disabled:return None
+        trade=(Trade(item.event,item.signature,item.slot,item.time,item.user,item.mint,'create',0,0,0,item.pool)
+               if disabled else route.trade)
         processed=self.config.hotlist_commitment=='processed'
         proof=self.proofs.row(item.signature)
         backup=self.proofs.create_backup(item.signature,item.slot)
@@ -67,7 +72,8 @@ class CreateSignals:
             trade_record(self.store,trade,'dev-create','blocked','source-proof-unusable')
             return None
         claimed,reason,funding=self.store.consume_dev_create(item,now,processed=processed and not backup,
-            min_funding_age_seconds=self.config.min_funding_age_seconds)
+            min_funding_age_seconds=self.config.min_funding_age_seconds,
+            removal_reason='dev-create-disabled' if disabled else 'dev-create')
         age_detail={}
         if funding:
             stamp=funding['time']
@@ -75,6 +81,11 @@ class CreateSignals:
                 'funding_provider':funding['provider'],'funded_time':stamp,
                 'funding_age_minutes':(now-stamp)/60 if type(stamp)==int and stamp>0 else None,
                 'required_funding_age_minutes':str(self.config.buy_only_aged_minutes)}
+        if disabled:
+            trade_record(self.store,trade,'dev-create','consumed' if funding else 'blocked','factory-disabled',
+                         {'factory':item.launchpad,'platform':item.flags.get('platform',stonk.PLATFORM if item.launchpad==stonk.NAME else ''),
+                          'eligibility_consumed':funding is not None,'consume_reason':reason,**age_detail})
+            return None
         if not claimed:
             trade_record(self.store,trade,'dev-create','blocked',reason,age_detail)
             return None
