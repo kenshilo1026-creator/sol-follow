@@ -37,6 +37,12 @@ def health_log(detail):
 
 
 BUY_TITLES = {
+    'holder exit submitted':'人氣不足：全倉賣單已送出',
+    'holder exit finalized':'人氣不足：全倉賣出成交',
+    'holder exit deferred':'人氣不足：賣出失敗，稍後重試',
+    'holder exit unknown':'人氣不足：賣單結果未知，核對原交易',
+    'holder exit retry':'人氣不足：鏈上賣出失敗，準備重試',
+    'holder exit dry run':'人氣不足：dry 模式，沒有實際賣出',
     'take profit submitted':'止盈／止損：賣單已送出',
     'take profit finalized':'止盈／止損：賣出已完成',
     'take profit deferred':'止盈／止損：暫緩，稍後重試',
@@ -58,6 +64,11 @@ BUY_TITLES = {
 
 
 def message(kind, detail):
+    if kind=='holder check unavailable':
+        return (f"⚠️ [SOL] 人氣檢查未完成\n代幣: {detail['mint']}"
+                f"\n持有人門檻: {detail['minimum']}\n原因: RPC 未提供可驗證的完整持有人資料"
+                '\n未將未知人數視為 0，保留原有持倉監控。')
+
     if (kind=='buy rejected' and detail.get('outcome')=='not-submitted'
             and detail.get('signed') is False and pump_curve_complete(detail.get('simulation_details'))):
         lines=['⏭️ [SOL] 曲線已完成，跳過買入',f"模式: {detail.get('mode','未知')}",
@@ -168,7 +179,7 @@ def message(kind, detail):
     if kind not in BUY_TITLES:
         return f'[SOL] {kind}\n{detail}'[:3900]
     lines=[f"[SOL] {BUY_TITLES[kind]}"]
-    fields=[('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
+    fields=[('holders','持有人數'),('minimum','最低持有人數'),('mode','模式'),('mint','代幣'),('quote_mint','報價幣'),('stage','階段'),
             ('rule_type','規則類型'),('thresholds','規則門檻'),('gain_percent','Spot index 盈虧（%）'),
             ('received','實收報價幣（最小單位）'),('reason','原因'),
             ('fee_actual_percent','檢查費率'),('fee_limit_percent','設定上限'),('fee_parameter','對應設定'),

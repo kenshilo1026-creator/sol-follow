@@ -34,6 +34,10 @@ class DevExit:
                       (*fields.values(),time.time(),buy_id))
 
     def notice(self,kind,buy,**detail):
+        popularity=self.store.rows('trading',"SELECT detail FROM holder_checks WHERE buy_id=? AND state='triggered'",(buy['id'],))
+        if popularity and kind.startswith('dev exit '):
+            kind=kind.replace('dev exit ','holder exit ',1)
+            detail={**json.loads(popularity[0]['detail']),**detail}
         self.notices.emit(kind,{'mint':buy['mint'],'order':buy['id'],'mode':buy['mode'],**detail},
                           alert=True,key=kind+':'+buy['id'],interval=60)
 
@@ -175,7 +179,8 @@ class DevExit:
             mark('submit_ack_ms')
             self.update(buy['id'],state='submitted')
             origins=self.store.rows('trading','SELECT dev FROM dev_sell_watches WHERE buy_id=?',(buy['id'],))
-            record(self.store,'dev-exit','submitted','dev-exit-submitted',wallet=origins[0]['dev'] if origins else '',
+            exit_stage='holder-exit' if job['reason']=='holder-check' else 'dev-exit'
+            record(self.store,exit_stage,'submitted',exit_stage+'-submitted',wallet=origins[0]['dev'] if origins else '',
                    mint=buy['mint'],signature=signature,event=buy['id']+':'+signature,
                    detail={'order':buy['id'],'timing_ms':timings,'fill_source':fill_source,
                            'simulation_source':simulation_source,'builder_timing':result.get('buildTiming'),

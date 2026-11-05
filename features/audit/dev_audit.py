@@ -11,6 +11,11 @@ from features.audit.feed_trace import compare
 
 ROOT=Path(__file__).resolve().parents[2]
 REASONS={
+ 'holder-exit-submitted':'人氣不足全倉賣出已送出，詳見各階段耗時',
+ 'holder-check-triggered':'人氣不足，已排入剩餘持倉全倉賣出',
+ 'holder-check-passed':'持有人數已達門檻',
+ 'holder-check-unavailable':'持有人資料未知，不因此賣出',
+ 'holder-check-skipped':'持倉已退出或其他退出流程已接管',
  'token-social-link-found':'Metadata 至少包含一條社交連結',
  'token-social-link-missing':'Metadata 沒有有效社交連結，跳過買入',
  'token-metadata-unavailable':'無法讀取或驗證 metadata，略過品質檢查繼續買入',

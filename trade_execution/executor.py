@@ -274,8 +274,10 @@ class Executor:
                 completed=buy_success_context(self.store,row,tx,wallet,tokens)
                 if self.store.fill(row['id'],tokens,quote):
                     self.notices.emit('buy finalized',completed,alert=True)
+                if hasattr(self,'holder_check'):self.holder_check.arm(row,tx.slot)
             elif status and status.get('err') is None and status.get('confirmationStatus')=='confirmed':
                 self.store.update_order(row['id'],state='confirmed')
+                if hasattr(self,'holder_check'):self.holder_check.arm(row,status.get('slot'))
             elif not status:
                 # A pruned/lagging RPC is not proof a buy never landed. Keep the
                 # signature and permanent reservation; do not re-sign/rebuy.

@@ -38,6 +38,7 @@ from trade_execution.route import decode_all as decode_buy_routes
 from trade_execution.executor import Executor, MARKER
 from trade_execution.rpc import ExecutionRpc
 from trade_execution.dev_exit import DevExit
+from features.strategy.holder_check import HolderCheck
 from trade_execution.quote_sweep import QuoteSweep
 
 
@@ -442,6 +443,9 @@ class Service:
                 lambda:self.take_profit.watch_addresses() | self.dev_sell.watch_addresses(),
                 market_event,self.dev_sell.subscribed)
             self.quote_sweep=QuoteSweep(self.config,self.store,rpc,self.notices,self.priority)
+            self.holder_check=HolderCheck(self.config,self.store,self.background_rpc,
+                self.funding_history_rpc if self.config.alchemy_key else None,self.notices,self.priority,self.dev_exit)
+            self.executor.holder_check=self.holder_check
             self.executor.dev_exit=self.dev_exit
             self.dev_holdings.changed=self.dev_exit.wake.set
             self.dev_holdings.recover()
@@ -477,7 +481,7 @@ class Service:
                 async with asyncio.TaskGroup() as group:
                     coroutines=[self.quote_builder.warm(),discovery.websocket(),discovery.urgent_history(),self.finalized(self.confirmation_rpc),self.market_feed.run(),
                                       Maintenance(self.config,self.store,self.priority,self.notices).run(),self.health(discovery,rpc),
-                                      self.executor.reconcile(),self.dev_exit.run(),self.dev_sell.run(),self.dev_sell.catch_up(),self.take_profit.run(),self.quote_sweep.run()]
+                                      self.executor.reconcile(),self.holder_check.run(),self.dev_exit.run(),self.dev_sell.run(),self.dev_sell.catch_up(),self.take_profit.run(),self.quote_sweep.run()]
                     coroutines.extend(self.worker(self.funding_rpc,False if grpc_mode else None)
                                       for _ in range(self.config.funding_workers if grpc_mode else 1))
                     if grpc_mode:

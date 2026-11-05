@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS history_requests(address TEXT PRIMARY KEY, due REAL N
  revision INTEGER NOT NULL DEFAULT 1, attempts INTEGER NOT NULL DEFAULT 0);
 '''
 TRADING_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS holder_checks(buy_id TEXT PRIMARY KEY, due REAL NOT NULL,
+ min_slot INTEGER NOT NULL, minimum INTEGER NOT NULL, state TEXT NOT NULL, updated REAL NOT NULL, detail TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS holder_checks_due ON holder_checks(state,due);
 CREATE TABLE IF NOT EXISTS processed_buy_fills(order_id TEXT PRIMARY KEY, signature TEXT NOT NULL,
  slot INTEGER NOT NULL, amount TEXT NOT NULL, observed REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS dev_sell_watches(buy_id TEXT PRIMARY KEY,dev TEXT NOT NULL,create_slot INTEGER NOT NULL);

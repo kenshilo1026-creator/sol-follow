@@ -162,6 +162,9 @@ class Config:
     grpc_endpoint: str = 'https://solana-mainnet.streaming.alchemy.com'
     public_timeout: float = 2.0
     history_rps: int = 2
+    holder_check_enabled: bool = True
+    holder_check_seconds: int = 10
+    min_holders: int = 5
     take_profit_poll_seconds: int = 5
     take_profit_rules_path: str = "take_profit_rules.json"
     funding_workers: int = 4
@@ -370,6 +373,9 @@ def load(root=ROOT, env=None):
         grpc_endpoint=endpoint,
         public_timeout=integer('SOL_PUBLIC_RPC_TIMEOUT_MS', 2000, 100, 8000)/1000,
         history_rps=integer('SOL_BACKGROUND_RPC_RPS', 2, 1, 20),
+        holder_check_enabled=boolean(get('SOL_POST_BUY_HOLDER_CHECK_ENABLED','true')),
+        holder_check_seconds=integer('SOL_POST_BUY_HOLDER_CHECK_SECONDS',10,1,300),
+        min_holders=integer('SOL_POST_BUY_MIN_HOLDERS',5,1,1000),
         take_profit_poll_seconds=integer('SOL_TAKE_PROFIT_POLL_SECONDS',5,1,300),
         take_profit_rules_path=get('SOL_TAKE_PROFIT_RULES_PATH','take_profit_rules.json'),
         funding_workers=integer('SOL_FUNDING_WORKERS', 4, 1, 8),
