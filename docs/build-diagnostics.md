@@ -105,3 +105,27 @@ Counters reset when the Node worker restarts. Batch counters count logical cache
 HTTP attempts, not Alchemy CU or per-provider retries/hedges, and do not cover
 Python or SDK reads bypassing AccountCache. Compare consecutive health records
 and the Alchemy dashboard over the same interval to assess savings.
+
+
+## WebSocket interruption during execution
+
+A socket close/error still clears account snapshots and continuity. It no longer
+cancels an independent foreground HTTP read solely because the socket changed.
+Only a complete HTTP batch at or above the original required slot may finish
+across that gap; it is not installed into the new cache generation. Mixed old
+cache hits, forced background baselines, and old-slot replies remain rejected.
+The existing HTTP deadline, retries, simulation and minOut checks are unchanged.
+No extra RPC or longer buy deadline is introduced.
+
+Processed-fork/explicit invalidation and cache shutdown still cancel reads and
+reject the build. A successfully simulated unsigned build may survive a socket
+interruption; other worker operations retain their generation guard. Background
+recovery continues to wait for subscription acknowledgement and establish a new
+baseline before reusing continuous snapshots.
+
+`cache_lifecycle` records start/end cache and execution generations plus the last
+invalidation reason. Execution generation changes indicate hard invalidation,
+even if a later socket event overwrote `last_invalidation`. The last reason is
+not a full event history. `reads[].continued_after_disconnect=true` identifies
+fresh HTTP results accepted across a socket interruption. Older audits without
+these fields cannot distinguish the final interruption cause reliably.

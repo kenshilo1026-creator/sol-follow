@@ -30,6 +30,11 @@ async function handle(message){
     if(input.operation==='build'&&!background)
       send({id,progress:{stage,phase,ms:Math.round((performance.now()-received)*1000)/1000}});
   };
+  let generation,executionGeneration;
+  const cacheLifecycle=()=>{if(cache&&generation!==undefined)input._buildEvidence.cache_lifecycle={
+    generation_start:generation,generation_end:cache.generation,
+    execution_generation_start:executionGeneration,execution_generation_end:cache.executionGeneration,
+    last_invalidation:cache.lastInvalidation};};
   if(foreground)gate.enter();
   try{
     progress('received');
@@ -49,7 +54,7 @@ async function handle(message){
     // Register core settings even if blockhash bootstrap fails; ordinary route
     // churn must not evict them. Recovery always yields to active executions.
     cache.keepShared(createFast.common,()=>gate.wait(),{pin:true});
-    const generation=cache.generation;
+    generation=cache.generation;executionGeneration=cache.executionGeneration;
     const wait=background?()=>gate.wait():async()=>{};
     const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);
     const cachedConnection=cache.view(cacheOnly||background?0:input.minSlot,cacheOnly,
@@ -86,14 +91,19 @@ async function handle(message){
       await connection.getMultipleAccountsInfo(input.primeAccounts.map(k=>new web3.PublicKey(k)));
       result={warmed:true};
     }else {progress('build');result=await build(input,connection);}
-    if(generation!==cache.generation)throw Error('cache-disconnected');
+    // Successful simulation still checks the original source slot. A socket
+    // outage alone must not discard that completed unsigned transaction.
+    if(cache.closed||executionGeneration!==cache.executionGeneration
+      ||(input.operation!=='build'&&generation!==cache.generation))throw Error('cache-disconnected');
+    cacheLifecycle();
+    if(input.operation==='build')result.buildDiagnostics=require('./build-diagnostics.cjs').snapshot(input);
     if(input.operation==='build')result.buildTiming={totalMs:Math.round((performance.now()-started)*1000)/1000,
       createFast:!!createFast.hint(input),localCreate:result.localCreate,
       rpc:require('./catchup-budget.cjs').transport(),calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
     progress('ready');
     send({id,result,stats:cacheStats()});
-  }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
+  }catch(e){cacheLifecycle();send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
     ...(e.simulationDetails?{simulationDetails:e.simulationDetails}:{}),
     buildDiagnostics:require('./build-diagnostics.cjs').snapshot(input),

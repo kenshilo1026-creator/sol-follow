@@ -361,3 +361,42 @@ test('logical HTTP stats separate warm, repair and foreground misses without cou
   assert.equal(cache.readStats.warm_batches,1);assert.equal(cache.readStats.warm_accounts,1);
   assert.equal(cache.readStats.demand_batches,1);assert.equal(cache.readStats.repair_batches,0);
 });
+
+
+test('websocket gap does not cancel a complete HTTP batch at the source slot',async t=>{
+  for(const event of ['close','error']){
+    const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+    const pending=stalledRpc(r),keys=[key(),key()],evidence=[];
+    const read=cache.view(101,false,{trace:x=>evidence.push(x)}).getMultipleAccountsInfo(keys);
+    await tick();r._rpcWebSocket.emit(event);await tick();
+    assert.equal(pending[0].signal.aborted,false);assert.equal(cache.rows.size,0);
+    assert.equal(pending[0].config.minContextSlot,101);
+    pending[0].resolve({context:{slot:101},value:[{data:Buffer.from('a')},{data:Buffer.from('b')}]});
+    assert.deepEqual((await read).map(x=>x.data.toString()),['a','b']);
+    assert.equal(cache.rows.size,0);assert.equal(cache.readWaiters.size,0);
+    assert.equal(evidence[0].continued_after_disconnect,true);
+  }
+});
+
+test('websocket gap never permits an old-slot HTTP reply, old cache hit or a real fork',async t=>{
+  for(const mode of ['old-slot','partial','fork']){
+    const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+    const a=key(),b=key();if(mode==='partial')cache.record(String(a),{data:Buffer.from('cached')},101);
+    const pending=stalledRpc(r),read=cache.view(101).getMultipleAccountsInfo([a,b]);
+    const rejected=assert.rejects(read,mode==='old-slot'?/cache-slot-behind/:/cache-disconnected/);
+    await tick();r._rpcWebSocket.emit('close');
+    if(mode==='fork')cache.invalidate({subscriptionsLost:false});
+    else pending[0].resolve({context:{slot:mode==='old-slot'?100:101},value:Array(mode==='partial'?1:2).fill({data:Buffer.from('fresh')})});
+    await rejected;assert.equal(cache.rows.size,0);assert.equal(cache.readWaiters.size,0);
+    assert.equal(pending[0].signal.aborted,true);
+  }
+});
+
+test('fresh epoch HTTP survives socket loss but does not seed the next cache generation',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  let finish;r.getEpochInfo=()=>new Promise(resolve=>finish=resolve);
+  const read=cache.view(101).getEpochInfo();await tick();r._rpcWebSocket.emit('close');
+  finish({epoch:8,absoluteSlot:101});assert.equal((await read).epoch,8);assert.equal(cache.misc.size,0);
+  const failed=cache.view(101).getEpochInfo(),rejected=assert.rejects(failed,/cache-disconnected/);
+  await tick();cache.invalidate({subscriptionsLost:false});finish({epoch:8,absoluteSlot:101});await rejected;
+});

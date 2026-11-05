@@ -19,6 +19,10 @@ def sanitize(value):
         out.update({k:obj[k] for k,allowed in (enums or {}).items() if isinstance(obj.get(k),str) and obj[k] in allowed})
         return out
     result=fields(value,('source_slot',))
+    lifecycle=fields(value.get('cache_lifecycle'),('generation_start','generation_end',
+        'execution_generation_start','execution_generation_end'),enums={'last_invalidation':{
+        'none','generation-invalidated','websocket-close','websocket-error'}})
+    if lifecycle:result['cache_lifecycle']=lifecycle
     quote=value.get('quote')
     if isinstance(quote,dict):
         result['quote']={k:quote[k] for k in ('amount','quoted_out','min_out','mint_supply',
@@ -33,7 +37,7 @@ def sanitize(value):
     if isinstance(reads,list):
         result['reads']=[]
         for read in reads[:16]:
-            r=fields(read,('ms','response_slot'),enums={'scope':{'quote'},'phase':{'cache','shared','projection'},
+            r=fields(read,('ms','response_slot'),('continued_after_disconnect',),enums={'scope':{'quote'},'phase':{'cache','shared','projection'},
                 'outcome':{'cache-hit','cache-only-miss','pending','websocket','http','unavailable'}})
             if not r:continue
             r['accounts']=[]

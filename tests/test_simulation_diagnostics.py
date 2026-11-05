@@ -135,3 +135,18 @@ async def test_completed_curve_executor_emits_only_one_alert_without_submit(conf
     alerts=[args for args,kwargs in notices.items if kwargs.get('alert')]
     assert len(alerts)==1 and '曲線已完成，跳過買入' in telegram_message(*alerts[0])
     assert store.order(oid)['signature'] is None and not rpc.calls
+
+
+def test_cache_lifecycle_survives_failure_ipc_and_drops_untrusted_values():
+    from chain_common.build_diagnostics import sanitize
+    evidence={'cache_lifecycle':{'generation_start':2,'generation_end':3,
+        'execution_generation_start':1,'execution_generation_end':1,
+        'last_invalidation':'websocket-close'},
+        'reads':[{'phase':'cache','outcome':'http','continued_after_disconnect':True,'accounts':[]}]}
+    with pytest.raises(BuildError) as caught:
+        result_or_error({'error':'cache-disconnected','buildDiagnostics':evidence})
+    assert caught.value.build_diagnostics==evidence
+    assert sanitize({'cache_lifecycle':{'generation_start':True,'generation_end':-1,
+        'execution_generation_start':float('nan'),'last_invalidation':'https://secret'},
+        'reads':[{'phase':'cache','continued_after_disconnect':'secret'}]})=={
+            'reads':[{'phase':'cache','accounts':[]}]}

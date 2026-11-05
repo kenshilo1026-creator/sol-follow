@@ -179,3 +179,31 @@ test('native Stonk verifier reproduces real create-buy receipt including platfor
   verify(value,tx,args);
   assert.throws(()=>verify(value,tx,{...args,minOut:minOut+1n}),/stonk-fill-rejected/);
 });
+
+
+test('Pump build survives socket loss during shared HTTP read and still simulates at source slot',async t=>{
+  const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
+  const {EventEmitter}=require('node:events');
+  const input=configured(sample('create_CBL')),common=load('pump_native_accounts.json');
+  const socket=new EventEmitter();let reads=0,simulations=0;
+  const rpc={_rpcWebSocket:socket,
+    async getMultipleAccountsInfoAndContext(keys,config){
+      reads++;assert.equal(config.minContextSlot,input.minSlot);
+      assert.deepEqual(keys.map(String),[pump.GLOBAL_PDA.toBase58(),pump.PUMP_FEE_CONFIG_PDA.toBase58()]);
+      socket.emit('close');
+      return {context:{slot:input.minSlot},value:keys.map(k=>common.get(String(k)))};
+    },
+    async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};},
+    async simulateTransaction(tx,options){
+      simulations++;assert.equal(options.minContextSlot,input.minSlot);
+      return {context:{slot:input.minSlot},value:{err:null,unitsConsumed:100000,
+        accounts:options.accounts?[mintResponse(input)]:undefined}};
+    }};
+  const cache=new AccountCache(rpc,{commitment:'processed'});t.after(()=>cache.close());
+  const evidence=[],connection=cache.view(input.minSlot,false,{trace:r=>evidence.push(r)});
+  const result=await build(input,connection);
+  assert.equal(reads,1);assert.equal(simulations,1);assert(BigInt(result.minOut)>0n);
+  assert.equal(result.priorityFee.chargedLamports,'200000');
+  assert.equal(cache.rows.size,0);assert.equal(cache.executionGeneration,0);
+  assert(evidence.some(r=>r.continued_after_disconnect));
+});

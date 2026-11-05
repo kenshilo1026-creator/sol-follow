@@ -10,7 +10,7 @@ class AccountCache {
     this.losses=new Map();this.repairTimer=null;this.repairScheduled=false;this.repairBusy=false;
     this.readStats={demand_batches:0,demand_accounts:0,warm_batches:0,warm_accounts:0,repair_batches:0,repair_accounts:0,
       null_baselines:0,invalidations:0,evictions:0,subscription_gaps:0};this.readWaiters=new Set();this.wsReadWins=0;
-    this.generation=0;this.hits=0;this.misses=0;this.closed=false;this.head=0;this.pulseAt=null;this.clock=null;
+    this.generation=0;this.executionGeneration=0;this.lastInvalidation='none';this.hits=0;this.misses=0;this.closed=false;this.head=0;this.pulseAt=null;this.clock=null;
     connection._rpcWebSocket?.on('close',()=>this.invalidate({reason:'websocket-close'}));
     connection._rpcWebSocket?.on('error',()=>this.invalidate({subscriptionsLost:false,reason:'websocket-error'}));
     if(connection.onSlotChange){
@@ -151,12 +151,15 @@ class AccountCache {
       websocket_connected:this.rpc._rpcWebSocketConnected===true,pulse_age_ms:this.pulseAt===null?null:Date.now()-this.pulseAt};
   }
   async firstReady(keys,names,config,gen,shared,force,category='demand'){
-    const minSlot=config.minContextSlot||0,controller=new AbortController();
+    const minSlot=config.minContextSlot||0,controller=new AbortController(),executionGeneration=this.executionGeneration;
     let changed,settled=false;
     const websocket=new Promise((resolve,reject)=>{
       changed=()=>{
         if(settled)return;
-        if(this.closed||gen!==this.generation){settled=true;reject(Error('cache-disconnected'));return;}
+        if(this.closed||executionGeneration!==this.executionGeneration){settled=true;reject(Error('cache-disconnected'));return;}
+        // Losing the account websocket invalidates cached continuity, not the
+        // independent HTTP request. Keep its original slot and deadline.
+        if(gen!==this.generation)return;
         if(force)return; // Post-ACK baselines must actually complete their HTTP read.
         const rows=names.map(k=>this.rows.get(k));
         if(rows.every((row,i)=>this.validShared(row,minSlot,names[i],shared))){
@@ -185,7 +188,11 @@ class AccountCache {
     if(evidence)trace(evidence);
     if(!missing.length){this.hits+=keys.length;return {context:{slot:Math.min(...rows.map(r=>r.slot))},value:rows.map(r=>r.value)};}
     if(cacheOnly){if(evidence)evidence.outcome='cache-only-miss';throw Error('price-cache-miss');}
-    await wait();const gen=this.generation;this.misses+=missing.length;
+    const beforeWait=this.generation;
+    await wait();const gen=this.generation,executionGeneration=this.executionGeneration;
+    // A partial cached batch must not reuse pre-wait rows across invalidation.
+    if(beforeWait!==gen&&missing.length!==keys.length)throw Error('cache-disconnected');
+    this.misses+=missing.length;
     missing.forEach(i=>this.watch(names[i]));
     const versions=missing.map(i=>this.watchState.get(names[i])?.version);
     const acked=missing.map(i=>this.watchState.get(names[i])?.subscribed);
@@ -195,8 +202,16 @@ class AccountCache {
       return result;
     },error=>{if(evidence)evidence.outcome='unavailable';throw error;})
       .finally(()=>{if(evidence)evidence.ms=Math.round((performance.now()-began)*1000)/1000;});
-    if(gen!==this.generation)throw Error('cache-disconnected');
-    if(!result.fromWebsocket&&result.context.slot<minSlot)throw Error('cache-slot-behind');
+    if(this.closed||executionGeneration!==this.executionGeneration)throw Error('cache-disconnected');
+    if(!Number.isSafeInteger(result.context?.slot)||result.context.slot<minSlot
+      ||!Array.isArray(result.value)||result.value.length!==missing.length)throw Error('cache-slot-behind');
+    if(gen!==this.generation){
+      // Only a complete fresh HTTP batch can finish across a websocket gap.
+      // Do not publish it into the new cache generation or mix old cache hits.
+      if(result.fromWebsocket||missing.length!==keys.length||force)throw Error('cache-disconnected');
+      if(evidence)evidence.continued_after_disconnect=true;
+      return result;
+    }
     const fetched=new Map(missing.map((index,i)=>[names[index],{value:result.value[i],slot:result.context.slot,at:Date.now(),continuous:false}]));
     if(!result.fromWebsocket)missing.forEach((index,i)=>{
       const state=this.watchState.get(names[index]);
@@ -209,6 +224,8 @@ class AccountCache {
   }
   invalidate({subscriptionsLost=true,reason='generation-invalidated'}={}){
     this.readStats.invalidations++;
+    this.lastInvalidation=reason;
+    if(!['websocket-close','websocket-error'].includes(reason))this.executionGeneration++;
     for(const k of new Set([...this.rows.keys(),...this.subscriptions.keys()]))this.noteLoss(k,reason);
     this.repairs.clear();
     this.generation++;this.rows.clear();this.misc.clear();this.clock=null;this.pulseAt=null;this.head=0;
@@ -271,9 +288,10 @@ class AccountCache {
         if(r&&((age>=0&&age<=cache.ttlMs&&r.value.absoluteSlot>=minSlot)||
           (cache.healthy()&&clock&&Date.now()-clock.at>=0&&Date.now()-clock.at<=cache.ttlMs&&clock.slot>=minSlot&&clock.epoch===r.value.epoch)))return r.value;
         if(cacheOnly)throw Error('price-cache-miss');
-        await wait();const gen=cache.generation;
-        const value=await rpc.getEpochInfo(config());if(gen!==cache.generation)throw Error('cache-disconnected');
-        cache.misc.set('epoch',{at:Date.now(),value});return value;
+        await wait();const gen=cache.generation,executionGeneration=cache.executionGeneration;
+        const value=await rpc.getEpochInfo(config());
+        if(cache.closed||executionGeneration!==cache.executionGeneration)throw Error('cache-disconnected');
+        if(gen===cache.generation)cache.misc.set('epoch',{at:Date.now(),value});return value;
       },
     };
     return new Proxy(rpc,{get(target,p){

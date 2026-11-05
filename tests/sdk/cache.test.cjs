@@ -35,7 +35,7 @@ test('websocket refresh, eviction, reconnect invalidation and in-flight disconne
   await cache.view().getAccountInfo(key());await cache.view().getAccountInfo(key());
   assert(cache.subscriptions.size<=2);
   r.getMultipleAccountsInfoAndContext=async()=>{r._rpcWebSocket.emit('close');return {context:{slot:200},value:[{}]};};
-  await assert.rejects(cache.view(200).getAccountInfo(a),/cache-disconnected/);assert.equal(cache.rows.size,0);
+  assert.deepEqual(await cache.view(200).getAccountInfo(a),{});assert.equal(cache.rows.size,0);
 });
 test('real JSON-lines worker shares state across requests and enforces a newer slot', {timeout:15000},async t=>{
   const http=require('node:http'),{spawn}=require('node:child_process'),readline=require('node:readline'),path=require('node:path');
