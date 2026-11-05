@@ -329,3 +329,85 @@ async def test_stream_dev_and_ata_delivery_uses_one_durable_commit(config,store,
     worker.stream_event('dev-sale',raw['slot'],list(worker.watches))
     assert writes==['trading']
     assert len(store.rows('trading','SELECT * FROM dev_sell_events'))==1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('when',['before-read','during-read','read-error','restart'])
+async def test_failed_buy_discards_legacy_pending_sale_without_alert_or_sell(config,store,when):
+    worker,engine,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.market_event(dev,'dev-sale',raw['slot'])
+    with store.db('trading') as c:
+        c.execute('DELETE FROM positions')
+        c.execute("UPDATE orders SET state='reserved',signature=NULL,raw=NULL WHERE id=?",(oid,))
+    original=reader.transaction
+    if when in ('before-read','restart'):
+        # Reproduce old deployed data: failed order but watches/inbox still exist.
+        store.update_order(oid,state='failed')
+    else:
+        async def delayed(*args,**kwargs):
+            store.fail_order(oid,'cache-disconnected')
+            if when=='read-error':raise TimeoutError()
+            return await original(*args,**kwargs)
+        reader.transaction=delayed
+    if when=='restart':worker=DevSell(engine.config,store,reader,Notices(),engine)
+    await worker.once();await engine.once()
+    assert reader.calls==(1 if when=='during-read' else 0)
+    assert not builds and not store.rows('trading','SELECT * FROM dev_exits')
+    assert not store.rows('trading','SELECT * FROM dev_sell_watches')
+    assert not worker.watches and not worker.history
+    assert store.rows('trading','SELECT state,reason FROM dev_sell_events')==[{'state':'ignored','reason':'buy-failed'}]
+    worker.market_event(dev,'late-sale',raw['slot']+1)
+    await worker.once()
+    assert len(store.rows('trading','SELECT * FROM dev_sell_events'))==1
+    assert not any(kw.get('alert') for args,kw in worker.notices.items+engine.notices.items)
+
+
+@pytest.mark.asyncio
+async def test_executor_build_failure_immediately_unregisters_and_cancels_unsigned_exit(config,store):
+    from chain_common.rpc import Priority
+    from trade_execution.executor import Executor
+    from trade_execution.builder import BuildError
+    from tests.test_pump_buy import setup_order,RPC
+    cfg,route,oid,_=setup_order(config,store)
+    class Exit:
+        next={}
+    monitor=DevSell(cfg,store,None,Notices(),Exit())
+    with store.db('trading') as c:
+        c.execute('INSERT INTO dev_sell_watches VALUES (?,?,?)',(oid,route.trade.wallet,route.trade.slot))
+        # An exit may have been armed before the unsigned buy failed.
+        c.execute("INSERT INTO dev_exits(buy_id,state,updated) VALUES (?,'waiting',0)",(oid,))
+    monitor.register(oid,route)
+    monitor.market_event(route.trade.wallet,'sale-hint',route.trade.slot+1)
+    async def failed(*args):raise BuildError('cache-disconnected')
+    executor=Executor(cfg,store,RPC(),Notices(),Priority(),failed);executor.dev_sell=monitor
+    await executor.buy(oid,route)
+    assert store.order(oid)['state']=='failed'
+    assert not monitor.watches and not monitor.history
+    assert not store.rows('trading','SELECT * FROM dev_sell_watches')
+    assert store.rows('trading','SELECT state,reason FROM dev_exits')==[{'state':'cancelled','reason':'buy-failed'}]
+    assert store.rows('trading','SELECT state FROM dev_sell_events')==[{'state':'ignored'}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state',['signed','submitted','unknown','confirmed'])
+async def test_unresolved_buy_keeps_watch_and_sale_protection(config,store,state):
+    worker,engine,reader,oid,dev,raw,builds=await armed(config,store)
+    with store.db('trading') as c:c.execute('DELETE FROM positions')
+    store.update_order(oid,state=state)
+    store.retire_failed_dev_watches()
+    assert not worker.discard_failed(oid)
+    assert dev in worker.watch_addresses()
+    worker.stream_receipt(raw,time.time())
+    assert store.rows('trading','SELECT state FROM dev_exits')==[{'state':'waiting'}]
+    assert store.rows('trading','SELECT * FROM dev_sell_watches')
+
+
+@pytest.mark.asyncio
+async def test_failure_cleanup_retains_already_signed_exit_and_sale_audit(config,store):
+    worker,engine,reader,oid,dev,raw,builds=await armed(config,store)
+    worker.stream_receipt(raw,time.time())
+    engine.update(oid,state='unknown',signature='signed-exit',raw='durable')
+    store.fail_order(oid,'finalized-transaction-error')
+    job=store.rows('trading','SELECT * FROM dev_exits')[0]
+    assert job['signature']=='signed-exit' and job['raw']=='durable' and job['state']=='unknown'
+    assert store.rows('trading','SELECT state FROM dev_sell_events')==[{'state':'triggered'}]

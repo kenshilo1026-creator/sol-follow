@@ -597,6 +597,26 @@ class Store:
             c.execute('BEGIN IMMEDIATE')
             c.execute('UPDATE orders SET state=?,reason=?,updated=? WHERE id=?', (state, reason, time.time(), oid))
             c.execute('DELETE FROM signals WHERE order_id=?', (oid,))
+            if state=='failed':self._clear_failed_dev_watch(c,oid)
+            c.commit()
+
+    @staticmethod
+    def _clear_failed_dev_watch(c,oid):
+        # Preserve sale evidence and any already signed exit for reconciliation.
+        c.execute('DELETE FROM dev_sell_watches WHERE buy_id=?',(oid,))
+        c.execute("UPDATE dev_sell_events SET state='ignored',reason='buy-failed' WHERE buy_id=? AND state='pending'",(oid,))
+        c.execute("UPDATE dev_exits SET state='cancelled',reason='buy-failed',updated=? "
+                  "WHERE buy_id=? AND signature IS NULL AND state='waiting'",(time.time(),oid))
+
+    def retire_failed_dev_watches(self,oid=None):
+        with self.db('trading') as c:
+            c.execute('BEGIN IMMEDIATE')
+            query="SELECT id FROM orders WHERE side='buy' AND state='failed'"
+            if oid is None:
+                query+=" AND (id IN (SELECT buy_id FROM dev_sell_watches) OR id IN (SELECT buy_id FROM dev_sell_events WHERE state='pending') OR id IN (SELECT buy_id FROM dev_exits WHERE state='waiting' AND signature IS NULL))"
+            else:query+=' AND id=?'
+            for row in c.execute(query,() if oid is None else (oid,)).fetchall():
+                self._clear_failed_dev_watch(c,row['id'])
             c.commit()
 
     def fill(self, oid, tokens, quote, now=None):

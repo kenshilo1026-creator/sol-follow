@@ -204,6 +204,7 @@ class Service:
                 if market is not None:market.refresh_background()
                 executor=getattr(self,'executor',None) or Executor(self.config,self.store,rpc,self.notices,self.priority,
                                                                builder=self.quote_builder)
+                if dev_sell is not None:executor.dev_sell=dev_sell
                 await executor.buy(oid,route)
         # A live create must reach the cached builder before unrelated funding
         # history/account RPCs. The entry above still requires an existing
@@ -427,6 +428,7 @@ class Service:
             self.take_profit=TakeProfit(self.config,self.store,rpc,self.notices,self.priority,
                                        flights=self.exit_flights,reconcile_rpc=self.execution_reads)
             self.dev_sell=DevSell(self.config,self.store,self.execution_reads,self.notices,self.dev_exit)
+            self.executor.dev_sell=self.dev_sell
             if grpc_mode:
                 self.hotlist_feed.position_watch=self.dev_sell.watch_addresses
                 self.hotlist_feed.position_event=self.dev_sell.stream_event

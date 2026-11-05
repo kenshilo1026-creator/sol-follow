@@ -85,6 +85,7 @@ def sold_amount(tx,dev,mint):
 class DevSell:
     def __init__(self,config,store,rpc,notices,exit_engine):
         self.config,self.store,self.rpc,self.notices,self.exit=config,store,rpc,notices,exit_engine
+        self.store.retire_failed_dev_watches()  # Retire legacy failed-buy inboxes on restart.
         self.wake=asyncio.Event();self.watches={}
         # Bounded ingress hints bridge create-worker scheduling. These are not
         # sale proofs: the durable consumer still verifies confirmed receipts.
@@ -92,8 +93,24 @@ class DevSell:
         self.recent_sales=deque(maxlen=2048)
         self.history={};self.history_latest={};self.history_wake=asyncio.Event()
 
+    def unregister(self,oid):
+        for account,items in list(self.watches.items()):
+            remaining=[item for item in items if item['id']!=oid]
+            if remaining:self.watches[account]=remaining
+            else:
+                self.watches.pop(account,None)
+                self.history.pop(account,None);self.history_latest.pop(account,None)
+        self.exit.next.pop(oid,None)
+
+    def discard_failed(self,oid):
+        if self.store.order(oid)['state']!='failed':return False
+        self.store.retire_failed_dev_watches(oid)
+        self.unregister(oid)
+        return True
+
     def register(self,oid,route):
         """Install one reserved buy locally, without a global scan or RPC."""
+        if self.discard_failed(oid):return
         buy=self.store.order(oid)
         dev=route.trade.wallet
         item={**buy,'dev':dev,'create_slot':route.trade.slot}
@@ -250,7 +267,8 @@ class DevSell:
                 if not isinstance(rows,list) or any(not isinstance(r,dict) or type(r.get('slot')) is not int
                         or not isinstance(r.get('signature'),str) or not r['signature'] for r in rows):
                     raise ValueError('dev-sell-history-invalid')
-                floor=min(b['create_slot'] for b in self.watches.get(address,()))
+                if address not in self.watches:continue
+                floor=min(b['create_slot'] for b in self.watches[address])
                 if rows and job['latest'] is None:job['latest']=rows[0]['signature']
                 for row in rows:
                     if row.get('err') is None and row['slot']>=floor:
@@ -269,6 +287,7 @@ class DevSell:
                     if job['again']:self.subscribed(address)
             except asyncio.CancelledError:raise
             except Exception as exc:
+                if address not in self.watches:continue
                 if time.time()-job['first']>=600:
                     self.history.pop(address,None)
                     self.notices.emit('dev sell catch-up incomplete',{'address':address,'reason':type(exc).__name__},
@@ -296,8 +315,9 @@ class DevSell:
         # affected buys in one commit rather than fsync twice for the same event.
         with self.store.db('trading') as c:
             c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
-            c.executemany('INSERT OR IGNORE INTO dev_sell_events(signature,buy_id,slot,due,first_seen) VALUES (?,?,?,?,?)',
-                          [(signature,buy_id,slot,now,now) for buy_id in buys])
+            c.executemany("INSERT OR IGNORE INTO dev_sell_events(signature,buy_id,slot,due,first_seen) "
+                          "SELECT ?,id,?,?,? FROM orders WHERE id=? AND state!='failed'",
+                          [(signature,slot,now,now,buy_id) for buy_id in buys])
             c.commit()
         self.wake.set()
 
@@ -307,6 +327,7 @@ class DevSell:
         receipts={}
         for event in rows:
             buy=self.store.order(event['buy_id']);signature=event['signature']
+            if self.discard_failed(buy['id']):continue
             try:
                 existing=self.store.rows('trading','SELECT * FROM dev_exits WHERE buy_id=?',(buy['id'],))
                 if existing and (existing[0]['signature'] or self.exit.live_trigger(buy,existing[0])):
@@ -319,6 +340,7 @@ class DevSell:
                                   (signature,buy['id']))
                     continue
                 if signature not in receipts:receipts[signature]=await self.rpc.transaction(signature,commitment='confirmed')
+                if self.discard_failed(buy['id']):continue
                 existing=self.store.rows('trading','SELECT * FROM dev_exits WHERE buy_id=?',(buy['id'],))
                 if existing and (existing[0]['signature'] or self.exit.live_trigger(buy,existing[0])):continue
                 raw=receipts[signature]
@@ -338,6 +360,7 @@ class DevSell:
                                   (signature,buy['id']))
                     self.watch_addresses()
                     continue
+                if self.discard_failed(buy['id']):continue
                 with self.store.db('trading') as c:
                     c.execute('PRAGMA synchronous=FULL');c.execute('BEGIN IMMEDIATE')
                     if amount:
@@ -353,6 +376,7 @@ class DevSell:
                         key='dev-sell:'+buy['id'],interval=60)
             except asyncio.CancelledError:raise
             except Exception as exc:
+                if self.discard_failed(buy['id']):continue
                 stopped=time.time()-event['first_seen']>=600
                 with self.store.db('trading') as c:
                     c.execute("UPDATE dev_sell_events SET state=?,due=?,attempts=attempts+1,reason=? WHERE signature=? AND buy_id=? AND state='pending'",

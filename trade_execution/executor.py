@@ -208,7 +208,7 @@ class Executor:
             if signed:
                 self.store.update_order(oid,state='unknown')
             else:
-                self.store.fail_order(oid,failure_reason(exc))
+                self.fail_buy(oid,failure_reason(exc))
             trade_record(self.store,route.trade,'execution','unknown' if signed else 'failed',failure_reason(exc),
                          {'order':oid,'execution_stage':stage,'signed':signed,'buy_signature':signature,'timing_ms':timings,
                           'simulation_source':simulation_source,'builder_timing':builder_timing,'build_diagnostics':build_diagnostics,
@@ -230,11 +230,16 @@ class Executor:
                 except Exception:
                     self.notices.emit("builder priority sync deferred",{},key="builder-priority")
 
+    def fail_buy(self,oid,reason):
+        self.store.fail_order(oid,reason)
+        monitor=getattr(self,'dev_sell',None)
+        if monitor is not None:monitor.unregister(oid)
+
     def recover_unsigned(self):
         # An interrupted build has no signed bytes to broadcast. Never turn an
         # old reservation into a fresh buy after a process restart.
         for row in self.store.rows('trading',"SELECT id,mint,mode FROM orders WHERE state='reserved' AND reason=?",(MARKER,)):
-            self.store.fail_order(row['id'],'interrupted-before-signing')
+            self.fail_buy(row['id'],'interrupted-before-signing')
             self.notices.emit('buy rejected',{'order':row['id'],'mint':row['mint'],'mode':row['mode'],
                 'stage':'recovery','reason':'interrupted-before-signing','outcome':'not-submitted'},alert=True)
 
@@ -247,7 +252,7 @@ class Executor:
         for row,status in zip(rows,result['value']):
             if status and status.get('confirmationStatus')=='finalized':
                 if status.get('err') is not None:
-                    self.store.fail_order(row['id'],'finalized-transaction-error')
+                    self.fail_buy(row['id'],'finalized-transaction-error')
                     self.notices.emit('buy failed on chain',{'order':row['id'],'mint':row['mint'],'mode':row['mode'],'signature':row['signature'],
                         'stage':'finalized','reason':'finalized-transaction-error','outcome':'failed'},alert=True)
                     continue
