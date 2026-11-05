@@ -5,6 +5,24 @@ from chain_common.primitives import pubkey
 from chain_common.rpc_diagnostics import rpc_details
 
 
+EXCEPTION_FIELDS = {
+    'category': {'assertion-error','range-error','type-error','syntax-error','reference-error',
+                 'aggregate-error','error','unknown-thrown'},
+    'phase': {'build','compile-message','serialize-transaction','lookup-tables','verify-simulation',
+              'getMultipleAccountsInfo','getMultipleAccountsInfoAndContext','getAccountInfo','getAccountInfoAndContext',
+              'getLatestBlockhash','getAddressLookupTable','getEpochInfo','simulateTransaction','localCreateShared'},
+    'code': {'ERR_ASSERTION','ERR_OUT_OF_RANGE','ERR_BUFFER_OUT_OF_BOUNDS','ERR_INVALID_ARG_TYPE',
+             'ERR_INVALID_ARG_VALUE','ECONNRESET','ECONNREFUSED','ETIMEDOUT','ENOTFOUND','EAI_AGAIN',
+             'UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_SOCKET'},
+}
+
+
+def exception_details(value):
+    if not isinstance(value, dict):return {}
+    return {k:value[k] for k,allowed in EXCEPTION_FIELDS.items()
+            if isinstance(value.get(k),str) and value[k] in allowed}
+
+
 def sanitize(value):
     if not isinstance(value,dict):return {}
     def number(v):return type(v) in (int,float) and math.isfinite(v) and 0<=v<=2**53-1
@@ -19,6 +37,8 @@ def sanitize(value):
         out.update({k:obj[k] for k,allowed in (enums or {}).items() if isinstance(obj.get(k),str) and obj[k] in allowed})
         return out
     result=fields(value,('source_slot',))
+    exception=exception_details(value.get('exception'))
+    if exception:result['exception']=exception
     lifecycle=fields(value.get('cache_lifecycle'),('generation_start','generation_end',
         'execution_generation_start','execution_generation_end'),enums={'last_invalidation':{
         'none','generation-invalidated','websocket-close','websocket-error'}})

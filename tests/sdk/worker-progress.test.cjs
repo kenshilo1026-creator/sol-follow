@@ -24,6 +24,7 @@ test('worker progress precedes final response and carries only fixed diagnostic 
   assert.equal(failure.error,'unknown-route');
   assert.equal(failure.buildDiagnostics.source_slot,0);
   assert.deepEqual(failure.buildDiagnostics.reads,[]);
+  assert.deepEqual(failure.buildDiagnostics.exception,{category:'error',phase:'build'});
   assert(!JSON.stringify(failure.buildDiagnostics).includes('127.0.0.1'));
   assert.deepEqual(Object.keys(ready).sort(),['boot_ms','worker']);
   assert(Number.isFinite(ready.boot_ms)&&ready.boot_ms>=0);

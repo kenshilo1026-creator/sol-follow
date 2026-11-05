@@ -202,6 +202,13 @@ def message(kind, detail):
             value=f'{translated[value]}（{value}）'
         if value is not None:
             lines.append(f'{label}: {value}')
+    if kind == 'buy rejected':
+        from features.notifications.buy_failures import build_timeout_lines
+        lines.extend(build_timeout_lines(detail))
+    from chain_common.build_diagnostics import exception_details
+    exception=exception_details(detail.get('sdk_exception'))
+    if exception:
+        lines.append('組單例外: '+' / '.join(exception[k] for k in ('category','code','phase') if k in exception))
     diagnostic=rpc_details(detail.get('rpc_details'))
     if diagnostic:
         lines.append(f"RPC 方法: {diagnostic['method']}")

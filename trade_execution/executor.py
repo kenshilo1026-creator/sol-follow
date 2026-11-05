@@ -204,6 +204,7 @@ class Executor:
             diagnostics={'rpc_details':rpc_detail} if rpc_detail else {}
             if getattr(exc,'builder_details',None):diagnostics['builder_diagnostics']=exc.builder_details
             if getattr(exc,'build_diagnostics',None):build_diagnostics=exc.build_diagnostics
+            if build_diagnostics.get('exception'):diagnostics['sdk_exception']=build_diagnostics['exception']
             if getattr(exc,'simulation_details',None):diagnostics['simulation_details']=exc.simulation_details
             if signed:
                 self.store.update_order(oid,state='unknown')

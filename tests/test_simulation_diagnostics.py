@@ -158,3 +158,68 @@ def test_last_known_good_setting_evidence_survives_ipc():
              'reason':'last-known-good','last_known_good':True,'age_ms':60000,'row_slot':100}
     value={'reads':[{'phase':'shared','accounts':[account]}]}
     assert sanitize(value)==value
+
+
+def test_simulation_timeout_reports_unfinished_stage_without_claiming_curve_complete():
+    from share_common.notify import telegram_message
+    detail = {'stage': 'build', 'reason': 'signal-expired', 'signed': False,
+              'outcome': 'not-submitted', 'builder_diagnostics': {
+                  'phase': 'worker-response', 'elapsed_ms': 1048.276, 'timeout_s': 1.0473806,
+                  'progress': [
+                      {'stage': 'getLatestBlockhash', 'phase': 'start', 'ms': 9.96},
+                      {'stage': 'getLatestBlockhash', 'phase': 'end', 'ms': 10.343},
+                      {'stage': 'simulateTransaction', 'phase': 'start', 'ms': 21.493}]}}
+    text = telegram_message('buy rejected', detail)
+    assert '原因: signal-expired' in text
+    assert '逾時位置: 模擬（simulateTransaction）已開始，尚未記錄完成' in text
+    assert '本次組單等待上限: 1047.4 ms' in text
+    assert '本次組單等待耗時: 1048.3 ms' in text
+    assert '曲線已完成，跳過買入' not in text and '6005' not in text
+    detail['builder_diagnostics']['progress'].append(
+        {'stage': 'simulateTransaction', 'phase': 'end', 'ms': 25})
+    text = telegram_message('buy rejected', detail)
+    assert '逾時位置: 等待組單 worker 回覆' in text
+    assert '模擬結果: 未取得' not in text
+
+
+def test_timeout_diagnostics_ignore_malformed_and_untrusted_progress():
+    from features.notifications.buy_failures import build_timeout_lines
+    detail = {'stage': 'build', 'reason': 'signal-expired', 'builder_diagnostics': {
+        'phase': [], 'elapsed_ms': float('nan'), 'timeout_s': True,
+        'progress': [None, {'stage': [], 'phase': 'start'},
+                     {'stage': 'https://secret', 'phase': 'start'}]}}
+    assert build_timeout_lines(detail) == []
+    detail['builder_diagnostics'] = {'phase': 'worker-response', 'progress': None}
+    assert build_timeout_lines(detail) == ['逾時位置: 等待組單 worker 回覆']
+    detail['reason'] = 'simulation-rejected'
+    assert build_timeout_lines(detail) == []
+
+
+@pytest.mark.asyncio
+async def test_safe_sdk_exception_reaches_order_audit_and_notification(config,store):
+    from tests.test_pump_buy import setup_order,RPC
+    from trade_execution.executor import Executor
+    from chain_common.rpc import Priority
+    from share_common.notify import telegram_message
+    cfg,route,oid,_=setup_order(config,store)
+    evidence={'exception':{'category':'range-error','phase':'serialize-transaction',
+              'code':'ERR_OUT_OF_RANGE','message':'PRIVATE_KEY','stack':'https://secret'},'source_slot':route.trade.slot}
+    async def builder(*args):
+        result_or_error({'error':'sdk-or-rpc-failed','buildDiagnostics':evidence})
+    notices=Notices();rpc=RPC()
+    await Executor(cfg,store,rpc,notices,Priority(),builder).buy(oid,route)
+    row=store.order(oid)
+    assert row['reason']=='sdk-or-rpc-failed' and row['signature'] is None
+    audit=json.loads(store.rows('audit',"SELECT detail FROM decisions WHERE stage='execution'")[0]['detail'])
+    expected={'category':'range-error','phase':'serialize-transaction','code':'ERR_OUT_OF_RANGE'}
+    assert audit['build_diagnostics']['exception']==expected
+    alerts=[args for args,kwargs in notices.items if kwargs.get('alert')]
+    text=telegram_message(*alerts[0])
+    assert 'range-error / ERR_OUT_OF_RANGE / serialize-transaction' in text
+    assert 'PRIVATE_KEY' not in text+json.dumps(audit) and 'https://secret' not in json.dumps(audit)
+    assert not rpc.calls
+
+
+def test_sdk_exception_enum_validation_drops_untrusted_payload():
+    from chain_common.build_diagnostics import sanitize
+    assert sanitize({'exception':{'category':[], 'phase':'https://secret', 'code':'secret', 'stack':'secret'}})=={}

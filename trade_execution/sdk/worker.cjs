@@ -67,6 +67,7 @@ async function handle(message){
       return async(...args)=>{const began=performance.now();
         if(stages.has(key))progress(key);
         try{return await value.apply(target,args);}
+        catch(e){throw require('./exception-diagnostics.cjs').mark(e,key);}
         finally{if(stages.has(key))progress(key,'end');const row=calls[key]||(calls[key]={count:0,ms:0});row.count++;row.ms+=performance.now()-began;}
       };
     }});
@@ -104,7 +105,7 @@ async function handle(message){
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
     progress('ready');
     send({id,result,stats:cacheStats()});
-  }catch(e){cacheLifecycle();send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
+  }catch(e){cacheLifecycle();require('./exception-diagnostics.cjs').capture(input,e);send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
     ...(e.simulationDetails?{simulationDetails:e.simulationDetails}:{}),
     buildDiagnostics:require('./build-diagnostics.cjs').snapshot(input),

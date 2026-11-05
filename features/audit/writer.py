@@ -1,5 +1,5 @@
 """Indexed local decisions, independent of Telegram and best effort on disk errors."""
-import json
+from features.audit.detail import encode
 import logging
 import time
 import asyncio
@@ -65,8 +65,7 @@ class BufferedDecisions:
 
 def record(store,stage,outcome,reason,*,wallet='',mint='',signature='',event='',detail=None):
     try:
-        encoded=json.dumps(detail or {},ensure_ascii=False,separators=(',',':'))
-        if len(encoded)>8000:encoded=json.dumps({'detail_truncated':True})
+        encoded=encode(detail or {})
         values=(time.time(),wallet,mint,signature,event or signature,stage,outcome,reason,encoded)
         writer=getattr(store,'decision_writer',None)
         if writer is not None:

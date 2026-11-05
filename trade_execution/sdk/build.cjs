@@ -1,5 +1,6 @@
 'use strict';
 const publicRpc=require('./public-rpc.cjs');
+const exceptions=require('./exception-diagnostics.cjs');
 // Pinned SDKs build fresh unsigned instructions. No key loading or broadcast.
 const BN = require('bn.js');
 const risk=require('./risk.cjs');
@@ -84,11 +85,12 @@ function safeMint(mint, allowTransferFee=false) {
   if (!mint.isInitialized) throw Error('uninitialized-mint');
 }
 function compile(user, blockhash, instructions, tables) {
-  const msg = new web3.TransactionMessage({payerKey:user, recentBlockhash:blockhash,
-    instructions}).compileToV0Message(tables);
+  const msg = exceptions.at('compile-message',()=>new web3.TransactionMessage({payerKey:user, recentBlockhash:blockhash,
+    instructions}).compileToV0Message(tables));
   if (msg.header.numRequiredSignatures !== 1) throw Error('unexpected-signer');
   const tx = new web3.VersionedTransaction(msg);
-  if (tx.serialize().length > 1232) {const e=Error('transaction-too-large');e.bytes=tx.serialize().length;throw e;}
+  const bytes=exceptions.at('serialize-transaction',()=>tx.serialize().length);
+  if (bytes > 1232) {const e=Error('transaction-too-large');e.bytes=bytes;throw exceptions.mark(e,'serialize-transaction');}
   return tx;
 }
 
@@ -130,23 +132,23 @@ async function finish(connection,input,user,ixs,check) {
     const key=ix.keys.map(k=>k.pubkey.toBase58()+':'+k.isSigner+':'+k.isWritable).join(',');
     if(created.has(key))return false;created.add(key);return true;
   });
-  const tables = (await Promise.all(input.lookupTables.map(async key =>
-    (await connection.getAddressLookupTable(new web3.PublicKey(key))).value))).filter(Boolean);
+  const tables = (await exceptions.at('lookup-tables',()=>Promise.all(input.lookupTables.map(async key =>
+    (await connection.getAddressLookupTable(new web3.PublicKey(key))).value)))).filter(Boolean);
   if(input.prewarm)return {warmed:true};
   const feeBudget=priorityFee.budget(input);
   const block=await connection.getLatestBlockhash(input.commitment||'confirmed');
   let tx=compile(user,block.blockhash,[...priorityFee.prefix(feeBudget,1400000,true),...ixs],tables);
-  const simulatedTransaction=Buffer.from(tx.serialize()).toString('base64');
-  const simulated=await connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',minContextSlot:input.minSlot,
+  const simulatedTransaction=exceptions.at('serialize-transaction',()=>Buffer.from(tx.serialize()).toString('base64'));
+  const simulated=await exceptions.at('simulateTransaction',()=>connection.simulateTransaction(tx,{sigVerify:false,commitment:input.commitment||'confirmed',minContextSlot:input.minSlot,
     ...(check?.addresses?{accounts:{encoding:'base64',addresses:check.addresses}}:{}),
-    ...(check?.innerInstructions?{innerInstructions:true}:{})});
+    ...(check?.innerInstructions?{innerInstructions:true}:{})}));
   if (simulated.value.err || !Number.isSafeInteger(simulated.value.unitsConsumed)
       || simulated.value.unitsConsumed<=0 || simulated.value.unitsConsumed>1400000)
     throw Object.assign(Error('simulation-rejected'),{simulationDetails:require('./simulation-diagnostics.cjs').details(simulated)});
-  if(check)check.verify(simulated.value.accounts,simulated.value,tx);
+  if(check)exceptions.at('verify-simulation',()=>check.verify(simulated.value.accounts,simulated.value,tx));
   const units=Math.min(1400000,Math.ceil(simulated.value.unitsConsumed*6/5));
   tx=compile(user,block.blockhash,[...priorityFee.prefix(feeBudget,units),...ixs],tables);
-  return {transaction:Buffer.from(tx.serialize()).toString('base64'),lastHeight:block.lastValidBlockHeight,units,
+  return {transaction:exceptions.at('serialize-transaction',()=>Buffer.from(tx.serialize()).toString('base64')),lastHeight:block.lastValidBlockHeight,units,
     // Python verifies the simulated message against the final unsigned message.
     ...priorityFee.detail(feeBudget,units),
     // Only the validated CU limit/price may differ; all swap/minOut/accounts
@@ -201,7 +203,7 @@ async function build(input, injectedConnection) {
     if(input.localCreate)result.localCreate=input.localCreate;
     result.buildDiagnostics=diagnostics.snapshot(input);
     return result;
-  }catch(error){error.buildDiagnostics=diagnostics.snapshot(input);throw error;}
+  }catch(error){exceptions.capture(input,error);error.buildDiagnostics=diagnostics.snapshot(input);throw error;}
 }
 
 async function buildRoute(input, injectedConnection) {

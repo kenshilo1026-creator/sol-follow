@@ -1,5 +1,6 @@
 """Public trade context only: never forward provider bodies, URLs or key errors."""
 import re
+import math
 from decimal import Decimal
 from chain_common.primitives import WSOL, SYSTEM, b58decode
 from chain_common.rpc import RpcError
@@ -74,3 +75,47 @@ def unrecognized_non_sol(tx, routes):
                    'source_signature':tx.signature,'stage':'decode','reason':'unsupported-or-unverified-buy-route'}
         except (ValueError, IndexError, KeyError, TypeError):
             continue
+
+
+def build_timeout_lines(detail):
+    """Describe recorded timeout progress, without inventing a simulation result."""
+    if detail.get('stage') != 'build' or detail.get('reason') not in ('signal-expired', 'route-builder-timeout'):
+        return []
+    diagnostic = detail.get('builder_diagnostics')
+    if not isinstance(diagnostic, dict):
+        return []
+    labels = {'simulateTransaction': '模擬（simulateTransaction）',
+              'getMultipleAccountsInfo': '帳戶讀取（getMultipleAccountsInfo）',
+              'getLatestBlockhash': 'Blockhash 讀取（getLatestBlockhash）',
+              'localCreateShared': '共用設定準備（localCreateShared）'}
+    pending = {}
+    progress = diagnostic.get('progress')
+    for event in progress[-32:] if isinstance(progress, list) else ():
+        if not isinstance(event, dict):
+            continue
+        stage, phase = event.get('stage'), event.get('phase')
+        if not isinstance(stage, str) or stage not in labels:
+            continue
+        if phase == 'start':
+            pending.pop(stage, None)
+            pending[stage] = True
+        elif phase == 'end':
+            pending.pop(stage, None)
+    lines = []
+    if pending:
+        stage = next(reversed(pending))
+        lines.append(f'逾時位置: {labels[stage]}已開始，尚未記錄完成')
+        if stage == 'simulateTransaction':
+            lines.append('模擬結果: 未取得；不能據此判定曲線已完成')
+    else:
+        phases = {'worker-start': '等待組單 worker 啟動',
+                  'worker-write': '傳送組單請求', 'worker-response': '等待組單 worker 回覆'}
+        phase = diagnostic.get('phase')
+        if isinstance(phase, str) and phase in phases:
+            lines.append(f'逾時位置: {phases[phase]}')
+    for key, label, factor in (('timeout_s', '本次組單等待上限', 1000),
+                                ('elapsed_ms', '本次組單等待耗時', 1)):
+        value = diagnostic.get(key)
+        if type(value) in (int, float) and 0 <= value <= 86400000 and math.isfinite(value):
+            lines.append(f'{label}: {value * factor:.1f} ms')
+    return lines
