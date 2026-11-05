@@ -73,7 +73,7 @@ before blockhash bootstrap so a failed blockhash read cannot prevent account
 subscription and recovery. Other quote accounts remain bounded and evictable.
 
 Shared accounts missing a continuous post-subscription baseline are repaired in
-the background, with at most four concurrent repairs and exponential retry
+the background, in batches of at most 64 accounts, one batch at a time, with exponential retry
 backoff from 1 to 30 seconds. Repairs yield to the trading gate, use an independent
 background RPC budget and are deduplicated per account. Successful continuous
 snapshots do not cause periodic HTTP refresh. A real disconnect waits for a new
@@ -86,3 +86,22 @@ Account diagnostics now include `pinned`, `recovery_pending`,
 `subscription-gap`, `baseline-failed`, `websocket-close`, `websocket-error`,
 `generation-invalidated`). They identify future cache-loss paths; the older
 incident's absent rows alone cannot establish which path occurred.
+
+
+## Account-read usage (2026-11-05)
+
+A post-ACK `null` account is now a valid absent-account baseline. It stays
+subscribed for creation updates instead of triggering a perpetual 30-second
+HTTP retry. Foreground source-slot/freshness checks still apply; callers still
+reject missing required pool/mint accounts. ACK recovery is coalesced into
+batches of up to 64 addresses, reducing 130 single-account requests to 3 in the
+controlled test. Transport failures retain backoff and trading priority.
+
+The worker publishes in-memory statistics every 60 seconds, without RPC.
+`health.cache_reads` (full health: `quote_cache.accountReads`) contains cumulative
+`demand_batches/accounts`, `warm_batches/accounts`, `repair_batches/accounts`,
+`null_baselines`, `invalidations`, `evictions`, `subscription_gaps`.
+Counters reset when the Node worker restarts. Batch counters count logical cache
+HTTP attempts, not Alchemy CU or per-provider retries/hedges, and do not cover
+Python or SDK reads bypassing AccountCache. Compare consecutive health records
+and the Alchemy dashboard over the same interval to assess savings.

@@ -392,3 +392,22 @@ async def test_persisted_quote_route_survives_database_reopen_without_old_target
         assert 'quoted_out' not in captured[0] and 'signedTransaction' not in captured[0]
     finally:
         reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_background_cache_stats_update_without_completing_pending_build(config,store):
+    from share_common.notify import health_log
+    builder=manager(config,store);stream=asyncio.StreamReader()
+    class Process:
+        stdout=stream;returncode=None
+        def kill(self):self.returncode=1
+        async def wait(self):return 1
+    process=Process();builder.process=process
+    future=asyncio.get_running_loop().create_future();builder.pending[7]=future
+    reader=asyncio.create_task(builder.read(process))
+    stats={'accountReads':{'repair_batches':3,'repair_accounts':130,'warm_batches':2,'demand_batches':1}}
+    stream.feed_data((json.dumps({'event':'cache-stats','stats':stats})+'\n').encode())
+    await asyncio.sleep(0)
+    assert builder.stats==stats and not future.done()
+    assert health_log({'quote_cache':stats})['cache_reads']==stats['accountReads']
+    future.set_result({});stream.feed_eof();await reader

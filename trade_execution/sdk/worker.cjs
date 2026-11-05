@@ -13,6 +13,11 @@ const createFast=require('./create-fast.cjs');
 const gate=new BackgroundGate();
 let cache,blocks,rpcUrl,cacheGeneration;
 const send=value=>process.stdout.write(JSON.stringify(value)+'\n');
+const cacheStats=()=>({hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,wsReadWins:cache.wsReadWins,
+  accountReads:cache.readStats,blockhashHits:blocks.hits,blockhashMisses:blocks.misses});
+// Telemetry only: no RPC and no need for a build request to observe recovery load.
+const statsTimer=setInterval(()=>{if(cache)send({event:'cache-stats',stats:cacheStats()});},60000);
+statsTimer.unref();
 async function handle(message){
   const {id,input}=message;
   const background=input.prewarm||['warm_limit','bootstrap','shared_warm','quote_warm'].includes(input.operation);
@@ -48,7 +53,7 @@ async function handle(message){
     const wait=background?()=>gate.wait():async()=>{};
     const cacheOnly=['quote_limit','quote_minimum'].includes(input.operation);
     const cachedConnection=cache.view(cacheOnly||background?0:input.minSlot,cacheOnly,
-      {wait,primeReads:input.operation==='quote_warm',trace:row=>input.traceAccounts(row),blockhashCache:blocks,sharedKeys:createFast.hint(input)?createFast.shared(input):[]});
+      {wait,readCategory:background?'warm':'demand',primeReads:input.operation==='quote_warm',trace:row=>input.traceAccounts(row),blockhashCache:blocks,sharedKeys:createFast.hint(input)?createFast.shared(input):[]});
     const started=performance.now(),calls={};
     const connection=new Proxy(cachedConnection,{get(target,key){
       const value=target[key];
@@ -87,8 +92,7 @@ async function handle(message){
       rpc:require('./catchup-budget.cjs').transport(),calls:Object.fromEntries(Object.entries(calls).map(([key,row])=>
         [key,{count:row.count,ms:Math.round(row.ms*1000)/1000}]))};
     progress('ready');
-    send({id,result,stats:{hits:cache.hits,misses:cache.misses,accounts:cache.rows.size,wsReadWins:cache.wsReadWins,
-      blockhashHits:blocks.hits,blockhashMisses:blocks.misses}});
+    send({id,result,stats:cacheStats()});
   }catch(e){send({id,error:REASONS.has(e.message)?e.message:'sdk-or-rpc-failed',
     ...(e.rpcDetails?{rpcDetails:e.rpcDetails}:{}),
     ...(e.simulationDetails?{simulationDetails:e.simulationDetails}:{}),
@@ -104,7 +108,7 @@ lines.on('line',line=>{
     void withReporter(send,()=>require('./catchup-budget.cjs').withCatchupBudget(message.input,()=>handle(message)));
   }catch{process.exitCode=1;lines.close();}
 });
-lines.on('close',()=>{blocks?.close();cache?.close();process.exit();});
+lines.on('close',()=>{clearInterval(statsTimer);blocks?.close();cache?.close();process.exit();});
 
 // Emitted only after synchronous SDK imports and the input handler are ready.
 send({worker:'ready',boot_ms:Math.round((performance.now()-bootStarted)*1000)/1000});

@@ -283,19 +283,37 @@ test('failed baseline retries with backoff, yields to trades, and stops reading 
   r.ack(k);await tick();assert.equal(r.reads,3);assert(cache.rows.get(String(k)).continuous);
 });
 
-test('recovery is deduplicated and bounded and null shared accounts retry',async t=>{
+test('recovery batches accounts and keeps absent accounts until a websocket update',async t=>{
   let now=10000;t.mock.method(Date,'now',()=>now);
   const r=socketRpc(),cache=new AccountCache(r),gate=new BackgroundGate();t.after(()=>cache.close());
   const keys=Array.from({length:8},key);gate.enter();cache.keepShared(keys,()=>gate.wait());
   for(const k of keys)r.ack(k);
-  assert.equal(cache.repairActive.size,4);cache.recoverShared();assert.equal(cache.repairActive.size,4);
-  gate.leave();await tick();cache.recoverShared();await tick();assert.equal(r.reads,8);
+  await tick();assert.equal(cache.repairActive.size,8);cache.recoverShared();assert.equal(cache.repairActive.size,8);
+  assert.equal(r.reads,0);gate.leave();await tick();assert.equal(r.reads,1);
+  assert.equal(cache.readStats.repair_batches,1);assert.equal(cache.readStats.repair_accounts,8);
   const k=keys[0];cache.rows.delete(String(k));
   r.getMultipleAccountsInfoAndContext=async()=>{r.reads++;return {context:{slot:100},value:[null]};};
-  cache.recoverShared();await tick();assert.equal(cache.repairs.get(String(k)).failures,1);
-  cache.recoverShared();await tick();assert.equal(r.reads,9);
-  now+=1000;cache.recoverShared();await tick();assert.equal(r.reads,10);
-  cache.close();now+=30000;cache.recoverShared();await tick();assert.equal(r.reads,10);
+  cache.recoverShared();await tick();assert.equal(cache.repairs.size,0);
+  for(let i=0;i<120;i++){now+=30000;r.pulse({slot:100});cache.recoverShared();await tick();}
+  assert.equal(r.reads,2);assert.equal(cache.readStats.null_baselines,1);
+  assert.equal(await cache.view(0,true).getAccountInfo(k),null);
+  r.update(k,{data:Buffer.from('created')},101);
+  assert.equal((await cache.view(101,true).getAccountInfo(k)).data.toString(),'created');
+  cache.close();cache.recoverShared();await tick();assert.equal(r.reads,2);
+});
+
+test('reconnect batches are capped at 64 accounts and reject invalidated in-flight results',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const keys=Array.from({length:130},key);let sizes=[];
+  const original=r.getMultipleAccountsInfoAndContext;
+  r.getMultipleAccountsInfoAndContext=async function(keys,c){sizes.push(keys.length);return original.call(this,keys,c);};
+  cache.keepShared(keys);for(const k of keys)r.ack(k);await tick();
+  cache.recoverShared();await tick();cache.recoverShared();await tick();
+  assert.deepEqual(sizes,[64,64,2]);assert.equal(cache.rows.size,130);
+  let release;r.getMultipleAccountsInfoAndContext=()=>new Promise(resolve=>release=resolve);
+  cache.invalidate({subscriptionsLost:false});await tick();cache.invalidate();
+  release({context:{slot:101},value:keys.slice(0,64).map(()=>({data:Buffer.from('old')}))});await tick();
+  assert.equal(cache.rows.size,0);assert.equal(cache.repairActive.size,0);
 });
 
 test('recovery starts a background budget even when registered from a buy',async t=>{
@@ -332,4 +350,14 @@ test('missing baseline actually recovers on background timer without another req
   cache.repairTimer.ref(); // Keep this test alive; production timers intentionally unref.
   await done;await tick();assert.equal(r.reads,2);assert(cache.rows.get(String(k)).continuous);
   cache.close();assert.equal(cache.repairTimer,null);
+});
+
+
+test('logical HTTP stats separate warm, repair and foreground misses without counting hits',async t=>{
+  const r=socketRpc(),cache=new AccountCache(r);t.after(()=>cache.close());
+  const a=key(),b=key();const warm=cache.view(0,false,{readCategory:'warm'});
+  await warm.getAccountInfo(a);await warm.getAccountInfo(a);
+  await cache.view().getAccountInfo(b);
+  assert.equal(cache.readStats.warm_batches,1);assert.equal(cache.readStats.warm_accounts,1);
+  assert.equal(cache.readStats.demand_batches,1);assert.equal(cache.readStats.repair_batches,0);
 });

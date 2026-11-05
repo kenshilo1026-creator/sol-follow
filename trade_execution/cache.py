@@ -130,6 +130,10 @@ class CachedBuilder:
                         self.worker_ready = process
                         self.worker_boot_ms = round(boot,3)
                     continue
+                if row.get('event')=='cache-stats':
+                    if process is self.process and isinstance(row.get('stats'),dict):
+                        self.stats=row['stats']
+                    continue
                 if sdk_event(row):
                     continue
                 if row.get('recipe'):

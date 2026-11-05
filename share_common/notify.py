@@ -28,6 +28,8 @@ def health_log(detail):
         'execution': detail.get('execution_rpc', {}).get('rate_limited', detail.get('rpc_429', 0)),
         'reads': detail.get('execution_reads', {}).get('rate_limited', 0),
     }
+    reads=detail.get('quote_cache',{}).get('accountReads')
+    if isinstance(reads,dict) and reads:result['cache_reads']=reads
     market = detail.get('market_feed', {})
     if market.get('watched') or market.get('uncovered'):
         result['sell_uncovered'] = market.get('uncovered', 0)
