@@ -6,6 +6,7 @@ class AccountCache {
   constructor(connection,{ttlMs=2000,maxAccounts=512,commitment='confirmed'}={}){
     this.commitment=commitment;this.rpc=connection;this.ttlMs=ttlMs;this.max=maxAccounts;
     this.rows=new Map();this.misc=new Map();this.subscriptions=new Map();this.watchState=new Map();
+    this.settings=new Set();this.lastSettings=new Map();this.settingSlots=new Map();
     this.sharedWait=new Map();this.pinned=new Set();this.repairs=new Map();this.repairActive=new Set();
     this.losses=new Map();this.repairTimer=null;this.repairScheduled=false;this.repairBusy=false;
     this.readStats={demand_batches:0,demand_accounts:0,warm_batches:0,warm_accounts:0,repair_batches:0,repair_accounts:0,
@@ -45,7 +46,7 @@ class AccountCache {
       if(this.watchState.get(k)!==state)return;
       state.version++;state.subscribed=next==='subscribed';
       if(!state.subscribed){this.readStats.subscription_gaps++;this.rows.delete(k);this.noteLoss(k,'subscription-gap');}
-      else if(this.sharedWait.has(k))void this.baselineShared(k,state);
+      else if(this.sharedWait.has(k)){this.repairs.delete(k);void this.baselineShared(k,state);}
     });
     this.trim();
   }
@@ -54,6 +55,7 @@ class AccountCache {
       const k=[...this.rows.keys(),...this.subscriptions.keys()].find(k=>!this.pinned.has(k));
       if(k===undefined)break; // Only the fixed protocol settings may be pinned.
       this.readStats.evictions++;this.noteLoss(k,'evicted');this.repairs.delete(k);
+      this.settings.delete(k);this.lastSettings.delete(k);this.settingSlots.delete(k);
       this.sharedWait.delete(k);this.rows.delete(k);const id=this.subscriptions.get(k);this.subscriptions.delete(k);
       this.watchState.get(k)?.dispose();this.watchState.delete(k);
       if(id!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
@@ -61,8 +63,37 @@ class AccountCache {
   }
   record(k,value,slot,generation=this.generation,continuous=false){
     if(this.closed||generation!==this.generation||!Number.isSafeInteger(slot)||slot<0)return;
-    const old=this.rows.get(k);if(old&&slot<old.slot)return;
-    this.watch(k);this.rows.delete(k);this.rows.set(k,{value,slot,at:Date.now(),continuous});this.trim();
+    const old=this.rows.get(k);if((old&&slot<old.slot)||slot<(this.settingSlots.get(k)??-1))return;
+    this.watch(k);this.rows.delete(k);this.rows.set(k,{value,slot,at:Date.now(),continuous});
+    this.rememberSetting(k,this.rows.get(k));this.trim();
+  }
+  rememberSetting(k,row){
+    if(!this.settings.has(k)||this.closed)return;
+    if(row.slot<(this.settingSlots.get(k)??-1))return;
+    this.settingSlots.set(k,row.slot);
+    // A newer deletion/wrong owner/layout revokes the old snapshot, never hides
+    // behind it. Transport failures alone leave the last success untouched.
+    if(!require('./shared-settings.cjs').valid(k,row.value)){this.lastSettings.delete(k);return;}
+    this.lastSettings.set(k,{...row,value:{...row.value,data:Buffer.from(row.value.data)}});
+  }
+  keepSettings(keys,wait=async()=>{}){
+    for(const key of keys){
+      const k=key.toBase58();this.settings.add(k);
+      if(this.rows.has(k))this.rememberSetting(k,this.rows.get(k));
+    }
+    while(this.settings.size>64){
+      const k=[...this.settings].find(k=>!this.pinned.has(k));
+      if(k===undefined)break;
+      this.settings.delete(k);this.lastSettings.delete(k);this.settingSlots.delete(k);
+    }
+    this.keepShared(keys,wait);
+  }
+  localSharedRow(k,shared){
+    if(this.closed||!shared.has(k))return null;
+    const row=this.rows.get(k);
+    if(row?.value&&this.valid(row,0,k))return row;
+    const saved=this.lastSettings.get(k);
+    return saved&&this.settings.has(k)&&Date.now()>=saved.at?{...saved,lastKnownGood:true}:null;
   }
   valid(row,minSlot,k){
     const age=row?Date.now()-row.at:-1;
@@ -87,8 +118,8 @@ class AccountCache {
       const state=this.watchState.get(k),previous=this.repairs.get(k);
       // null is a valid snapshot of an absent account. Its subscription will
       // report creation; it is not a transport failure to poll forever.
-      if(state?.subscribed&&!this.rows.get(k)?.continuous&&Date.now()>=(previous?.due||0))
-        batch.push({k,state,version:state.version,wait,previous});
+      if((state?.subscribed||this.settings.has(k))&&!this.rows.get(k)?.continuous&&Date.now()>=(previous?.due||0))
+        batch.push({k,state,version:state?.version,wait,previous});
       if(batch.length===64)break;
     }
     if(!batch.length)return;
@@ -104,7 +135,7 @@ class AccountCache {
   async repairShared(batch){
     const gen=this.generation;
     const current=entry=>!this.closed&&gen===this.generation&&this.watchState.get(entry.k)===entry.state
-      &&entry.state.subscribed&&entry.state.version===entry.version;
+      &&(entry.state?.subscribed||this.settings.has(entry.k))&&entry.state?.version===entry.version;
     try{
       await Promise.all(batch.map(entry=>entry.wait()));
       batch=batch.filter(entry=>current(entry)&&!this.rows.get(entry.k)?.continuous);
@@ -115,7 +146,8 @@ class AccountCache {
       };
       await this.get(batch.map(({k})=>new web3.PublicKey(k)),{},false,wait,new Set(),true);
       for(const {k} of batch){
-        this.repairs.delete(k);
+        if(this.rows.get(k)?.continuous)this.repairs.delete(k);
+        else this.repairs.set(k,{failures:0,due:Date.now()+30000});
         if(this.rows.get(k)?.value===null)this.readStats.null_baselines++;
       }
     }catch{
@@ -135,16 +167,18 @@ class AccountCache {
       &&this.watchState.get(k)?.subscribed&&this.healthy()&&this.head>=minSlot&&Date.now()>=row.at);
   }
   evidence(k,minSlot,shared,force=false,local=false){
-    const row=this.rows.get(k),age=row?Date.now()-row.at:null,subscribed=!!this.watchState.get(k)?.subscribed;
+    const selected=local?this.localSharedRow(k,shared):null;
+    const row=selected||this.rows.get(k),age=row?Date.now()-row.at:null,subscribed=!!this.watchState.get(k)?.subscribed;
     const healthy=this.healthy(),isShared=shared.has(k);
-    const hit=local?isShared&&row?.value&&this.valid(row,0,k):
+    const hit=local?!!selected:
       !force&&this.validShared(row,minSlot,k,shared);
-    const reason=hit?'hit':force?'forced-baseline':local&&!isShared?'not-shared':!row?'absent':
+    const reason=selected?.lastKnownGood?'last-known-good':hit?'hit':force?'forced-baseline':local&&!isShared?'not-shared':!row?'absent':
       age<0?'clock-ahead':local&&!row.value?'null-account':isShared&&!row.continuous?'not-continuous':
       isShared&&!subscribed?'subscription-not-ready':isShared&&!healthy?'websocket-unhealthy':
       isShared&&this.head<(local?minSlot-2:minSlot)?'head-behind':row.slot<minSlot?'slot-behind':'expired';
     return {address:k,source:hit?'cache-hit':'cache-miss',reason,min_slot:minSlot,
       row_slot:row?.slot,age_ms:age,continuous:!!row?.continuous,subscribed,healthy,head:this.head,shared:isShared,ttl_ms:this.ttlMs,
+      ...(selected?.lastKnownGood?{last_known_good:true}:{}),
       pinned:this.pinned.has(k),recovery_pending:this.repairActive.has(k),
       recovery_failures:this.repairs.get(k)?.failures||0,
       last_loss:this.losses.get(k)?.reason||'never-loaded',
@@ -225,7 +259,7 @@ class AccountCache {
   invalidate({subscriptionsLost=true,reason='generation-invalidated'}={}){
     this.readStats.invalidations++;
     this.lastInvalidation=reason;
-    if(!['websocket-close','websocket-error'].includes(reason))this.executionGeneration++;
+    if(!['websocket-close','websocket-error'].includes(reason)){this.executionGeneration++;this.lastSettings.clear();this.settingSlots.clear();}
     for(const k of new Set([...this.rows.keys(),...this.subscriptions.keys()]))this.noteLoss(k,reason);
     this.repairs.clear();
     this.generation++;this.rows.clear();this.misc.clear();this.clock=null;this.pulseAt=null;this.head=0;
@@ -234,7 +268,7 @@ class AccountCache {
       state.version++;
     }
     for(const changed of this.readWaiters)changed();
-    this.onInvalidate?.();
+    this.onInvalidate?.({reason});
     // A fork invalidates account contents, not an otherwise active subscription.
     // Re-baseline known shared settings in the background; wait() yields to trades.
     if(!subscriptionsLost)for(const [k,state] of this.watchState)
@@ -259,13 +293,13 @@ class AccountCache {
     };
     const methods={
       // Verified create only: common configuration and quote-mint metadata
-      // can predate the launch. Keep TTL/continuous-WS validity, not a launch-slot
-      // barrier. New target state and wallet balances retain strict reads.
+      // can predate the launch. Registered settings may use their last success;
+      // quote mints retain TTL/continuous-WS checks. No pool/balance fallback.
       localCreateShared:keys=>{
         if(trace)trace({phase:'shared',accounts:keys.map(key=>cache.evidence(key.toBase58(),minSlot,shared,false,true))});
         return keys.map(key=>{
-        const k=key.toBase58(),r=cache.rows.get(k);
-        return shared.has(k)&&r?.value&&cache.valid(r,0,k)?r.value:null;
+        const r=cache.localSharedRow(key.toBase58(),shared);
+        return r?{...r.value,data:Buffer.from(r.value.data)}:null;
       });},
       quoteSnapshot:()=>cache.view(0,cacheOnly,{wait,blockhashCache,primeReads,readCategory,trace:trace?row=>{row.scope='quote';trace(row);}:null}),
       getMultipleAccountsInfoAndContext:(keys,c)=>read(keys,config(c),shared),
@@ -303,7 +337,7 @@ class AccountCache {
   close(){
     this.closed=true;clearInterval(this.repairTimer);this.repairTimer=null;
     for(const changed of this.readWaiters)changed();
-    this.rows.clear();this.sharedWait.clear();
+    this.rows.clear();this.sharedWait.clear();this.settings.clear();this.lastSettings.clear();this.settingSlots.clear();
     for(const state of this.watchState.values())state.dispose();
     for(const id of this.subscriptions.values())Promise.resolve(this.rpc.removeAccountChangeListener(id)).catch(()=>{});
     if(this.clockId!==undefined)Promise.resolve(this.rpc.removeAccountChangeListener(this.clockId)).catch(()=>{});

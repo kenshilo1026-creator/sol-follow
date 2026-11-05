@@ -109,7 +109,8 @@ and the Alchemy dashboard over the same interval to assess savings.
 
 ## WebSocket interruption during execution
 
-A socket close/error still clears account snapshots and continuity. It no longer
+A socket close/error still clears live account snapshots and continuity.
+The validated shared-setting fallback described below is retained separately. It no longer
 cancels an independent foreground HTTP read solely because the socket changed.
 Only a complete HTTP batch at or above the original required slot may finish
 across that gap; it is not installed into the new cache generation. Mixed old
@@ -120,8 +121,9 @@ No extra RPC or longer buy deadline is introduced.
 Processed-fork/explicit invalidation and cache shutdown still cancel reads and
 reject the build. A successfully simulated unsigned build may survive a socket
 interruption; other worker operations retain their generation guard. Background
-recovery continues to wait for subscription acknowledgement and establish a new
-baseline before reusing continuous snapshots.
+recovery establishes a post-ACK baseline before reusing continuous snapshots.
+Registered protocol settings can also recover while their socket is offline,
+as described below.
 
 `cache_lifecycle` records start/end cache and execution generations plus the last
 invalidation reason. Execution generation changes indicate hard invalidation,
@@ -129,3 +131,45 @@ even if a later socket event overwrote `last_invalidation`. The last reason is
 not a full event history. `reads[].continued_after_disconnect=true` identifies
 fresh HTTP results accepted across a socket interruption. Older audits without
 these fields cannot distinguish the final interruption cause reliably.
+
+
+An account WebSocket close/error also no longer discards the independent HTTP
+blockhash snapshot or its in-flight refresh. The existing 5-second default TTL,
+32-slot distance limit, simulation and submission context checks still apply.
+Explicit fork invalidation and worker shutdown still clear it. This removes
+avoidable blockhash misses without introducing extra background RPC; it does not
+restore missing shared-account subscriptions or guarantee same-slot execution.
+
+
+## Speed-first shared settings (RH-style last-known-good)
+
+Verified create builds may reuse the last successfully decoded Pump Global and
+FeeConfig, Stonk PlatformConfig and the source create's Stonk GlobalConfig when
+WebSocket coverage is interrupted or its live row expires. These are separate,
+bounded in-memory snapshots; they are not persisted across worker restarts.
+Fixed core settings remain pinned. The fallback requires a registered setting,
+the expected owner and account layout; an observed newer deletion or invalid
+owner/layout revokes it. An older reply cannot resurrect that revoked setting.
+Explicit fork/generation invalidation and shutdown clear these snapshots.
+
+The create path does not await subscription recovery or HTTP revalidation when
+these snapshots exist. Account evidence records `reason=last-known-good`,
+`last_known_good=true`, `row_slot` and `age_ms`. This policy deliberately accepts
+that a protocol setting could have changed during the gap, as RH does for common
+configuration. Simulation, minimum output, slippage and transfer checks remain;
+a stale setting can still cause simulation/on-chain rejection. Cold starts with
+no successful snapshot still need an initial read.
+
+Pool reserves, quote/base token mints and their transfer fees, wallet balances,
+and price oracles do not receive this stale fallback. Non-SOL conversion routes
+continue using their existing background-warmed quote caches and freshness
+checks. The setting fallback is used only by verified local-create projection,
+not generic account reads or sell quoting.
+
+Recovery batches up to 64 accounts and yields to active trading. While a setting
+has no acknowledged subscription, a successful HTTP recovery schedules the next
+background attempt after 30 seconds; failures back off from 1 to 30 seconds.
+A new subscription ACK immediately requests a fresh baseline. Once continuous
+coverage is established, updates use WebSocket and no periodic HTTP refresh is
+added. This targets avoidable foreground account reads; it cannot guarantee
+same-slot inclusion or eliminate simulation and network delivery time.

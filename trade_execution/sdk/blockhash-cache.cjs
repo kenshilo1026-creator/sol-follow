@@ -6,7 +6,12 @@ class BlockhashCache {
     this.row=null;this.pending=null;this.generation=0;this.closed=false;this.hits=0;this.misses=0;
     this.timer=setInterval(()=>{void this.refresh().catch(()=>{});},refreshMs);this.timer.unref();
   }
-  invalidate(){this.generation++;this.row=null;}
+  invalidate({reason='generation-invalidated'}={}){
+    // Account websocket continuity is unrelated to this HTTP snapshot. Keep
+    // its original TTL/slot-age checks; explicit forks still discard it.
+    if(['websocket-close','websocket-error'].includes(reason))return;
+    this.generation++;this.row=null;
+  }
   async refresh(){
     if(this.closed||this.isBusy())return;
     if(this.pending)return this.pending;

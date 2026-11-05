@@ -400,3 +400,102 @@ test('fresh epoch HTTP survives socket loss but does not seed the next cache gen
   const failed=cache.view(101).getEpochInfo(),rejected=assert.rejects(failed,/cache-disconnected/);
   await tick();cache.invalidate({subscriptionsLost:false});finish({epoch:8,absoluteSlot:101});await rejected;
 });
+
+
+test('account socket gaps retain bounded HTTP blockhash cache but forks and expiry reject it',async t=>{
+  let now=10000,reads=0;t.mock.method(Date,'now',()=>now);
+  const rpc=socketRpc();rpc.getLatestBlockhashAndContext=async()=>{
+    reads++;return {context:{slot:100},value:{blockhash:key().toBase58(),lastValidBlockHeight:250}};
+  };
+  const accounts=new AccountCache(rpc),blocks=new BlockhashCache(rpc,{refreshMs:999999,ttlMs:5000});
+  t.after(()=>{accounts.close();blocks.close();});accounts.onInvalidate=event=>blocks.invalidate(event);
+  await blocks.refresh();const original=blocks.pick(101);
+  const account=key();accounts.record(String(account),{data:Buffer.from('state')},100);
+  for(const event of ['close','error']){
+    rpc._rpcWebSocket.emit(event);assert.equal(accounts.rows.size,0);
+    assert.deepEqual(await accounts.view(101,false,{blockhashCache:blocks}).getLatestBlockhash(),original);
+    assert.equal(reads,1);
+  }
+  assert.throws(()=>blocks.pick(133),/blockhash-cache-miss/);
+  now+=5001;assert.throws(()=>blocks.pick(101),/blockhash-cache-miss/);
+  await blocks.refresh();accounts.invalidate({subscriptionsLost:false});
+  assert.throws(()=>blocks.pick(101),/blockhash-cache-miss/);
+  await blocks.refresh();blocks.close();assert.throws(()=>blocks.pick(101),/blockhash-cache-miss/);
+});
+
+
+test('HTTP blockhash refresh crossing a socket gap completes; crossing a fork is discarded',async t=>{
+  const rpc=socketRpc();let finish;
+  rpc.getLatestBlockhashAndContext=()=>new Promise(resolve=>finish=resolve);
+  const accounts=new AccountCache(rpc),blocks=new BlockhashCache(rpc,{refreshMs:999999});
+  t.after(()=>{accounts.close();blocks.close();});accounts.onInvalidate=event=>blocks.invalidate(event);
+  const response={context:{slot:100},value:{blockhash:key().toBase58(),lastValidBlockHeight:250}};
+  const refresh=blocks.refresh();rpc._rpcWebSocket.emit('close');finish(response);await refresh;
+  assert.deepEqual(blocks.pick(101),response.value);
+  const forked=blocks.refresh();accounts.invalidate({subscriptionsLost:false});finish(response);await forked;
+  assert.throws(()=>blocks.pick(101),/blockhash-cache-miss/);
+});
+
+
+function pumpSetting(){
+  const k=require('@pump-fun/pump-sdk').GLOBAL_PDA;
+  const raw=require('../fixtures/pump_native_accounts.json').accounts[k.toBase58()];
+  return {k,row:{...raw,owner:new web3.PublicKey(raw.owner),data:Buffer.from(raw.data[0],'base64')}};
+}
+
+test('only validated registered settings survive a gap; updates revoke or replace old snapshots',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r),{k,row}=pumpSetting(),ordinary=key();t.after(()=>cache.close());
+  cache.keepSettings([k]);cache.keepShared([ordinary],async()=>{},{pin:true});
+  cache.record(k.toBase58(),row,100);cache.record(ordinary.toBase58(),row,100);
+  const view=cache.view(110,false,{sharedKeys:[k,ordinary]});
+  now+=10000;r._rpcWebSocket.emit('close');
+  assert(view.localCreateShared([k])[0]);assert.equal(view.localCreateShared([ordinary])[0],null);
+  // Generic account reads retain strict freshness even for a registered setting.
+  await assert.rejects(cache.view(110,true).getAccountInfo(k),/price-cache-miss/);
+  const newer={...row,data:Buffer.from(row.data)};
+  cache.record(k.toBase58(),newer,120);now+=10000;
+  assert.equal(cache.lastSettings.get(k.toBase58()).slot,120);
+  // A lower-slot reply after disconnect cannot supersede the last success.
+  r._rpcWebSocket.emit('close');cache.record(k.toBase58(),row,119);
+  assert.equal(cache.lastSettings.get(k.toBase58()).slot,120);
+  for(const bad of [null,{...row,owner:key()},{...row,data:Buffer.alloc(8)}]){
+    cache.record(k.toBase58(),bad,121);now+=10000;
+    assert.equal(view.localCreateShared([k])[0],null);
+    r._rpcWebSocket.emit('close');cache.record(k.toBase58(),row,120);
+    assert.equal(view.localCreateShared([k])[0],null,'revoked setting cannot resurrect from older slot');
+    cache.record(k.toBase58(),row,121);
+  }
+  cache.invalidate();assert.equal(view.localCreateShared([k])[0],null);
+  cache.record(k.toBase58(),row,122);cache.close();assert.equal(view.localCreateShared([k])[0],null);
+});
+
+test('offline settings recover in one background batch, yield to trades and back off until ACK',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r),{k,row}=pumpSetting();t.after(()=>cache.close());
+  let release;const paused=new Promise(resolve=>release=resolve);
+  r.getMultipleAccountsInfoAndContext=async keys=>{
+    r.reads++;return {context:{slot:r.slot},value:keys.map(()=>row)};
+  };
+  cache.keepSettings([k],()=>paused);cache.recoverShared();cache.recoverShared();await tick();
+  assert.equal(r.reads,0);release();await tick();await tick();
+  assert.equal(r.reads,1);assert(cache.lastSettings.has(k.toBase58()));
+  now+=29000;cache.recoverShared();await tick();assert.equal(r.reads,1);
+  now+=1000;cache.recoverShared();await tick();assert.equal(r.reads,2);
+  // ACK bypasses the offline 30-second cadence and establishes continuity.
+  r.ack(k);await tick();await tick();assert.equal(r.reads,3);
+  assert(cache.rows.get(k.toBase58()).continuous);
+  now+=100000;r.pulse({slot:101});cache.recoverShared();await tick();assert.equal(r.reads,3);
+});
+
+test('failed offline recovery retains last good settings and retries with backoff',async t=>{
+  let now=10000;t.mock.method(Date,'now',()=>now);
+  const r=socketRpc(),cache=new AccountCache(r),{k,row}=pumpSetting();t.after(()=>cache.close());
+  cache.keepSettings([k]);cache.record(k.toBase58(),row,100);r._rpcWebSocket.emit('close');
+  r.getMultipleAccountsInfoAndContext=async()=>{r.reads++;throw Error('offline');};
+  cache.recoverShared();await tick();assert.equal(r.reads,1);
+  cache.recoverShared();await tick();assert.equal(r.reads,1);
+  now+=1000;cache.recoverShared();await tick();assert.equal(r.reads,2);
+  assert.equal(cache.repairs.get(k.toBase58()).failures,2);
+  assert(cache.view(110,false,{sharedKeys:[k]}).localCreateShared([k])[0]);
+});

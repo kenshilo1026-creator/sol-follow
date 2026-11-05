@@ -207,3 +207,43 @@ test('Pump build survives socket loss during shared HTTP read and still simulate
   assert.equal(cache.rows.size,0);assert.equal(cache.executionGeneration,0);
   assert(evidence.some(r=>r.continued_after_disconnect));
 });
+
+test('last-known-good settings build Pump and Stonk after socket loss with ZERO account RPC reads',async()=>{
+  const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
+  const fast=require('../../trade_execution/sdk/create-fast.cjs');
+  for(const prefix of ['create_CBL','create_GcH']){
+    const input=configured(sample(prefix)),isStonk=input.route==='stonk_native_curve';
+    let simulations=0,accountRPC=0;
+    const rpc={_rpcWebSocketConnected:true,
+      async getMultipleAccountsInfoAndContext(){accountRPC++;throw Error('account RPC forbidden on warm path');},
+      async simulateTransaction(tx,options){simulations++;return isStonk?stonkSimulation(tx,input,options):
+        {context:{slot:input.minSlot},value:{err:null,unitsConsumed:100000,accounts:[mintResponse(input)]}};}};
+    const cache=new AccountCache(rpc,{commitment:'processed'});
+    cache.keepSettings(fast.settings(input));
+    const common=load(isStonk?'stonk_native_accounts.json':'pump_native_accounts.json');
+    for(const key of fast.shared(input)){
+      const name=key.toBase58(),row=common.get(name);if(!row)continue;
+      cache.record(name,row,input.minSlot-5,cache.generation,true);
+      cache.watchState.set(name,{subscribed:true,version:1,dispose(){}});
+    }
+    cache.invalidate({reason:'websocket-close'});
+    for(const row of cache.lastSettings.values())row.at-=60000;
+    rpc._rpcWebSocketConnected=false;
+    const evidence=[];
+    const connection=cache.view(input.minSlot,false,{sharedKeys:fast.shared(input),trace:r=>evidence.push(r),
+      blockhashCache:{pick(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};}}});
+    try{
+      // worker.cjs instruments every method with an async timing wrapper.
+      const instrumented=new Proxy(connection,{get(target,key){const v=target[key];return typeof v==='function'?async(...a)=>v.apply(target,a):v;}});
+      const result=await build(input,instrumented);
+      assert.equal(result.localCreate.eligible,true);assert.equal(accountRPC,0);assert.equal(simulations,1);
+      assert(BigInt(result.minOut)>0n);
+      const hits=evidence.flatMap(r=>r.accounts||[]).filter(a=>a.last_known_good);
+      assert(hits.length>=2);assert(hits.every(a=>a.reason==='last-known-good'&&a.age_ms>=60000));
+      cache.head=input.minSlot-30;
+      assert(connection.localCreateShared(fast.shared(input)).some(Boolean));
+      cache.head=input.minSlot;cache.invalidate();
+      assert(connection.localCreateShared(fast.shared(input)).every(x=>x===null));
+    }finally{cache.close();}
+  }
+});

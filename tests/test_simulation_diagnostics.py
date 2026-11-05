@@ -150,3 +150,11 @@ def test_cache_lifecycle_survives_failure_ipc_and_drops_untrusted_values():
         'execution_generation_start':float('nan'),'last_invalidation':'https://secret'},
         'reads':[{'phase':'cache','continued_after_disconnect':'secret'}]})=={
             'reads':[{'phase':'cache','accounts':[]}]}
+
+
+def test_last_known_good_setting_evidence_survives_ipc():
+    from chain_common.build_diagnostics import sanitize
+    account={'address':address(),'role':'pump-global','source':'cache-hit',
+             'reason':'last-known-good','last_known_good':True,'age_ms':60000,'row_slot':100}
+    value={'reads':[{'phase':'shared','accounts':[account]}]}
+    assert sanitize(value)==value

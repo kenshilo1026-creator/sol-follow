@@ -20,4 +20,8 @@ function shared(input){
   const h=hint(input);
   return [...common,...(h&&input.quoteMint!==require('@solana/spl-token').NATIVE_MINT.toBase58()?[new web3.PublicKey(input.quoteMint)]:[]),...(h?.launchpad==='stonk'&&h.config?[new web3.PublicKey(h.config)]:[])];
 }
-module.exports={hint,shared,common};
+function settings(input){
+  const h=hint(input);
+  return [...common,...(h?.launchpad==='stonk'&&h.config?[new web3.PublicKey(h.config)]:[])];
+}
+module.exports={hint,shared,common,settings};
