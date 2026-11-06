@@ -40,3 +40,13 @@ one-shot current holder snapshot at the deadline, not a historical peak over the
 first ten seconds. Tests are offline and do not submit live transactions.
 
 RPC reference: https://solana.com/docs/rpc/http/getprogramaccounts
+
+
+The shared `BackgroundRpc` read allowlist includes `getProgramAccounts`; both
+production provider lanes use this wrapper. Holder failures record at most one
+safe attempt summary per provider (reason, elapsed time, optional numeric HTTP
+status/RPC code), in both the durable check and decision audit. Telegram reports
+these separately. Local allowlist rejection, RPC failure, and invalid/lagging
+account data are distinguished; raw exception text and provider URLs are omitted.
+An unavailable check remains terminal, so updating the service does not re-arm
+old checks or reset their deadline.

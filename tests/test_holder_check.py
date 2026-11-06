@@ -184,3 +184,83 @@ async def test_cancellation_keeps_pending_check_for_restart(config,store):
 def test_invalid_holder_policy_rejected(name,value):
     from share_common.config import load
     with pytest.raises(ValueError):load(env={name:value})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fallback',[False,True])
+async def test_holder_query_reaches_provider_through_production_background_wrapper(config,store,fallback):
+    from chain_common.background_rpc import BackgroundRpc
+    from chain_common.rpc import RpcError
+    checker,reader,exit,rpc,oid,builds=await prepared(config,store,count=5)
+    calls=[]
+    class Public:
+        async def call(self,method,params):
+            calls.append('public')
+            if fallback:raise RpcError('HTTP-429')
+            return await reader.call(method,params)
+    class Alchemy:
+        async def call(self,method,params):
+            calls.append('alchemy')
+            return await reader.call(method,params)
+    checker.public=BackgroundRpc(Public(),checker.priority,1000)
+    checker.alchemy=BackgroundRpc(Alchemy(),checker.priority,1000)
+    due(store);await checker.once()
+    job=store.rows('trading','SELECT * FROM holder_checks')[0]
+    assert job['state']=='passed'
+    assert calls==(['public','alchemy'] if fallback else ['public'])
+    assert json.loads(job['detail'])['provider']==('alchemy' if fallback else 'public')
+    assert len(reader.calls)==1 and not builds
+    assert not checker.notices.items
+
+
+@pytest.mark.asyncio
+async def test_background_wrapper_still_rejects_transaction_submission():
+    from chain_common.background_rpc import BackgroundRpc
+    class Client:
+        async def call(self,*args):raise AssertionError('must not reach provider')
+    with pytest.raises(ValueError,match='background-rpc-read-method-required'):
+        await BackgroundRpc(Client(),Priority()).call('sendTransaction',[])
+
+
+@pytest.mark.asyncio
+async def test_provider_errors_are_retained_without_credentials_or_unwanted_sell(config,store):
+    from chain_common.background_rpc import BackgroundRpc
+    from chain_common.rpc import RpcError
+    from share_common.notify import telegram_message
+    checker,reader,exit,rpc,oid,builds=await prepared(config,store)
+    class Public:
+        async def call(self,*args):raise RpcError('HTTP-429')
+    class Alchemy:
+        async def call(self,*args):raise RpcError('getProgramAccounts:RPC--32010')
+    checker.public=BackgroundRpc(Public(),checker.priority,1000)
+    checker.alchemy=BackgroundRpc(Alchemy(),checker.priority,1000)
+    due(store);await checker.once();await checker.once()
+    job=store.rows('trading','SELECT * FROM holder_checks')[0]
+    detail=json.loads(job['detail']);failures=detail['failures']
+    assert job['state']=='unavailable'
+    assert [r['reason'] for r in failures]==['holder-http-error','holder-rpc-error']
+    assert failures[0]['http_status']==429 and failures[1]['rpc_code']==-32010
+    assert len(checker.notices.items)==1 and not store.rows('trading','SELECT * FROM dev_exits')
+    text=telegram_message(*checker.notices.items[0][0])
+    assert '公共 RPC' in text and 'HTTP 429' in text and 'Alchemy' in text and 'RPC code -32010' in text
+    audit=json.loads(store.rows('audit',"SELECT detail FROM decisions WHERE stage='holder-check'")[0]['detail'])
+    assert audit['failures']==failures
+
+
+def test_holder_failure_classification_and_notification_are_allowlisted():
+    from chain_common.rpc import RpcError
+    from features.strategy.holder_diagnostics import failure,lines
+    for exc,expected in [(TimeoutError('secret'),'holder-timeout'),
+            (RpcError('getProgramAccounts:TimeoutError'),'holder-timeout'),
+            (ValueError('background-rpc-read-method-required'),'background-rpc-read-method-required'),
+            (RpcError('endpoint-cooling'),'holder-endpoint-cooling'),
+            (ValueError('holder-buy-not-visible'),'holder-buy-not-visible'),
+            (RpcError('getProgramAccounts:RPC-https://secret'),'holder-rpc-failed')]:
+        row=failure(exc,'public',10)
+        assert row['reason']==expected and 'secret' not in json.dumps(row)
+    assert failure(KeyError('secret'),'alchemy',10,'validation')['reason']=='holder-response-invalid'
+    assert lines({'failures':[{'provider':[],'reason':'secret'},None,
+                 {'provider':'public','reason':'https://secret'}]})==[]
+    text=' '.join(lines({'failures':[{'provider':'public','reason':'holder-timeout',
+        'http_status':'secret','rpc_code':True,'elapsed_ms':float('nan'),'url':'secret'}]}))
+    assert 'secret' not in text and 'nan' not in text and 'RPC code' not in text

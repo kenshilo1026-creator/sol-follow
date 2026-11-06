@@ -65,9 +65,12 @@ BUY_TITLES = {
 
 def message(kind, detail):
     if kind=='holder check unavailable':
+        from features.strategy.holder_diagnostics import lines as holder_failure_lines
+        failures=holder_failure_lines(detail)
+        cause='\n'.join(failures) if failures else '原因: 未取得可驗證的持有人數（無詳細原因紀錄）'
         return (f"⚠️ [SOL] 人氣檢查未完成\n代幣: {detail['mint']}"
-                f"\n持有人門檻: {detail['minimum']}\n原因: RPC 未提供可驗證的完整持有人資料"
-                '\n未將未知人數視為 0，保留原有持倉監控。')
+                f"\n持有人門檻: {detail['minimum']}\n{cause}"
+                '\n本次檢查已結束，未因未知人數賣出；原有持倉監控繼續。')
 
     if (kind=='buy rejected' and detail.get('outcome')=='not-submitted'
             and detail.get('signed') is False and pump_curve_complete(detail.get('simulation_details'))):

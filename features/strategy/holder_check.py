@@ -5,6 +5,7 @@ import json
 import time
 from chain_common.primitives import TOKEN, TOKEN_2022, pubkey, b58encode
 from features.audit.writer import record
+from features.strategy.holder_diagnostics import HolderUnavailable, failure
 
 
 def holder_count(result, mint, program, wallet, min_slot):
@@ -68,15 +69,21 @@ class HolderCheck:
         if program==TOKEN:filters.append({'dataSize':165})
         params=[program,{'commitment':'confirmed','withContext':True,'minContextSlot':job['min_slot'],
                         'encoding':'base64','dataSlice':{'offset':0,'length':165},'filters':filters}]
+        failures=[]
         for provider,client in [('public',self.public),('alchemy',self.alchemy)]:
-            if client is None:continue
+            if client is None:
+                failures.append({'provider':provider,'reason':'holder-provider-not-configured'})
+                continue
+            began=time.monotonic();phase='rpc'
             try:
                 result=await asyncio.wait_for(client.call('getProgramAccounts',params),4)
+                phase='validation'
                 count,slot=holder_count(result,buy['mint'],program,self.config.wallet_address,job['min_slot'])
                 return count,slot,provider
             except asyncio.CancelledError:raise
-            except Exception:continue
-        raise ValueError('holder-count-unavailable')
+            except Exception as exc:
+                failures.append(failure(exc,provider,(time.monotonic()-began)*1000,phase))
+        raise HolderUnavailable(failures)
 
     async def check(self,job):
         buy=self.eligible(job)
@@ -89,8 +96,10 @@ class HolderCheck:
             detail.update(holders=count,slot=slot,provider=provider)
             state='passed' if count>=job['minimum'] else 'triggered'
         except asyncio.CancelledError:raise
+        except HolderUnavailable as exc:
+            state='unavailable';detail['failures']=exc.failures
         except Exception:
-            state='unavailable'
+            state='unavailable';detail['check_error']='holder-check-error'
         # Recheck after network awaits: dev sell/manual sell may already have won.
         if not self.eligible(job):state='skipped'
         with self.store.db('trading') as c:
