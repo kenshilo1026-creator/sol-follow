@@ -247,3 +247,104 @@ test('last-known-good settings build Pump and Stonk after socket loss with ZERO 
     }finally{cache.close();}
   }
 });
+
+
+const v3Input=()=>structuredClone(require('../fixtures/pump_v3_create_input.json'));
+const eventCodec=require('../../trade_execution/sdk/pump-create-events.cjs');
+test('real V3 create uses post-trade reserves excluding rent and retained fees',()=>{
+  const input=v3Input(),projection=local.project(input);
+  assert.equal(projection.rows.size,2);
+  const state=pump.PUMP_SDK.decodeBondingCurve(projection.rows.get(input.pool));
+  assert.equal(state.virtualTokenReserves.toString(),'1059053615030649');
+  assert.equal(state.virtualQuoteReserves.toString(),'30395061727');
+  assert.equal(state.realTokenReserves.toString(),'779153615030649');
+  assert.equal(state.realQuoteReserves.toString(),'395061727');
+  const e=eventCodec.trade(Buffer.from(input.createHint.localSnapshot.events[1],'base64'));
+  assert.equal(e.opaqueZeroTail,true);assert.equal(e.creatorFeeUnclaimed,1185186n);
+  const retained=BigInt(e.fee.toString())-BigInt(e.buybackFee.toString())+BigInt(e.creatorFee.toString());
+  assert.equal(retained,3061730n);
+  assert.equal(395061727n+retained+1493520n,399616977n);
+});
+
+test('V3 unknown tail, missing proof, mismatched balances and incomplete events fall back',()=>{
+  for(const mutate of [
+    s=>delete s.receiptEvidence,
+    s=>s.receiptEvidence.poolTokens='986053615030648',
+    s=>s.receiptEvidence.poolLamports='399616978',
+    s=>s.receiptEvidence.rentLamports='0',
+    s=>s.eventInstructions[1]='SellV3',
+    s=>s.tradeCount++,
+    s=>{const b=Buffer.from(s.events[1],'base64');b[b.length-1]=1;s.events[1]=b.toString('base64');},
+    s=>s.events[1]=Buffer.from(s.events[1],'base64').subarray(0,-1).toString('base64'),
+    s=>s.events.push(Buffer.alloc(20).toString('base64')),
+    s=>{const b=Buffer.from(s.events[1],'base64');b.writeBigUInt64LE(b.readBigUInt64LE(113)+1n,113);s.events[1]=b.toString('base64');},
+  ]){const input=v3Input();mutate(input.createHint.localSnapshot);assert.equal(local.project(input).rows.size,0);}
+});
+
+test('published V3 tail and depth decode, sequential buy/sell reserve transitions stay fee-neutral',()=>{
+  const input=v3Input(),s=input.createHint.localSnapshot;
+  const c=Buffer.from(s.events[0],'base64'),t=Buffer.from(s.events[1],'base64');
+  const published=t.subarray(0,-8),event=eventCodec.trade(published);
+  assert.equal(event.opaqueZeroTail,false);assert.equal(event.creatorFeeUnclaimed,1185186n);
+  const depth1=Buffer.from(c);depth1[depth1.length-1]=1;
+  assert.equal(eventCodec.create(depth1).depth,1);
+  assert.throws(()=>eventCodec.create(Buffer.concat([c,Buffer.from([3])])));
+  assert.throws(()=>eventCodec.create(Buffer.concat([c,Buffer.alloc(2)])));
+  const initial={vt:1000n,vq:100n,rt:500n,rq:0n};
+  const buy={isBuy:true,tokenAmount:100n,quoteAmount:12n,virtualTokenReserves:900n,
+    virtualQuoteReserves:112n,realTokenReserves:400n,realQuoteReserves:12n};
+  const after=eventCodec.advance(initial,buy);
+  const sell={isBuy:false,tokenAmount:50n,quoteAmount:5n,virtualTokenReserves:950n,
+    virtualQuoteReserves:107n,realTokenReserves:450n,realQuoteReserves:7n};
+  assert.deepEqual(eventCodec.advance(after,sell),{vt:950n,vq:107n,rt:450n,rq:7n});
+  assert.throws(()=>eventCodec.advance(initial,{...buy,realTokenReserves:0n}));
+  assert.throws(()=>eventCodec.advance(initial,{...buy,virtualQuoteReserves:113n}));
+});
+
+test('real V3 source builds with warm settings and ZERO account RPC calls, even after socket loss',async()=>{
+  const {AccountCache}=require('../../trade_execution/sdk/account-cache.cjs');
+  const fast=require('../../trade_execution/sdk/create-fast.cjs');
+  for(const disconnected of [false,true]){
+    const input=configured(v3Input());let accountRPC=0,simulations=0;
+    const rpc={_rpcWebSocketConnected:true,
+      async getMultipleAccountsInfoAndContext(){accountRPC++;throw Error('unexpected account RPC');},
+      async simulateTransaction(tx,options){
+        simulations++;assert.equal(options.minContextSlot,input.minSlot);
+        return {context:{slot:input.minSlot},value:{err:null,unitsConsumed:100000,accounts:[mintResponse(input)]}};
+      }};
+    const cache=new AccountCache(rpc,{commitment:'processed'}),common=load('pump_native_accounts.json');
+    cache.keepSettings(fast.settings(input));
+    for(const key of fast.shared(input)){
+      const name=String(key),value=common.get(name);if(!value)continue;
+      cache.record(name,value,input.minSlot-5,cache.generation,true);
+      cache.watchState.set(name,{subscribed:true,version:1,dispose(){}});
+    }
+    if(disconnected){cache.invalidate({reason:'websocket-close'});rpc._rpcWebSocketConnected=false;}
+    const conn=cache.view(input.minSlot,false,{sharedKeys:fast.shared(input),
+      blockhashCache:{pick(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};}}});
+    try{
+      const built=await build(input,conn);
+      assert.equal(built.localCreate.eligible,true);assert.deepEqual(built.localCreate.projectedAccounts,[input.mint,input.pool]);
+      assert.equal(accountRPC,0);assert.equal(simulations,1);assert(BigInt(built.minOut)>0n);
+      assert.equal(built.priorityFee.chargedLamports,'200000');
+      assert.equal(built.buildDiagnostics.quote.real_quote_reserves,'395061727');
+    }finally{cache.close();}
+  }
+});
+
+
+test('non-SOL V3 source keeps quote units and validates retained quote-token balance',()=>{
+  const input=v3Input(),s=input.createHint.localSnapshot,quote=web3.Keypair.generate().publicKey;
+  const c=eventCodec.create(Buffer.from(s.events[0],'base64')),t=eventCodec.trade(Buffer.from(s.events[1],'base64'));
+  c.quoteMint=quote;t.quoteMint=quote;
+  const encode=(name,event,old,tail)=>Buffer.concat([Buffer.from(old,'base64').subarray(0,8),
+    pump.PUMP_SDK.offlinePumpProgram.coder.types.encode(name,event),tail]).toString('base64');
+  s.events=[encode('createEvent',c,s.events[0],Buffer.from([1])),
+    encode('tradeEvent',t,s.events[1],Buffer.from(s.events[1],'base64').subarray(-16))];
+  input.route='sol_to_pump_curve';input.quoteMint=input.createHint.quoteMint=s.quoteMint=String(quote);
+  s.receiptEvidence={poolTokens:'986053615030649',quoteTokens:'398123457'};
+  const projection=local.project(input);assert.equal(projection.rows.size,2);
+  const state=pump.PUMP_SDK.decodeBondingCurve(projection.rows.get(input.pool));
+  assert.equal(String(state.quoteMint),String(quote));assert.equal(state.realQuoteReserves.toString(),'395061727');
+  s.receiptEvidence.quoteTokens='395061727';assert.equal(local.project(input).rows.size,0);
+});

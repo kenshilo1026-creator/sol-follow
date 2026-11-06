@@ -3,6 +3,7 @@
 // Never publish these as RPC account snapshots or put them in AccountCache.
 const web3=require('@solana/web3.js'),spl=require('@solana/spl-token'),pump=require('@pump-fun/pump-sdk');
 const crypto=require('node:crypto');
+const pumpEvents=require('./pump-create-events.cjs');
 const {PROGRAM,PLATFORM}=require('./stonk.cjs');
 const pk=x=>new web3.PublicKey(x),disc=(ns,n)=>crypto.createHash('sha256').update(ns+':'+n).digest().subarray(0,8);
 const bn=x=>BigInt(x.toString());
@@ -27,14 +28,35 @@ function mintRow(input,supply,fee){
 }
 function pumpRows(input,s,events){
   const createDisc=disc('event','CreateEvent'),tradeDisc=disc('event','TradeEvent');
-  let initial,last,count=0;
-  for(const data of events){
+  let initial,last,reserves,count=0,retained=0n,opaque=false;
+  const actions=s.eventInstructions;
+  requireValue(actions===undefined||Array.isArray(actions)&&actions.length===events.length);
+  for(const [index,data] of events.entries()){
     if(data.subarray(0,8).equals(createDisc)){
-      requireValue(!initial);initial=pump.PUMP_SDK.decodeCreateEventBc(data.subarray(8));
+      requireValue(!initial);initial=pumpEvents.create(data);
+      if(actions)requireValue(['Create','CreateV2'].includes(actions[index]));
+      reserves={vt:bn(initial.virtualTokenReserves),vq:bn(initial.virtualQuoteReserves),
+        rt:bn(initial.realTokenReserves),rq:0n};
     }else if(data.subarray(0,8).equals(tradeDisc)){
-      requireValue(initial);last=pump.PUMP_SDK.decodeTradeEventBc(data.subarray(8));count++;
+      requireValue(initial);last=pumpEvents.trade(data);count++;
+      if(actions){
+        const buys=['Buy','BuyV2','BuyExactSolIn','BuyExactQuoteInV2','BuyV3','BuyExactQuoteInV3'];
+        requireValue((last.isBuy?buys:['Sell','SellV2','SellV3']).includes(actions[index]));
+      }
+      if(input.quoteMint===spl.NATIVE_MINT.toBase58())requireValue(bn(last.solAmount)===bn(last.quoteAmount)
+        &&bn(last.virtualSolReserves)===bn(last.virtualQuoteReserves)&&bn(last.realSolReserves)===bn(last.realQuoteReserves));
+      reserves=pumpEvents.advance(reserves,last);
+      opaque ||= last.opaqueZeroTail;
+      if(actions&&['BuyV3','BuyExactQuoteInV3','SellV3'].includes(actions[index])){
+        requireValue(bn(last.buybackFee)<=bn(last.fee)&&bn(last.holderRewards)===0n&&bn(last.cashback)===0n);
+        retained+=bn(last.fee)-bn(last.buybackFee)+bn(last.creatorFee);
+      }
       requireValue(last.mint.toBase58()===input.mint&&last.creator.toBase58()===s.creator
         &&pump.normalizeQuoteMint(last.quoteMint).toBase58()===input.quoteMint&&!last.mayhemMode);
+    }else if(data.subarray(0,8).equals(disc('event','ExtendAccountEvent'))){
+      requireValue(initial&&actions?.[index]==='ExtendAccount'&&data.length===96
+        &&pk(data.subarray(8,40)).toBase58()===input.pool
+        &&data.readBigUInt64LE(80)>data.readBigUInt64LE(72));
     }else requireValue(false); // completion, creator changes and unknown upgrades use RPC
   }
   requireValue(initial&&count===s.tradeCount&&initial.mint.toBase58()===input.mint
@@ -45,10 +67,21 @@ function pumpRows(input,s,events){
     &&!s.flags.mayhem_mode&&!s.flags.cashback_enabled&&!s.flags.holder_reward);
   // Unknown create tails (including configurable fee variants) never become defaults.
   requireValue(s.flags.creator_fee_bps!==null&&!s.flags.uninterpreted_tail_hex);
+  if(input.quoteMint===spl.NATIVE_MINT.toBase58())requireValue(bn(initial.virtualSolReserves)===bn(initial.virtualQuoteReserves));
   const supply=bn(initial.tokenTotalSupply),vt=bn(last?last.virtualTokenReserves:initial.virtualTokenReserves);
   const vq=bn(last?last.virtualQuoteReserves:initial.virtualQuoteReserves);
   const rt=bn(last?last.realTokenReserves:initial.realTokenReserves),rq=last?bn(last.realQuoteReserves):0n;
   requireValue(vt>0n&&vq>0n&&rt>0n&&rt<=supply&&rt<=vt&&s.decimals===6);
+  const proof=s.receiptEvidence;
+  if(opaque)requireValue(proof&&actions);
+  if(proof){
+    requireValue(BigInt(proof.poolTokens)===supply-bn(initial.realTokenReserves)+rt);
+    const quoteBalance=input.quoteMint===spl.NATIVE_MINT.toBase58()?
+      BigInt(proof.poolLamports)-BigInt(proof.rentLamports):BigInt(proof.quoteTokens);
+    requireValue(quoteBalance===rq+retained);
+  }
+  // Quote-only legacy view. Retained V3 fees are NOT liquidity and are not
+  // fabricated as zero in a full modern account; this row never leaves this build.
   const d=Buffer.alloc(125);disc('account','BondingCurve').copy(d);
   [vt,vq,rt,rq,supply].forEach((n,i)=>d.writeBigUInt64LE(n,8+i*8));
   putKey(d,49,s.creator);putKey(d,83,input.quoteMint);d.writeBigUInt64LE(bn(initial.creatorFeeBps),115);
