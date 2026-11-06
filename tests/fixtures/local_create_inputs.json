@@ -64,6 +64,14 @@
         "slot": 453487756,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2",
+            "BuyExactQuoteInV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "880674231870995",
+            "quoteTokens": "2583030"
+          },
           "version": 1,
           "signature": "3ntiEEU4ADyFya3jAiywQBdiU6Z6hzuBzwnvdr3TujbL4a1uco9WBnfm7gTJAyF4ASoMV8t6auLyEvqEn2N5G9Zr",
           "slot": 453487756,
@@ -109,6 +117,15 @@
         "slot": 453492636,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2",
+            "BuyV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "848339222665955",
+            "poolLamports": "4939638123",
+            "rentLamports": "1366520"
+          },
           "version": 1,
           "signature": "KdvGfThuFAreUz91mDFWDNa3qqm8vznoVHs5QrDK1GD5XiSZj48ZaBNZyehmUPUMh4v5TNuRHb6AMzdmkXpuFx6",
           "slot": 453492636,
@@ -207,6 +224,15 @@
         "slot": 455557177,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2",
+            "BuyV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "997905825574232",
+            "poolLamports": "60159027",
+            "rentLamports": "1493520"
+          },
           "version": 1,
           "signature": "2NpsLKFnJonBqKA4KFoUwWbEs8TW1Z5QGmBoW5j8LDJP9rNRjTpTZNxRhdu8FGCVCD6gCXDTQgySTWDGrK5VMh1F",
           "slot": 455557177,
@@ -251,6 +277,13 @@
         "slot": 455557185,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "1000000000000000",
+            "quoteTokens": "0"
+          },
           "version": 1,
           "signature": "DTnakqAdxSYxqP6eETL4EAjtDSrwHg2WWbyfTG25EEF3Xc6eKrYBKH15oNpr6S79rv1dvAbJNpW9rYUSCM8AEWJ",
           "slot": 455557185,
@@ -348,6 +381,15 @@
         "slot": 455557189,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2",
+            "BuyV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "990297321872449",
+            "poolLamports": "275246062",
+            "rentLamports": "1493520"
+          },
           "version": 1,
           "signature": "2sxmie3LwMETfdchsAjK73nWC4R9wZp6fLQN84EAX8BCq9pkcv5YnKKtQyh2o3vBLvUsm3RiMUxnXA5ZXuPbvir2",
           "slot": 455557189,
@@ -392,6 +434,15 @@
         "slot": 455557190,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2",
+            "BuyV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "996514290475798",
+            "poolLamports": "99268077",
+            "rentLamports": "1493520"
+          },
           "version": 1,
           "signature": "27iFhVcdXj8rrDuBPru8dveeZEdj2ECppAHSH7ixCzML1oV8v9CSQQqTLAy5M9xKqamW1j63gDMzxpzZGDrjSrGW",
           "slot": 455557190,
@@ -436,6 +487,14 @@
         "slot": 455557199,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "1000000000000000",
+            "poolLamports": "1493520",
+            "rentLamports": "1493520"
+          },
           "version": 1,
           "signature": "48bnf6hEANJJqrG1b1KsQZy8QcMh3Z2QHyu1gZ2AZx8WwSoYRGzwcFKuhhk7VKJH5a3JKeT1Udqxy2dJWcRjb1X5",
           "slot": 455557199,
@@ -479,6 +538,14 @@
         "slot": 455557200,
         "launchpad": "pump.fun",
         "localSnapshot": {
+          "eventInstructions": [
+            "CreateV2"
+          ],
+          "receiptEvidence": {
+            "poolTokens": "1000000000000000",
+            "poolLamports": "1493520",
+            "rentLamports": "1493520"
+          },
           "version": 1,
           "signature": "4qhK6eY8eWQecj27XcPn8SkBjGUrbEtw8TRVHXveYPwfFXtfhuQZCzUfLcyBwAXj6VLjJ49ZKdzebWW4Hg5dcoMA",
           "slot": 455557200,

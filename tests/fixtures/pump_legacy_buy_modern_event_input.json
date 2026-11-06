@@ -1,0 +1,50 @@
+{
+  "createHint": {
+    "version": 1,
+    "mint": "FijANCykfKAP7qxa7iaQbvXz1sFrDKB77F9bPabtpump",
+    "quoteMint": "So11111111111111111111111111111111111111112",
+    "pool": "GwuMFhV1GTi9FM9zwN7afgC7qx3ktyFibXyCzaKqgA2x",
+    "slot": 466066210,
+    "launchpad": "pump.fun",
+    "localSnapshot": {
+      "eventInstructions": [
+        "CreateV2",
+        "BuyV2"
+      ],
+      "receiptEvidence": {
+        "poolTokens": "998420966890423",
+        "poolLamports": "45706761",
+        "rentLamports": "1493520"
+      },
+      "version": 1,
+      "signature": "sCShqJNUppWoqqkKFzXsWHjHm3c1p8XWE6h53eYL26FuJDcj8k8ondLmKx4LGADYjyABnddeCFbTJsY6eXVJ4S4",
+      "slot": 466066210,
+      "mint": "FijANCykfKAP7qxa7iaQbvXz1sFrDKB77F9bPabtpump",
+      "pool": "GwuMFhV1GTi9FM9zwN7afgC7qx3ktyFibXyCzaKqgA2x",
+      "quoteMint": "So11111111111111111111111111111111111111112",
+      "creator": "3eQzckMJfbmjiRiVqYRfupDymw7EJtyVJg5we6BLz3hB",
+      "user": "3eQzckMJfbmjiRiVqYRfupDymw7EJtyVJg5we6BLz3hB",
+      "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+      "decimals": 6,
+      "flags": {
+        "mayhem_mode": false,
+        "cashback_enabled": false,
+        "creator_fee_bps": 0,
+        "holder_reward": false
+      },
+      "tradeCount": 1,
+      "events": [
+        "G3KpTd7rY3YXAAAAZnVjayBhcmVhIHJldGFyZCB0b2tlbnMEAAAARkFSVFAAAABodHRwczovL2lwZnMuaW8vaXBmcy9iYWZrcmVpY2tucjdjaW9mb2Nuc2ZkNnMzaHV4eTdhanhtYmdycDNja3BqaGJ2amo1ZjJlcXo0eHB0Ydq0Gi6mgCLsskpI6q7sIZQ3GNk6AM2kYt43RGwKEQt/7O/b6CKEMBoGlM9T4dfl0XjU2McglOlGG5O7rfIMos0nTP5CDybzTBygY7GWFRwlrk9sQC/tzOhddBgdZ/CseidM/kIPJvNMHKBjsZYVHCWuT2xAL+3M6F10GB1n8Kx6t6PtagAAAAAAENhH488DAACsI/wGAAAAAHjF+1HRAgAAgMakfo0DAAbd9uHudY/eGEJdvORszdq2GvxNg7kNJ/69+SjYoYv8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACsI/wGAAAAAAAAAAAAAAAAAA==",
+        "vdt/007mYe7atBoupoAi7LJKSOqu7CGUNxjZOgDNpGLeN0RsChELf/mjogIAAAAASSS1pW8BAAABJ0z+Qg8m80wcoGOxlhUcJa5PbEAv7czoXXQYHWfwrHq3o+1qAAAAAPlPxv4GAAAAt+sionPOAwD5o6ICAAAAALdTEFbizwIA16qPsGDYKRtMTUddr/diyWvcDazrNsAS6tEu06lIQWFfAAAAAAAAALpoBgAAAAAAJ0z+Qg8m80wcoGOxlhUcJa5PbEAv7czoXXQYHWfwrHoeAAAAAAAAACAGAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAGJ1eQAAAAAAAAAAAAAAAAAAAAAAiBMAAAAAAABdNAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPmjogIAAAAA+U/G/gYAAAD5o6ICAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      ]
+    }
+  },
+  "route": "pump_native_curve",
+  "mint": "FijANCykfKAP7qxa7iaQbvXz1sFrDKB77F9bPabtpump",
+  "quoteMint": "So11111111111111111111111111111111111111112",
+  "tokenProgram": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+  "quoteProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "pool": "GwuMFhV1GTi9FM9zwN7afgC7qx3ktyFibXyCzaKqgA2x",
+  "lookupTables": [],
+  "minSlot": 466066210
+}

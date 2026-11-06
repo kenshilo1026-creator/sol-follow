@@ -88,20 +88,22 @@ def test_v3_source_never_trusts_unknown_extensions_or_foreign_events(change):
     assert capture(item,tx) is None
 
 
+@pytest.mark.parametrize('stem',['pump_v3_create','pump_legacy_buy_modern_event'])
 @pytest.mark.parametrize('malformed',[False,True])
-def test_v3_grpc_compiled_create_account_receipt(malformed):
+def test_v3_grpc_compiled_create_account_receipt(malformed,stem):
     import struct
     from chain_common.primitives import SYSTEM,b58decode,b58encode
     from chain_common.yellowstone.normalize import normalize
     from tests.test_streaming import wire
-    raw=json.loads((FIXTURES/'pump_v3_create.json').read_text())
+    raw=json.loads((FIXTURES/(stem+'.json')).read_text())
+    pool=decode(Tx(raw))[0].pool
     for group in raw['meta']['innerInstructions']:
         for ix in group['instructions']:
             if ix.get('programId')!=SYSTEM or ix.get('parsed',{}).get('type')!='createAccount':
                 continue
             info=ix.pop('parsed')['info']
             data=struct.pack('<IQQ',0,info['lamports'],info['space'])+b58decode(info['owner'])
-            if malformed and info['newAccount']=='8FieVaD3E1aqVid6erk3vScrPQrdnoyVNEmvzanVSyDK':data=data[:-1]
+            if malformed and info['newAccount']==pool:data=data[:-1]
             ix.update(accounts=[info['source'],info['newAccount']],data=b58encode(data))
     update=wire(raw).transaction
     update.transaction.meta.log_messages.extend(raw['meta']['logMessages'])
@@ -110,5 +112,15 @@ def test_v3_grpc_compiled_create_account_receipt(malformed):
     assert snapshot
     if malformed:assert snapshot['receiptEvidence'] is None
     else:
-        expected=json.loads((FIXTURES/'pump_v3_create_input.json').read_text())
+        expected=json.loads((FIXTURES/(stem+'_input.json')).read_text())
         assert create_route(decode(tx)[0],tx).request()==expected
+
+
+def test_legacy_buy_with_modern_event_has_receipt_proof():
+    tx=Tx(json.loads((FIXTURES/'pump_legacy_buy_modern_event.json').read_text()))
+    expected=json.loads((FIXTURES/'pump_legacy_buy_modern_event_input.json').read_text())
+    assert create_route(decode(tx)[0],tx).request()==expected
+    snapshot=capture(decode(tx)[0],tx)
+    assert snapshot['eventInstructions']==['CreateV2','BuyV2']
+    assert snapshot['receiptEvidence']=={'poolTokens':'998420966890423',
+        'poolLamports':'45706761','rentLamports':'1493520'}

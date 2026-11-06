@@ -59,3 +59,29 @@ Sources:
 - https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/TRADE_V3.md
 - https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/SWEEP_FEES.md
 - https://github.com/pump-fun/pump-public-docs/blob/main/docs/SYNTHETIC_MIGRATION.md
+
+
+## Legacy BuyV2 with the extended event layout (2026-11-06)
+
+Receipt `sCShqJNUppWoqqkKFzXsWHjHm3c1p8XWE6h53eYL26FuJDcj8k8ondLmKx4LGADYjyABnddeCFbTJsY6eXVJ4S4`
+(slot 466066210) uses CreateV2 + BuyV2, but its TradeEvent has the same
+opaque zero tail previously seen with V3. Capture formerly attached action and
+receipt evidence only for V3/ExtendAccount. The Node decoder correctly refused
+this opaque tail without corroboration, yielding source-snapshot-ineligible.
+
+Capture now attaches program-attributed actions and receipt evidence for every
+Pump snapshot. It performs no RPC. Missing or inconsistent evidence still rejects
+opaque-tail projection. BuyV2 fees are paid out, so its proof reconciles curve
+lamports minus rent directly to real quote reserves; V3 retained-fee rules remain
+specific to V3 actions. This fixture has 998420966890423 pool tokens and 45706761
+curve lamports including 1493520 rent. Offline tests cover full RPC and normalized
+gRPC receipts, malformed proof, and zero account RPC with warm shared settings.
+
+The supplied VPS audit (checkout 4d9f08a) measured 324.173 ms from source receipt
+to submit start. Account reads consumed 230.903 ms: primary was one slot behind
+twice, fallback was cooling, and the third primary attempt succeeded. Simulation
+consumed 25.869 ms within build, not an additional 291 ms (executor timings are
+cumulative). Submit acknowledgement took 102.644 ms. The own transaction appeared
+in processed feed 392.250 ms after submit start, including delivery, landing and
+feed latency; the audit cannot separate those components. Slot delta was 3.
+A warm-path offline test is not a measured VPS latency or same-slot guarantee.

@@ -36,7 +36,6 @@ def _capture(item, tx):
     if not isinstance(logs, list) or not logs or len(logs) > 2500:
         return None
     stack, events, actions = [], [], []
-    modern = False
     extensions = 0
     creates = trades = total = 0
     for line in logs:
@@ -62,10 +61,8 @@ def _capture(item, tx):
                     creates += 1
                 elif name in TRADES or item.launchpad == 'pump.fun' and name in PUMP_V3:
                     trades += 1
-                    modern |= name in PUMP_V3
                 elif item.launchpad == 'pump.fun' and name == 'ExtendAccount':
                     extensions += 1
-                    modern = True
                 else:
                     return None
             if stack[-1][0] in (TOKEN, TOKEN_2022):
@@ -100,7 +97,10 @@ def _capture(item, tx):
         if actual != extensions:
             return None
     extra = {}
-    if modern:
+    # Event layout upgrades also apply to legacy Buy/Sell instructions.
+    # Always attach Pump action attribution and receipt proof; the SDK decides
+    # whether a particular event tail needs corroboration. No RPC is added.
+    if item.launchpad == 'pump.fun':
         from features.strategy.pump_snapshot_evidence import receipt
         extra = {'eventInstructions': actions, 'receiptEvidence': receipt(item, tx)}
     return {**extra, 'version': 1, 'signature': tx.signature, 'slot': tx.slot, 'mint': item.mint,

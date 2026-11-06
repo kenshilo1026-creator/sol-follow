@@ -348,3 +348,41 @@ test('non-SOL V3 source keeps quote units and validates retained quote-token bal
   assert.equal(String(state.quoteMint),String(quote));assert.equal(state.realQuoteReserves.toString(),'395061727');
   s.receiptEvidence.quoteTokens='395061727';assert.equal(local.project(input).rows.size,0);
 });
+
+
+const legacyModernInput=()=>structuredClone(require('../fixtures/pump_legacy_buy_modern_event_input.json'));
+test('real BuyV2 with extended event tail requires receipt proof and projects final reserves',()=>{
+  const input=legacyModernInput(),snapshot=input.createHint.localSnapshot;
+  assert.deepEqual(snapshot.eventInstructions,['CreateV2','BuyV2']);
+  const event=eventCodec.trade(Buffer.from(snapshot.events[1],'base64'));
+  assert.equal(event.opaqueZeroTail,true);
+  const projection=local.project(input);assert.equal(projection.rows.size,2);
+  const state=pump.PUMP_SDK.decodeBondingCurve(projection.rows.get(input.pool));
+  for(const key of ['virtualTokenReserves','virtualQuoteReserves','realTokenReserves','realQuoteReserves'])
+    assert.equal(state[key].toString(),event[key].toString());
+  // BuyV2 pays fees out; V3 retained-fee accounting must not be applied to it.
+  const proof=snapshot.receiptEvidence;
+  assert.equal(BigInt(proof.poolLamports)-BigInt(proof.rentLamports),BigInt(event.realQuoteReserves.toString()));
+  for(const mutate of [s=>delete s.receiptEvidence,s=>delete s.eventInstructions,
+    s=>s.receiptEvidence.poolLamports='45706762',s=>s.receiptEvidence.poolTokens='998420966890422',
+    s=>s.eventInstructions[1]='BuyV3',
+    s=>{const b=Buffer.from(s.events[1],'base64');b[b.length-1]=1;s.events[1]=b.toString('base64');}]){
+    const bad=legacyModernInput();mutate(bad.createHint.localSnapshot);assert.equal(local.project(bad).rows.size,0);
+  }
+});
+
+test('real BuyV2 extended-event build uses warm settings with zero account RPC calls',async()=>{
+  const input=configured(legacyModernInput()),common=load('pump_native_accounts.json');
+  let simulations=0,reads=0;
+  const connection={
+    async localCreateShared(keys){return keys.map(key=>common.get(String(key))||null);},
+    async getMultipleAccountsInfo(){reads++;throw Error('unexpected account RPC');},
+    async getLatestBlockhash(){return {blockhash:web3.PublicKey.default.toBase58(),lastValidBlockHeight:900};},
+    async simulateTransaction(tx,options){simulations++;assert.equal(options.minContextSlot,input.minSlot);
+      return {context:{slot:input.minSlot},value:{err:null,unitsConsumed:100000,accounts:[mintResponse(input)]}};}
+  };
+  const built=await build(input,connection);
+  assert.equal(built.localCreate.eligible,true);assert.equal(reads,0);assert.equal(simulations,1);
+  assert.deepEqual(built.localCreate.projectedAccounts,[input.mint,input.pool]);
+  assert(BigInt(built.minOut)>0n);
+});
