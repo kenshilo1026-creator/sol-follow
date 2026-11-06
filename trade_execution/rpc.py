@@ -41,6 +41,8 @@ class ExecutionRpc:
                 'send_fallback_wins':self.send_fallback_wins,'calls': self.calls, 'rate_limited': self.limited,
                 'fallback_recovered': self.recovered, 'unavailable': self.unavailable,
                 'providers': len(self.providers), 'verified_providers': len(self.verified),
+                'method_counts': [{'source': p.snapshot().get('source', 'unknown'),
+                                   'methods': p.snapshot().get('methods', {})} for p in self.providers],
                 'cooldown_remaining_s': [round(max(0,self.cooldown.get(i,0)-time.monotonic()),1)
                                          for i in range(len(self.providers))]}
 

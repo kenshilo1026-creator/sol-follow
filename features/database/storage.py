@@ -9,6 +9,8 @@ import threading
 import time
 import uuid
 from features.audit.writer import SCHEMA as DECISION_SCHEMA
+from features.funding.lineage import (SCHEMA as LINEAGE_SCHEMA, blocked as lineage_blocked,
+                                      consume as consume_lineage, invalidate as invalidate_lineage)
 from features.strategy.dev_holdings import row_permitted as dev_row_permitted
 
 FUNDING_SCHEMA = '''
@@ -124,7 +126,7 @@ class Store:
         self.new_jobs = 0
         self.revisited_jobs = 0
         self.directory.mkdir(parents=True, exist_ok=True)
-        for name, schema in [('funding', FUNDING_SCHEMA), ('trading', TRADING_SCHEMA), ('audit', AUDIT_SCHEMA+DECISION_SCHEMA)]:
+        for name, schema in [('funding', FUNDING_SCHEMA+LINEAGE_SCHEMA), ('trading', TRADING_SCHEMA), ('audit', AUDIT_SCHEMA+DECISION_SCHEMA)]:
             with self.db(name) as c:
                 # Must be selected before first table creation; incremental
                 # reclamation avoids a full-size VACUUM temporary copy.
@@ -182,11 +184,33 @@ class Store:
             c.execute('INSERT INTO audit(time,kind,detail) VALUES (?,?,?)',
                       (time.time(), kind, json.dumps(detail, separators=(',', ':'))[:4000]))
 
-    def admit(self, item, ttl, now):
+    def admit(self, item, ttl, now, *, lineage=None):
         if item.time+ttl <= now:
             return False
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
+            if lineage is not None and lineage.config.lineage_enabled:
+                if lineage_blocked(c, item.wallet):
+                    c.commit()
+                    return False
+                if item.provider == 'cex-lineage':
+                    parent = lineage.parent(c, item)
+                    if not parent or c.execute('SELECT 1 FROM hotlist WHERE wallet=? AND expires>?',
+                                               (item.wallet,now)).fetchone():
+                        c.commit()
+                        return False
+                    c.execute('INSERT OR IGNORE INTO lineage_members VALUES (?,?,?,?)',
+                              (item.wallet,parent['root'],parent['depth']+1,item.source))
+                    # Existing membership cannot be reassigned to bypass a source claim.
+                    saved = c.execute('SELECT root,parent FROM lineage_members WHERE wallet=?', (item.wallet,)).fetchone()
+                    if saved['root'] != parent['root'] or saved['parent'] != item.source:
+                        c.commit()
+                        return False
+                    c.execute('INSERT OR IGNORE INTO lineage_funding VALUES (?,?,?)',
+                              (item.event,parent['event'],parent['root']))
+                elif item.provider.startswith('cex:'):
+                    c.execute('INSERT OR IGNORE INTO lineage_members VALUES (?,?,0,?)',
+                              (item.wallet,item.wallet,''))
             cur = c.execute('INSERT OR IGNORE INTO funding VALUES (?,?,?,?,?,?,?,?,?)',
                 (item.event, item.signature, item.wallet, item.source, item.provider,
                  str(item.amount), item.slot, item.time, item.time+ttl))
@@ -241,6 +265,7 @@ class Store:
 
     @staticmethod
     def _create_funding(c,item,now):
+        if lineage_blocked(c, item.user):return None
         return c.execute('SELECT event,signature,provider,slot,time FROM funding WHERE wallet=? AND slot<? AND time<=? '
             'AND expires>? AND slot>COALESCE((SELECT slot FROM hotlist_removals WHERE wallet=?),-1) '
             'ORDER BY slot DESC,time DESC,rowid DESC LIMIT 1',
@@ -264,10 +289,16 @@ class Store:
         with self.db('funding') as c:
             c.execute('PRAGMA synchronous=FULL')
             c.execute('BEGIN IMMEDIATE')
+            if lineage_blocked(c,item.user):
+                c.commit()
+                return False,'lineage-source-consumed',None
             funded=self._create_funding(c,item,now)
             if not funded:
                 c.commit()
                 return False,'dev-not-hotlisted-or-already-consumed',None
+            if not consume_lineage(c,item.user,item.signature,item.slot):
+                c.commit()
+                return False,'lineage-source-consumed',dict(funded)
             prior=c.execute("SELECT 1 FROM launch_creates WHERE user=? AND slot<=? "
                 "AND signature!=? AND status!='invalid' LIMIT 1",(item.user,item.slot,item.signature)).fetchone()
             c.execute('INSERT INTO hotlist_removals VALUES (?,?,?,?) ON CONFLICT(wallet) DO UPDATE SET '
@@ -660,11 +691,12 @@ class Store:
         # Only a finalized error proves rollback. Missing RPC history does not.
         with self.db('funding') as c:
             c.execute('BEGIN IMMEDIATE')
-            affected = [r[0] for r in c.execute('SELECT wallet FROM funding WHERE signature=?', (signature,))]
+            affected = invalidate_lineage(c, signature)
             c.execute('DELETE FROM funding WHERE signature=?', (signature,))
             c.execute("UPDATE launch_creates SET status='invalid' WHERE signature=?",(signature,))
             for wallet in affected:
                 c.execute('DELETE FROM hotlist WHERE wallet=?', (wallet,))
+                if lineage_blocked(c,wallet):continue
                 latest = c.execute('SELECT rowid,* FROM funding WHERE wallet=? AND slot>COALESCE('
                                    '(SELECT slot FROM hotlist_removals WHERE wallet=?),-1) ORDER BY slot DESC LIMIT 1', (wallet,wallet)).fetchone()
                 if latest:
@@ -675,6 +707,7 @@ class Store:
                 "WHERE signature=? AND reason IN ('dev-create','dev-create-disabled')",(signature,))]
             c.execute("DELETE FROM hotlist_removals WHERE signature=? AND reason IN ('dev-create','dev-create-disabled')",(signature,))
             for wallet in consumed:
+                if lineage_blocked(c,wallet):continue
                 latest=c.execute('SELECT rowid,* FROM funding WHERE wallet=? AND expires>? '
                     'ORDER BY slot DESC,rowid DESC LIMIT 1',(wallet,time.time())).fetchone()
                 if latest:

@@ -11,6 +11,11 @@ from features.audit.feed_trace import compare
 
 ROOT=Path(__file__).resolve().parents[2]
 REASONS={
+ 'lineage-child-check-limit':'同一來源已檢查 10 個不同子錢包，不再啟動新檢查',
+ 'lineage-disabled':'Lineage discovery 已停用',
+ 'lineage-source-consumed':'同一來源已有錢包發幣，整組資格已消耗',
+ 'lineage-parent-transfer-limit':'父錢包轉出交易超過上限，已移除 hotlist',
+ 'lineage-parent-unavailable':'父錢包資格已失效或跳數已達上限',
  'holder-exit-submitted':'人氣不足全倉賣出已送出，詳見各階段耗時',
  'holder-check-triggered':'人氣不足，已排入剩餘持倉全倉賣出',
  'holder-check-passed':'持有人數已達門檻',
@@ -146,6 +151,13 @@ def report(data,command,hours=24,limit=200,wallet=None,all_states=False,now=None
             result['hotlist_active_now']=bool(result['hotlist_current'] and result['hotlist_current'][0]['expires']>now)
             result['removal']=rows(c,'hotlist_removals','wallet=?',(wallet,),1)
             result['funding']=rows(c,'funding','wallet=? AND time>=?',(wallet,since),limit)
+            result['lineage']=rows(c,'lineage_members','wallet=?',(wallet,),1)
+            root=result['lineage'][0]['root'] if result['lineage'] else wallet
+            result['lineage_consumed']=rows(c,'lineage_consumed','root=?',(root,),1)
+            result['lineage_family']=rows(c,'lineage_members','root=?',(root,),limit)
+            result['lineage_child_checks']=rows(c,'lineage_child_checks','root=?',(root,),limit)
+            result['lineage_parent_block']=rows(c,'lineage_blocked','wallet=?',(wallet,),1)
+            result['lineage_outgoing']=rows(c,'lineage_outgoing','wallet=?',(wallet,),limit)
         with connect(data/'audit.sqlite3') as c:
             result['decisions']=decode_details(rows(c,'decisions','wallet=? AND time>=?',(wallet,since),limit,'time DESC,id DESC'))
             result['audit_coverage']={'oldest_retained':rows(c,'decisions',limit=1,order='time ASC',columns='time'),

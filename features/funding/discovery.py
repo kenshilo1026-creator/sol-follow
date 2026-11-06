@@ -93,12 +93,18 @@ class Discovery:
         self.endpoint_cooldown=EndpointCooldowns(config.data / 'rpc-cooldowns')
         self.failure_message='feed unavailable; history fallback active'
 
+    def history_address(self,address):
+        if address in self.funding_sources:return True
+        return bool(getattr(self.config,'lineage_enabled',False) and self.store.rows('funding',
+            'SELECT 1 FROM hotlist h JOIN lineage_members m ON m.wallet=h.wallet '
+            'WHERE h.wallet=? AND h.expires>?', (address,time.time())))
+
     def request_history(self,address):
-        if address in self.funding_sources:
+        if self.history_address(address):
             self.store.request_history(address)
 
     async def page(self,address):
-        if address not in self.funding_sources:
+        if not self.history_address(address):
             return
         lock=self.locks.setdefault(address,asyncio.Lock())
         async with lock:
@@ -118,7 +124,7 @@ class Discovery:
                 await asyncio.sleep(0.5)
                 continue
             row=rows[0]
-            if row['address'] not in self.funding_sources:
+            if not self.history_address(row['address']):
                 self.store.finish_history(row)
                 await asyncio.sleep(0)
                 continue

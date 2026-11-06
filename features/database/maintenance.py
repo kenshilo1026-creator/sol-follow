@@ -10,7 +10,7 @@ def usage(store):
 
 
 def batch(store, name, table, where, params, limit=128):
-    allowed={'decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks','dry_create_alerts'}
+    allowed={'lineage_edges','decisions','audit','jobs','hotlist','funding','events','votes','launch_creates','block_times','processed_signals','dead_slots','funding_activity_checks','dry_create_alerts'}
     if table not in allowed:
         raise ValueError('cleanup-table-not-allowed')
     # Activity evidence lives for 31 days. ORDER BY rowid forces a table scan
@@ -40,7 +40,8 @@ class Maintenance:
         free=shutil.disk_usage(self.store.directory).free
         pressured=size>=cfg.db_max*0.9 or free<cfg.min_disk_free or (self.pressured and size>=cfg.db_target)
         deleted=0
-        tasks=[('funding','funding_activity_checks','expires<?',(now,)),
+        tasks=[('funding','lineage_edges','time<?',(now-cfg.backfill_age,)),
+               ('funding','funding_activity_checks','expires<?',(now,)),
                ('audit','audit','time<?',(now-cfg.audit_retention,)),
                ('audit','decisions','time<?',(now-cfg.audit_retention,)),
                ('funding','block_times','time<?',(now-cfg.backfill_age*2,)),

@@ -170,6 +170,9 @@ class Config:
     funding_workers: int = 4
     funding_alchemy_rps: int = 8
     max_prelaunch_tx: int = 10
+    lineage_enabled: bool = True
+    lineage_max_hops: int = 1
+    lineage_max_parent_transfers: int = 10
     max_quote_token_tax_bps: int = 390
     max_token_tax_bps: int = 390
     max_price_impact_bps: int = 200
@@ -381,6 +384,9 @@ def load(root=ROOT, env=None):
         funding_workers=integer('SOL_FUNDING_WORKERS', 4, 1, 8),
         funding_alchemy_rps=integer('SOL_FUNDING_ALCHEMY_RPS', 8, 1, 20),
         max_prelaunch_tx=integer('SOL_MAX_PRELAUNCH_TX',10,1,999),
+        lineage_enabled=boolean(get('SOL_LINEAGE_ENABLED','true')),
+        lineage_max_hops=integer('SOL_LINEAGE_MAX_HOPS',1,0,1),
+        lineage_max_parent_transfers=integer('SOL_LINEAGE_MAX_PARENT_TRANSFERS',10,1,100),
         max_quote_token_tax_bps=risk_bps(get('SOL_MAX_QUOTE_TOKEN_TAX_PERCENT', '3.9')),
         max_token_tax_bps=risk_bps(get('SOL_MAX_TOKEN_TAX_PERCENT', '3.9')),
         max_price_impact_bps=risk_bps(get('SOL_MAX_PRICE_IMPACT_PERCENT', '2')),

@@ -175,6 +175,9 @@ class FundingRpc:
             'commitment': commitment, 'maxSupportedTransactionVersion': 1}])
 
     def snapshot(self):
-        return {**self.counts,'last_failure':{label:dict(detail) for label,detail in self.last_failure.items()},
+        providers=[client.snapshot() for client in (self.public,self.alchemy)
+                   if client is not None and hasattr(client,'snapshot')]
+        return {**self.counts,'method_counts':[{'source':p.get('source','unknown'),'methods':p.get('methods',{})}
+                                             for p in providers],'last_failure':{label:dict(detail) for label,detail in self.last_failure.items()},
                 'cooldown_remaining_s':{label:round(max(0,until-self.clock()),1)
                                         for label,until in self.cooldown.items()}}

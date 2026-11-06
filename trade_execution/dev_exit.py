@@ -38,8 +38,9 @@ class DevExit:
         if popularity and kind.startswith('dev exit '):
             kind=kind.replace('dev exit ','holder exit ',1)
             detail={**json.loads(popularity[0]['detail']),**detail}
+        # Keep submission evidence in audit; Telegram reports the confirmed result.
         self.notices.emit(kind,{'mint':buy['mint'],'order':buy['id'],'mode':buy['mode'],**detail},
-                          alert=True,key=kind+':'+buy['id'],interval=60)
+                          alert=kind!='dev exit submitted',key=kind+':'+buy['id'],interval=60)
 
     def discover(self):
         with self.store.db('trading') as c:

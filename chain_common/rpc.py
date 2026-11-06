@@ -20,6 +20,7 @@ class Rpc:
         self.session, self.url, self.priority = session, url, priority
         self.timeout = timeout
         self.source = source
+        self.methods = {}
         self.calls = self.errors = self.limited = 0
         self.local_cooldown = 0
 
@@ -27,6 +28,7 @@ class Rpc:
         if time.monotonic() < max(self.local_cooldown, self.priority.cooldown.get(self.url, 0)):
             raise RpcError('endpoint-cooling')
         self.calls += 1
+        self.methods[method] = self.methods.get(method, 0) + 1
         try:
             async with self.session.post(self.url, json={'jsonrpc':'2.0','id':1,'method':method,'params':params},
                                          timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
@@ -63,7 +65,8 @@ class Rpc:
             raise RpcError(f'{method}:{type(exc).__name__}') from None
 
     def snapshot(self):
-        return {'calls': self.calls, 'errors': self.errors, 'rate_limited': self.limited}
+        return {'calls': self.calls, 'errors': self.errors, 'rate_limited': self.limited,
+                'source': self.source, 'methods': dict(self.methods)}
 
     async def transaction(self, signature, commitment='confirmed'):
         return await self.call('getTransaction', [signature, {'encoding':'jsonParsed',

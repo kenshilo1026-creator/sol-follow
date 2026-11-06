@@ -28,6 +28,16 @@ def health_log(detail):
         'execution': detail.get('execution_rpc', {}).get('rate_limited', detail.get('rpc_429', 0)),
         'reads': detail.get('execution_reads', {}).get('rate_limited', 0),
     }
+    result['get_transaction'] = {
+        lane: detail.get(lane, {}).get('methods', {}).get('getTransaction', 0)
+        for lane in ('background_public_rpc', 'funding_history_rpc')
+    }
+    for lane in ('execution_rpc', 'execution_reads', 'create_backup_rpc'):
+        result['get_transaction'][lane] = [
+            {'source': row['source'], 'calls': row.get('methods', {}).get('getTransaction', 0)}
+            for row in detail.get(lane, {}).get('method_counts', [])
+        ]
+    result['funding_receipt_reuse'] = detail.get('funding_receipt_reuse', {})
     reads=detail.get('quote_cache',{}).get('accountReads')
     if isinstance(reads,dict) and reads:result['cache_reads']=reads
     market = detail.get('market_feed', {})
@@ -53,7 +63,7 @@ BUY_TITLES = {
     'dev sell catch-up incomplete':'dev 賣出歷史補查未完成，部分斷線事件可能遺漏',
     'dev sell detected':'dev 已賣出：觸發剩餘持倉 100% 跟賣',
     'dev sell check stopped':'dev 賣出核對超過 10 分鐘仍失敗，停止核對',
-    'dev exit submitted':'dev 保護：賣單已送出', 'dev exit finalized':'dev 保護：賣出已完成',
+    'dev exit submitted':'dev 保護：賣單已送出', 'dev exit finalized':'FOLLOW DEV SELL 成交',
     'dev exit deferred':'dev 保護：賣出失敗，稍後重試', 'dev exit unknown':'dev 保護：賣單結果未知，保留原交易核對',
     'dev exit retry':'dev 保護：鏈上賣出失敗，準備重試', 'dev exit dry run':'dev 保護：dry 模式，沒有實際賣出',
     'target buy skipped':'跟買已跳過', 'non-SOL buy skipped':'非 SOL 跟買已跳過',

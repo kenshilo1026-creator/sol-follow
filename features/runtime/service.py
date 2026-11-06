@@ -15,6 +15,7 @@ from features.funding.stream_rpc import StreamHeadRpc
 from chain_common.transaction import Tx, Unsupported
 from chain_common.primitives import SYSTEM
 from features.funding.decoder import decode as funding_decode
+from features.funding.lineage import Lineage, blocked as lineage_blocked
 from features.strategy.dev_create import CreateSignals
 from features.strategy.market_cap import MarketCapGate
 from features.strategy.take_profit import TakeProfit
@@ -56,6 +57,8 @@ class Service:
         self.metrics=Metrics()
         self.funding_flights=WalletFlights()
         self.active_jobs=set()
+        self.funding_receipt_reuse={}
+        self.lineage=Lineage(self.store,config)
         self.exit_flights=WalletFlights()
         self.quote_builder=CachedBuilder(config,self.store,self.notices,self.priority)
         self.market_cap=MarketCapGate(config,self.store,self.notices,self.quote_builder)
@@ -78,6 +81,24 @@ class Service:
             record(self.store,'qualification',outcome,reason,wallet=item.wallet,
                    signature=item.signature,event=item.event,detail={'funding_slot':item.slot,'funding_time':item.time,
                    'hotlist_ttl_s':self.config.hotlist_ttl,'max_prelaunch_tx':self.config.max_prelaunch_tx})
+        if self.config.lineage_enabled:
+            with self.store.db('funding') as c:
+                consumed=lineage_blocked(c,item.wallet)
+                unavailable=item.provider=='cex-lineage' and not self.lineage.parent(c,item)
+                already=item.provider=='cex-lineage' and c.execute(
+                    'SELECT 1 FROM hotlist WHERE wallet=? AND expires>?',(item.wallet,time.time())).fetchone()
+            if consumed or unavailable or already:
+                decision('skipped','lineage-source-consumed' if consumed else
+                         'lineage-parent-unavailable' if unavailable else 'already-hotlisted')
+                return False
+        if item.provider=='cex-lineage':
+            if not self.config.lineage_enabled:
+                decision('skipped','lineage-disabled')
+                return False
+            permitted,reason=self.lineage.reserve_child_check(item)
+            if not permitted:
+                decision('skipped',reason)
+                return False
         if not Pubkey.from_string(item.wallet).is_on_curve():
             decision('blocked','wallet-off-curve')
             return False
@@ -90,19 +111,25 @@ class Service:
         if row['owner']!=SYSTEM or row.get('executable') or row['data']!=['','base64']:
             decision('blocked','wallet-not-system-account')
             return False
-        if item.provider.startswith('cex:') or item.provider=='privacy-cash':
+        if item.provider.startswith('cex:') or item.provider in ('privacy-cash','cex-lineage'):
             allowed,reason=await qualify_activity(item,rpc,self.store,self.config.max_prelaunch_tx)
             if not allowed:
                 decision('blocked',reason)
                 return False
-        added=self.store.admit(item,self.config.hotlist_ttl,time.time())
+        added=self.store.admit(item,self.config.hotlist_ttl,time.time(),lineage=self.lineage)
         if added:
+            self.lineage.admitted(item)
             decision('admitted','qualified')
             self.notices.emit('hotlist-add',item.dict())
         else:
             removal=self.store.rows('funding','SELECT slot FROM hotlist_removals WHERE wallet=?',(item.wallet,))
             reason=('funding-expired' if item.time+self.config.hotlist_ttl<=time.time() else
                     'hotlist-consumed' if removal and item.slot<=removal[0]['slot'] else 'funding-already-recorded')
+            if item.provider=='cex-lineage':
+                with self.store.db('funding') as c:
+                    if lineage_blocked(c,item.wallet) or lineage_blocked(c,item.source):
+                        reason='lineage-source-consumed'
+                    elif not self.lineage.parent(c,item):reason='lineage-parent-unavailable'
             decision('skipped',reason)
         return added
 
@@ -111,6 +138,7 @@ class Service:
         queue_wait_ms=round(max(0,time.time()-row.get('first_seen',time.time()))*1000,3)
         raw=self.store.stream_payload(row['signature'])
         if raw is None:
+            self.funding_receipt_reuse['job_requested']=self.funding_receipt_reuse.get('job_requested',0)+1
             raw=await rpc.transaction(row['signature'])
         elif raw.get('blockTime') is None and raw.get('_stream',{}).get('commitment')!='processed':
             stamp=self.store.block_time(raw['slot'])
@@ -211,7 +239,9 @@ class Service:
         # history/account RPCs. The entry above still requires an existing
         # qualified hotlist wallet and the original source/quantity gates.
         # Keep funding on this durable job: failures retry without a second buy.
-        funding_reads=TransactionReads(rpc,raw)
+        funding_reads=TransactionReads(rpc,raw,stats=self.funding_receipt_reuse)
+        if not processed:
+            funding_items.extend(self.lineage.observe(tx))
         for item in funding_items:
             await self.qualify(item,funding_reads)
         if processed:
@@ -324,6 +354,8 @@ class Service:
                 feed=self.create_feed
                 detail['create_backup']={'connected':feed.connected,'subscribed':len(feed.subscribed),
                     'received':feed.received,'verified':feed.added,'pending':len(feed.pending)}
+            if hasattr(self,'create_rpc'):
+                detail['create_backup_rpc']=self.create_rpc.snapshot()
             if hasattr(self,'stream_head_rpc'):
                 detail['stream_head_rpc']=self.stream_head_rpc.snapshot()
             detail['funding_ws_provider']=self.config.funding_ws_provider
@@ -332,6 +364,7 @@ class Service:
                                               **self.funding_history_rpc.snapshot()}
             if hasattr(self,'source_history_rpc'):
                 detail['source_history_rpc']=self.source_history_rpc.snapshot()
+            detail['funding_receipt_reuse']=dict(self.funding_receipt_reuse)
             self.notices.emit('health',detail)
             self.completed=self.expired=discovery.received=discovery.added=0
             self.store.new_jobs=self.store.revisited_jobs=0
